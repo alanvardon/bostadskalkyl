@@ -858,15 +858,21 @@
   .toggle input:checked + .toggle-slider { background: var(--accent); }
   .toggle input:checked + .toggle-slider::before { transform: translateX(16px); }
 
-  /* Stress test */
-  .stress-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 0.75rem; }
-  .stress-table th { text-align: left; font-size: 11px; font-weight: 500; letter-spacing: 0.04em; text-transform: uppercase; color: var(--ink-soft); padding: 6px 10px; border-bottom: 1px solid var(--rule); background: var(--paper-warm); }
-  .stress-table td { padding: 7px 10px; border-bottom: 1px solid var(--rule); font-variant-numeric: tabular-nums; color: var(--ink); }
-  .stress-table tr:last-child td { border-bottom: none; }
-  .stress-table tr.stress-highlight td { background: var(--accent-faint); }
-  .stress-table td.stress-rate { font-weight: 500; color: var(--ink-mid); }
-  .stress-table td.stress-relief { color: var(--accent); font-size: 12px; }
-  .stress-table td.stress-warn { color: var(--warn); }
+  /* Stress slider */
+  .stress-slider-wrap { margin-top: 0.75rem; }
+  .stress-slider-header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 0.5rem; }
+  .stress-slider-label { font-size: 12px; font-weight: 500; letter-spacing: 0.04em; text-transform: uppercase; color: var(--ink-soft); }
+  .stress-slider-rate { font-size: 22px; font-weight: 600; font-family: 'DM Serif Display', serif; color: var(--ink); font-variant-numeric: tabular-nums; }
+  .stress-slider-input { width: 100%; -webkit-appearance: none; appearance: none; height: 4px; border-radius: 2px; background: var(--rule); outline: none; cursor: pointer; }
+  .stress-slider-input::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 18px; height: 18px; border-radius: 50%; background: var(--accent); cursor: pointer; box-shadow: 0 1px 4px rgba(0,0,0,0.18); }
+  .stress-slider-input::-moz-range-thumb { width: 18px; height: 18px; border-radius: 50%; background: var(--accent); cursor: pointer; border: none; box-shadow: 0 1px 4px rgba(0,0,0,0.18); }
+  .stress-slider-bounds { display: flex; justify-content: space-between; font-size: 11px; color: var(--ink-soft); margin-top: 4px; margin-bottom: 1rem; }
+  .stress-results { border-top: 1px solid var(--rule); }
+  .stress-result-row { display: flex; justify-content: space-between; align-items: baseline; padding: 8px 0; border-bottom: 1px solid var(--rule); }
+  .stress-result-row:last-child { border-bottom: none; }
+  .stress-result-label { font-size: 13px; color: var(--ink-soft); }
+  .stress-result-value { font-size: 14px; font-weight: 500; color: var(--ink); font-variant-numeric: tabular-nums; }
+  .stress-result-relief { color: var(--accent); }
 
   /* Driftkostnad modal */
   .drift-item-row {
@@ -1312,7 +1318,32 @@
         <span class="section-num">4</span>
         <span class="section-title">Interest rate stress test</span>
       </div>
-      <div id="stressTableWrap"></div>
+      <div class="stress-slider-wrap">
+        <div class="stress-slider-header">
+          <span class="stress-slider-label">Interest rate</span>
+          <span class="stress-slider-rate" id="stressRateDisplay">3.5%</span>
+        </div>
+        <input type="range" id="stressSlider" class="stress-slider-input"
+               min="0.5" max="12" step="0.1" value="3.5" oninput="calc()">
+        <div class="stress-slider-bounds">
+          <span>0.5%</span>
+          <span>12%</span>
+        </div>
+        <div class="stress-results">
+          <div class="stress-result-row">
+            <span class="stress-result-label">Monthly interest</span>
+            <span class="stress-result-value" id="stressMonthlyInterest">—</span>
+          </div>
+          <div class="stress-result-row">
+            <span class="stress-result-label">Total monthly</span>
+            <span class="stress-result-value" id="stressTotalMonthly">—</span>
+          </div>
+          <div class="stress-result-row">
+            <span class="stress-result-label">After ränteavdrag</span>
+            <span class="stress-result-value stress-result-relief" id="stressAfterRelief">—</span>
+          </div>
+        </div>
+      </div>
     </div>
 
   </div>
@@ -1790,32 +1821,26 @@
     const annualAmort = loanAmount * (amortRate / 100);
     const equityAt = yr => Math.min(deposit + annualAmort * yr, newPrice);
 
-    // ── Stress table ──────────────────────────────────────────
-    const stressRates = [1.5,2,2.5,3,3.5,4,4.5,5,5.5,6,6.5,7,7.5,8];
-    const stressWrap  = document.getElementById('stressTableWrap');
-    const reliefCalc  = r => {
-      const ann = (loanAmount * (r/100));
-      return ann <= threshold ? ann*0.30 : threshold*0.30+(ann-threshold)*0.21;
-    };
-    let tableHtml = `<table class="stress-table"><thead><tr>
-      <th>Rate</th><th>Monthly interest</th><th>Total monthly</th>
-      <th>After ränteavdrag</th>
-    </tr></thead><tbody>`;
-    stressRates.forEach(r => {
-      const mi    = (loanAmount * (r/100)) / 12;
-      const total = mi + monthlyAmort + taxMonthly + driftkostnad;
-      const rel   = reliefCalc(r);
-      const after = total - rel/12;
-      const isHighlight = Math.abs(r - interestRateA) < 0.01;
-      tableHtml += `<tr class="${isHighlight ? 'stress-highlight' : ''}">
-        <td class="stress-rate">${r.toFixed(1)}%</td>
-        <td>${fmt(mi)}</td>
-        <td class="${r > 6 ? 'stress-warn' : ''}">${fmt(total)}</td>
-        <td class="stress-relief">${fmt(after)}</td>
-      </tr>`;
-    });
-    tableHtml += '</tbody></table>';
-    stressWrap.innerHTML = tableHtml;
+    // ── Stress slider ──────────────────────────────────────────
+    const stressSlider = document.getElementById('stressSlider');
+    if (stressSlider.dataset.syncedRate !== String(interestRateA)) {
+      stressSlider.value = interestRateA;
+      stressSlider.dataset.syncedRate = String(interestRateA);
+    }
+    const stressRate  = parseFloat(stressSlider.value);
+    const stressMI    = (loanAmount * (stressRate / 100)) / 12;
+    const stressTotal = stressMI + monthlyAmort + taxMonthly + driftkostnad;
+    const stressAnn   = loanAmount * (stressRate / 100);
+    const stressRel   = stressAnn <= threshold
+      ? stressAnn * 0.30
+      : threshold * 0.30 + (stressAnn - threshold) * 0.21;
+    const stressAfter = stressTotal - stressRel / 12;
+    document.getElementById('stressRateDisplay').textContent = stressRate.toFixed(1) + '%';
+    document.getElementById('stressMonthlyInterest').textContent = fmt(stressMI);
+    const stressTotalEl = document.getElementById('stressTotalMonthly');
+    stressTotalEl.textContent = fmt(stressTotal);
+    stressTotalEl.style.color = stressRate > 6 ? 'var(--warn)' : '';
+    document.getElementById('stressAfterRelief').textContent = fmt(stressAfter);
 
     // ── Deposit % hint ───────────────────────────────────────
     const depPct = newPrice > 0 ? ((deposit / newPrice) * 100).toFixed(1) : '0';
