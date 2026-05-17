@@ -1,7 +1,7 @@
 ---
 name: coordinator
 description: Coordinates the full feature, fix, or refactor development pipeline. Use when the user requests an end-to-end change.
-tools: Agent(planning, implementation, qa, pr), Read, Write, Bash
+tools: Agent, Read, Write, Bash
 model: opus
 color: orange
 ---
