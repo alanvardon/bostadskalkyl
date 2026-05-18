@@ -1,0 +1,5 @@
+2026-05-17T20:20:50Z coordinator planning-done
+2026-05-17T20:20:50Z coordinator branch-created — feature/stress-slider-granularity
+2026-05-17T20:21:40Z implementation implementation-done — Increase stress slider step from 0.1 to 0.01 and display two decimals
+2026-05-17T20:22:01Z qa qa-passed
+2026-05-17T20:22:38Z pr pr-opened — https://github.com/alanvardon/bostadskalkyl/pull/2
