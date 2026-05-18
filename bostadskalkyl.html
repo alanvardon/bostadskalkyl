@@ -21,8 +21,30 @@
     --accent-light: #4a8a5e;
     --accent-faint: #e8f0eb;
     --warn: #8b4a1a;
+    --warn-light: #b87a2a;
     --warn-faint: #f5ece3;
     --rule: #d8d6ce;
+    --input-focus-bg: #ffffff;
+    --modal-backdrop: rgba(26,26,24,0.45);
+  }
+
+  [data-theme="dark"] {
+    --ink: #e8e6df;
+    --ink-mid: #b0aea6;
+    --ink-soft: #7a7a72;
+    --ink-faint: #4e4e48;
+    --paper: #1c1c1a;
+    --paper-warm: #242420;
+    --paper-card: #212120;
+    --accent: #4a8a5e;
+    --accent-light: #6aaa7e;
+    --accent-faint: #1e2e22;
+    --warn: #c4723a;
+    --warn-light: #d4923a;
+    --warn-faint: #2e2018;
+    --rule: #333330;
+    --input-focus-bg: #2a2a28;
+    --modal-backdrop: rgba(0,0,0,0.65);
   }
 
   html, body { height: 100%; overflow: hidden; }
@@ -123,7 +145,7 @@
     display: none;
     position: fixed;
     inset: 0;
-    background: rgba(26,26,24,0.45);
+    background: var(--modal-backdrop);
     z-index: 100;
     align-items: center;
     justify-content: center;
@@ -243,7 +265,7 @@
     display: none;
     position: fixed;
     inset: 0;
-    background: rgba(26,26,24,0.45);
+    background: var(--modal-backdrop);
     z-index: 200;
     align-items: center;
     justify-content: center;
@@ -401,7 +423,7 @@
 
   input[type="text"]:focus, input[type="number"]:focus {
     border-color: var(--accent-light);
-    background: #fff;
+    background: var(--input-focus-bg);
   }
 
   .input-wrap.has-prefix input { padding-left: 28px; }
@@ -692,7 +714,7 @@
     display: flex;
     position: fixed;
     inset: 0;
-    background: rgba(26,26,24,0.6);
+    background: var(--modal-backdrop);
     z-index: 300;
     align-items: center;
     justify-content: center;
@@ -998,6 +1020,13 @@
     .page-header { padding: 1.5rem; }
     .field-grid.three { grid-template-columns: 1fr 1fr; }
   }
+
+  .theme-toggle-btn {
+    width: 36px;
+    height: 36px;
+    padding: 0;
+    font-size: 18px;
+  }
 </style>
 </head>
 <body>
@@ -1009,6 +1038,7 @@
   </div>
   <div class="header-actions">
     <span id="activeScenarioLabel" class="active-scenario-label" style="display:none"></span>
+    <button id="themeToggleBtn" class="btn btn-ghost theme-toggle-btn" onclick="toggleTheme()" title="Toggle dark mode">&#9728;</button>
     <button class="btn btn-ghost" onclick="openScenariosModal()">Scenarios</button>
     <button class="btn btn-primary" id="saveBtn" onclick="handleSaveClick()">Save</button>
   </div>
@@ -1666,6 +1696,21 @@
     if (cls) el.classList.add(cls);
   }
 
+  // ── Chart colour helper ─────────────────────────────────────────
+  function getChartColors() {
+    const style = getComputedStyle(document.documentElement);
+    const get = v => style.getPropertyValue(v).trim();
+    return {
+      grid:         get('--rule'),
+      tick:         get('--ink-soft'),
+      tooltipBg:    get('--paper-card'),
+      tooltipBorder:get('--rule'),
+      tooltipTitle: get('--ink'),
+      tooltipBody:  get('--ink-mid'),
+      legend:       get('--ink-mid'),
+    };
+  }
+
   // ── State ───────────────────────────────────────────────────────
   let activeScenarioId = null;  // id of loaded scenario, or null
   let isDirty = false;          // unsaved changes since last save/load
@@ -1923,7 +1968,7 @@
     const equity = 100 - ltv;
     const ltvBar = document.getElementById('ltv-bar');
     ltvBar.style.width = Math.min(Math.max(equity, 0), 100) + '%';
-    ltvBar.style.background = equity < 15 ? '#8b4a1a' : equity < 30 ? '#b87a2a' : '#2d5a3d';
+    ltvBar.style.background = equity < 15 ? 'var(--warn)' : equity < 30 ? 'var(--warn-light)' : 'var(--accent)';
 
     // P&L card
     const savingsTotal  = getSavingsTotal();
@@ -2277,11 +2322,13 @@
     const ctx = document.getElementById('amortChart').getContext('2d');
     if (amortChartInstance) amortChartInstance.destroy();
 
+    const cc = getChartColors();
+
     const datasets = [
       {
         label: 'Current mortgage',
         data: currentData,
-        borderColor: '#b87a2a',
+        borderColor: getComputedStyle(document.documentElement).getPropertyValue('--warn-light').trim(),
         backgroundColor: 'rgba(184,122,42,0.06)',
         borderWidth: 2,
         borderDash: [6, 4],
@@ -2293,7 +2340,7 @@
       {
         label: 'New mortgage',
         data: newData,
-        borderColor: '#2d5a3d',
+        borderColor: getComputedStyle(document.documentElement).getPropertyValue('--accent').trim(),
         backgroundColor: 'rgba(45,90,61,0.08)',
         borderWidth: 2.5,
         pointRadius: 0,
@@ -2315,17 +2362,17 @@
             position: 'top',
             labels: {
               font: { family: 'DM Sans', size: 12 },
-              color: '#4a4a46',
+              color: cc.legend,
               boxWidth: 14,
               padding: 16,
             }
           },
           tooltip: {
-            backgroundColor: '#faf9f4',
-            borderColor: '#d8d6ce',
+            backgroundColor: cc.tooltipBg,
+            borderColor: cc.tooltipBorder,
             borderWidth: 1,
-            titleColor: '#1a1a18',
-            bodyColor: '#4a4a46',
+            titleColor: cc.tooltipTitle,
+            bodyColor: cc.tooltipBody,
             titleFont: { family: 'DM Sans', size: 12, weight: '500' },
             bodyFont: { family: 'DM Sans', size: 12 },
             padding: 10,
@@ -2341,16 +2388,16 @@
         },
         scales: {
           x: {
-            title: { display: true, text: 'Years from now', font: { family: 'DM Sans', size: 12 }, color: '#8a8a84' },
-            grid: { color: '#d8d6ce', lineWidth: 0.5 },
-            ticks: { font: { family: 'DM Sans', size: 11 }, color: '#8a8a84', maxTicksLimit: 15 }
+            title: { display: true, text: 'Years from now', font: { family: 'DM Sans', size: 12 }, color: cc.tick },
+            grid: { color: cc.grid, lineWidth: 0.5 },
+            ticks: { font: { family: 'DM Sans', size: 11 }, color: cc.tick, maxTicksLimit: 15 }
           },
           y: {
-            title: { display: true, text: 'Remaining balance (kr)', font: { family: 'DM Sans', size: 12 }, color: '#8a8a84' },
-            grid: { color: '#d8d6ce', lineWidth: 0.5 },
+            title: { display: true, text: 'Remaining balance (kr)', font: { family: 'DM Sans', size: 12 }, color: cc.tick },
+            grid: { color: cc.grid, lineWidth: 0.5 },
             ticks: {
               font: { family: 'DM Sans', size: 11 },
-              color: '#8a8a84',
+              color: cc.tick,
               callback: v => (v / 1000000).toFixed(1) + ' Mkr'
             }
           }
@@ -2594,15 +2641,66 @@
     const backdrop = document.getElementById('chartFullscreen');
     backdrop.classList.add('open');
 
-    // Clone the chart data and options from the existing instance
     const src = amortChartInstance;
     const ctx  = document.getElementById('amortChartFull').getContext('2d');
     if (fullscreenChartInstance) fullscreenChartInstance.destroy();
 
+    const cc = getChartColors();
+
+    // Build fresh options using theme-aware colours rather than cloning frozen hex values
     fullscreenChartInstance = new Chart(ctx, {
       type: src.config.type,
       data: JSON.parse(JSON.stringify(src.config.data)),
-      options: JSON.parse(JSON.stringify(src.config.options))
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: {
+            position: 'top',
+            labels: {
+              font: { family: 'DM Sans', size: 12 },
+              color: cc.legend,
+              boxWidth: 14,
+              padding: 16,
+            }
+          },
+          tooltip: {
+            backgroundColor: cc.tooltipBg,
+            borderColor: cc.tooltipBorder,
+            borderWidth: 1,
+            titleColor: cc.tooltipTitle,
+            bodyColor: cc.tooltipBody,
+            titleFont: { family: 'DM Sans', size: 12, weight: '500' },
+            bodyFont: { family: 'DM Sans', size: 12 },
+            padding: 10,
+            callbacks: {
+              title: items => `Year ${items[0].label}`,
+              label: item => {
+                const v = item.raw;
+                if (v === null || v === undefined) return null;
+                return ` ${item.dataset.label}: ${Math.round(v).toLocaleString('sv-SE')} kr`;
+              }
+            }
+          }
+        },
+        scales: {
+          x: {
+            title: { display: true, text: 'Years from now', font: { family: 'DM Sans', size: 12 }, color: cc.tick },
+            grid: { color: cc.grid, lineWidth: 0.5 },
+            ticks: { font: { family: 'DM Sans', size: 11 }, color: cc.tick, maxTicksLimit: 15 }
+          },
+          y: {
+            title: { display: true, text: 'Remaining balance (kr)', font: { family: 'DM Sans', size: 12 }, color: cc.tick },
+            grid: { color: cc.grid, lineWidth: 0.5 },
+            ticks: {
+              font: { family: 'DM Sans', size: 11 },
+              color: cc.tick,
+              callback: v => (v / 1000000).toFixed(1) + ' Mkr'
+            }
+          }
+        }
+      }
     });
   }
 
@@ -2707,7 +2805,27 @@
 
   loadSavingsItems();
 
+  // ── Theme ──────────────────────────────────────────────────────
+  function initTheme() {
+    const stored = localStorage.getItem('bostadskalkyl_theme');
+    const theme = stored === 'dark' ? 'dark' : 'light';
+    document.documentElement.dataset.theme = theme;
+    const btn = document.getElementById('themeToggleBtn');
+    if (btn) btn.textContent = theme === 'dark' ? '☾' : '☀';
+  }
+
+  function toggleTheme() {
+    const current = document.documentElement.dataset.theme;
+    const next = current === 'dark' ? 'light' : 'dark';
+    document.documentElement.dataset.theme = next;
+    localStorage.setItem('bostadskalkyl_theme', next);
+    const btn = document.getElementById('themeToggleBtn');
+    if (btn) btn.textContent = next === 'dark' ? '☾' : '☀';
+    if (amortChartInstance) renderAmortChart();
+  }
+
   // ── Boot ───────────────────────────────────────────────────────
+  initTheme();
   loadDriftItems();
   loadSession();
   if (!localStorage.getItem(SESSION_KEY)) calc();
