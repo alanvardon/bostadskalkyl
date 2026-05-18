@@ -34,8 +34,10 @@
       "Bash(git branch --list *)",
       "Bash(git status --porcelain)",
       "Bash(git branch --show-current)",
-      "Bash(mkdir -p .claude/workflow/**)",
-      "Write(.claude/workflow/**)"
+      "Bash(mkdir -p .workflow/**)",
+      "Write(.workflow/**)",
+      "Bash(echo * >> .workflow/**)",
+      "Bash(test -d .workflow/* && echo *)"
     ],
     "deny": [
       "Read(**/.env*)",

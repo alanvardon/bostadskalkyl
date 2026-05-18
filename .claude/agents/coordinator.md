@@ -35,8 +35,10 @@ If no sentinel matches, stop and report `WORKFLOW ERROR: <agent> returned no sen
 ## Abort handling
 
 If the workflow halts at any point between steps 2 and 5:
-1. Append a halt event to `progress.log`: `$(date -u +%Y-%m-%dT%H:%M:%SZ) coordinator halt — <reason>` (specific abort paths also carry the halt append instruction — use whichever is more detailed)
-2. If `state.json` exists, `Read` it, set `stage: "aborted"`, `Write` back the full object
+1. Append two lines to `progress.log`:
+   - `$(date -u +%Y-%m-%dT%H:%M:%SZ) coordinator halt — <reason>`
+   - `$(date -u +%Y-%m-%dT%H:%M:%SZ) coordinator stage — aborted`
+2. If `state.json` exists, `Read` it, set `stage: "aborted"`, `Write` back the full pretty-printed object.
 3. Report to the user, always including:
    - The exact failure sentinel and any referenced file path
    - The current branch name
@@ -44,21 +46,87 @@ If the workflow halts at any point between steps 2 and 5:
 
 ## Workflow state on disk
 
-Once the branch exists (step 2), all workflow state lives under `.claude/workflow/<branch>/`. The coordinator owns three of these files; subagents own the rest.
+Once the branch exists (step 2), all workflow state lives under `.workflow/<branch>/`.
+
+`progress.log` is the **source of truth** — an append-only event log that captures every sentinel, stage transition, halt, and attempt. `state.json` is a **projection** of that log: a small, easily-queryable view of the current state. If `state.json` is ever missing or suspect, it can be rebuilt by replaying `progress.log` from the top.
+
+State-changing events must update `state.json` immediately after the corresponding log line is appended, so the projection stays consistent:
+- Every `coordinator stage — <value>` log line ⇒ update `state.json.stage` to `<value>`.
+- Every `coordinator attempt — N of 3` log line ⇒ `state.json.attempt` already equals `N` (the increment happened just before the append).
+- Sentinel-derived field writes (`summary`, `pr_url`) ⇒ written alongside the corresponding `coordinator stage — …` transition.
+Other log events (`invoked`, `confirmed`, `emitted`, `halt`, `success`) are pure history and do not change `state.json`.
 
 | File | Owner | Purpose |
 |------|-------|---------|
 | `plan.md` | coordinator (step 2) | The approved plan. Read by implementation and qa in place of an inline `PLAN:` payload. |
-| `state.json` | coordinator (each step) | Orchestration state. Initial fields (step 2): `{branch, title, type, stage, attempt}`. Fields added at step 3: `summary, test_plan_file`. Field added at step 5: `pr_url`. Single source of truth for `attempt`. |
-| `progress.log` | coordinator (each step) | Append-only one-line events: `<UTC-iso> <agent> <stage> — <detail>`. Stage names match `state.json` stage values. |
-| `test-plan.md` | implementation | Markdown checklist for the PR body. Canonical path: `.claude/workflow/<branch>/test-plan.md`. |
+| `state.json` | coordinator (each step) | Orchestration state — projection of `progress.log`. Initial fields (step 2): `{branch, title, type, stage, attempt}`. Field added at step 3: `summary`. Field added at step 5: `pr_url`. Single source of truth for `attempt`. |
+| `progress.log` | coordinator + each subagent | Append-only event log. Source of truth. Line format defined in the Logging contract below. |
+| `test-plan.md` | implementation | Markdown checklist for the PR body. Canonical path: `.workflow/<branch>/test-plan.md`. |
 | `qa-failures.md` | qa | Failure report on QA fail. |
+| `syntax-check.js` | qa | Transient JS extracted from `index.html` for `node --check`. Safe to delete after qa completes; persists across attempts within one workflow. |
 
-`stage` values: `planning-done`, `implementation-done`, `qa-passed`, `qa-failed`, `pr-opened`, `aborted` (set when any halt path is taken — for future resumability).
+`stage` values: `planning-done`, `branch-created`, `implementation-done`, `qa-passed`, `qa-failed`, `pr-opened`, `aborted` (set when any halt path is taken — for future resumability).
 
-**To update `state.json`:** `Read` the current file, modify only the listed fields, `Write` back the **full object**. Never write a partial object — you will silently drop fields and break subsequent reads.
+**To update `state.json`:**
+- `Read` the current file, modify only the listed fields, `Write` back the **full object**. Never write a partial object — you will silently drop fields and break subsequent reads.
+- Always write `state.json` as **pretty-printed JSON**: 2-space indent, one field per line, trailing newline. Never emit a minified single-line object.
+
+Pretty-printed example (after step 5):
+```json
+{
+  "branch": "feature/example",
+  "title": "Example title",
+  "type": "feature",
+  "stage": "pr-opened",
+  "attempt": 1,
+  "summary": "One-line description of the change",
+  "pr_url": "https://github.com/owner/repo/pull/123"
+}
+```
 
 When a step description below tells you to "update state" or "append to progress.log", do so via `Write` and `Bash` — the coordinator has these tools for exactly this purpose. Always use ISO-8601 UTC timestamps: `$(date -u +%Y-%m-%dT%H:%M:%SZ)`.
+
+## Logging contract
+
+Every event in the workflow produces at least one line in `progress.log`. The format is:
+
+```
+<UTC-iso> <writer> <event> [— <detail>]
+```
+
+| Field | Allowed values |
+|-------|----------------|
+| `writer` | `coordinator`, `planning`, `pr`, `implementation`, `qa` |
+| `event` | `invoked`, `emitted`, `confirmed`, `stage`, `attempt`, `halt`, `success` |
+| `detail` | Free text. For `emitted` lines, the full sentinel text. |
+
+Always append with `Bash`:
+```bash
+echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) coordinator stage — qa-passed" >> ".workflow/<branch>/progress.log"
+```
+
+Use `>>` (append) — never `Write` to `progress.log`, which would overwrite.
+
+**Dual-write rule.** Each subagent writes its own `<agent> invoked` and `<agent> emitted` entries; the coordinator writes `confirmed`, `stage`, `halt`, `attempt`, and `success` entries when it parses or acts on those sentinels. Where the table below lists *(none)* for an agent line, the coordinator handles it solo (typically pre-branch events before the log file exists).
+
+### Sentinel → log mapping
+
+| Step | Sentinel | Agent log line | Coordinator log line(s) |
+|------|----------|----------------|--------------------------|
+| 1 | `PLAN COMPLETE: title=X, type=Y` | *(none — no log file yet)* | `coordinator confirmed — planning PLAN COMPLETE: title=X, type=Y` *(written at step 2 after dir creation)* |
+| 2 | `BRANCH RESULT: CREATED — <name>` | *(none — log file being created)* | `coordinator confirmed — pr BRANCH RESULT: CREATED — <name>`, then `coordinator stage — branch-created` |
+| 2 | `BRANCH RESULT: EXISTS/DIRTY/CANNOT_REACH_MAIN — …` | *(none)* | *(none — no log file)*. Report to user only. |
+| 3 | `SUMMARY: <text>` | `implementation emitted — SUMMARY: <text>` | `coordinator confirmed — implementation SUMMARY captured`, then `coordinator stage — implementation-done` |
+| 3 | `REPLAN NEEDED: <reason>` | `implementation emitted — REPLAN NEEDED: <reason>` | `coordinator halt — REPLAN NEEDED: <reason>`, then `coordinator stage — aborted` |
+| 4 | `QA RESULT: PASS` | `qa emitted — QA RESULT: PASS` | `coordinator confirmed — qa PASS`, then `coordinator stage — qa-passed` |
+| 4 | `QA RESULT: FAIL` | `qa emitted — QA RESULT: FAIL` | `coordinator confirmed — qa FAIL — .workflow/<branch>/qa-failures.md`, then `coordinator stage — qa-failed` |
+| 4 (loop) | *(internal — coordinator increments attempt)* | *(none)* | `coordinator attempt — N of 3` *(before invoking fix mode)* |
+| 5 | `PR_URL: <url>` | `pr emitted — PR_URL: <url>` | `coordinator confirmed — pr PR_URL: <url>`, then `coordinator stage — pr-opened` |
+| 5 | `COMMIT RESULT: WRONG_BRANCH/NO_CHANGES` | `pr emitted — COMMIT RESULT: <reason>` | `coordinator halt — <reason>`, then `coordinator stage — aborted` |
+| 6 | `WORKFLOW RESULT: SUCCESS — <url>` | *(none)* | `coordinator success — <url>` |
+| Any | Missing sentinel | *(none)* | `coordinator halt — <agent> returned no sentinel`, then `coordinator stage — aborted` |
+
+The step descriptions below reference this table rather than restating the literal `echo` for each event.
 
 ## Workflow
 
@@ -88,62 +156,83 @@ Capture the branch name and handle each possible sentinel:
 - No sentinel present — stop and report `WORKFLOW ERROR: pr agent (create-branch) returned no sentinel`
 
 **State initialization (after CREATED):**
-- Check whether `.claude/workflow/<branch>/` already exists (Bash: `[ -d ".claude/workflow/<branch>" ] && echo EXISTS`). If it exists, stop and report: `WORKFLOW ERROR: workflow state already exists for branch <branch> — delete .claude/workflow/<branch>/ to proceed`. Do not proceed.
-- `mkdir -p .claude/workflow/<branch>` (Bash)
-- Write the full approved plan from step 1 to `.claude/workflow/<branch>/plan.md` (Write)
-- Write `.claude/workflow/<branch>/state.json` with `{"branch":"<branch>","title":"<title>","type":"<type>","stage":"planning-done","attempt":0}` — `summary`, `test_plan_file`, and `pr_url` are not present yet; `summary` and `test_plan_file` are added at step 3, `pr_url` at step 5 (Write)
-- Append a planning-done entry to progress.log (Bash): `echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) coordinator planning-done" >> ".claude/workflow/<branch>/progress.log"`
+- Check whether `.workflow/<branch>/` already exists (Bash: `test -d ".workflow/<branch>" && echo EXISTS`). If the output is `EXISTS`, stop and report: `WORKFLOW ERROR: workflow state already exists for branch <branch> — delete .workflow/<branch>/ to proceed`. Do not proceed.
+- `mkdir -p .workflow/<branch>` (Bash)
+- Write the full approved plan from step 1 to `.workflow/<branch>/plan.md` (Write).
+- Write `.workflow/<branch>/state.json` as pretty-printed JSON with initial fields (`summary` is added at step 3, `pr_url` at step 5):
+  ```json
+  {
+    "branch": "<branch>",
+    "title": "<title>",
+    "type": "<type>",
+    "stage": "planning-done",
+    "attempt": 0
+  }
+  ```
+- Append step-1 log lines per the Logging contract table:
+  - `coordinator confirmed — planning PLAN COMPLETE: title=<title>, type=<type>`
+  - `coordinator stage — planning-done`
+- Update `state.json` (`stage: "branch-created"`) and append step-2 log lines:
+  - `coordinator confirmed — pr BRANCH RESULT: CREATED — <branch>`
+  - `coordinator stage — branch-created`
 
 ### 3. Implement
 
 **Before invoking:** read `state.json`, set `attempt: 1`, write back.
 
 Derive the canonical paths for this branch:
-- Plan file: `.claude/workflow/<branch>/plan.md`
-- Test plan file: `.claude/workflow/<branch>/test-plan.md`
+- Plan file: `.workflow/<branch>/plan.md`
+- Test plan file: `.workflow/<branch>/test-plan.md`
+- Progress log file: `.workflow/<branch>/progress.log`
 
 Invoke the `implementation` agent. Pass input in this exact format:
 ```
 MODE: implement
-PLAN_FILE: .claude/workflow/<branch>/plan.md
-TEST_PLAN_FILE: .claude/workflow/<branch>/test-plan.md
+PLAN_FILE: .workflow/<branch>/plan.md
+TEST_PLAN_FILE: .workflow/<branch>/test-plan.md
+PROGRESS_LOG_FILE: .workflow/<branch>/progress.log
 ```
 
 Capture the sentinel emitted on success:
 - `SUMMARY: <text>` — one-line description of changes (used for commit body)
 
-Handle each possible response:
-- `REPLAN NEEDED: <reason>` — append `$(date -u +%Y-%m-%dT%H:%M:%SZ) coordinator halt — REPLAN NEEDED: <reason>` to `progress.log`; stop and report to the user; the plan needs revision
-- Missing `SUMMARY:` line — stop and report `WORKFLOW ERROR: implementation returned no SUMMARY sentinel`
+Handle each possible response per the Logging contract table:
+- `REPLAN NEEDED: <reason>` — follow the abort handling path (writes `coordinator halt — REPLAN NEEDED: <reason>` and `coordinator stage — aborted`); stop and report to the user; the plan needs revision.
+- Missing `SUMMARY:` line — follow the abort handling path with `<agent>=implementation`; stop and report `WORKFLOW ERROR: implementation returned no SUMMARY sentinel`.
 
-**After success:** update `state.json` (`stage: "implementation-done"`, `summary: <text>`, `test_plan_file: ".claude/workflow/<branch>/test-plan.md"`). Append to `progress.log`: `$(date -u +%Y-%m-%dT%H:%M:%SZ) implementation implementation-done — <summary>`.
+**After success:** update `state.json` (`stage: "implementation-done"`, `summary: <text>`). Append per the Logging contract table:
+- `coordinator confirmed — implementation SUMMARY captured`
+- `coordinator stage — implementation-done`
 
 ### 4. QA
 Derive the canonical paths for this branch (if not already derived in step 3):
-- Plan file: `.claude/workflow/<branch>/plan.md`
-- QA failures file: `.claude/workflow/<branch>/qa-failures.md`
+- Plan file: `.workflow/<branch>/plan.md`
+- QA failures file: `.workflow/<branch>/qa-failures.md`
+- Progress log file: `.workflow/<branch>/progress.log`
 
 Invoke the `qa` agent. Pass input in this exact format:
 ```
-PLAN_FILE: .claude/workflow/<branch>/plan.md
-QA_FAILURES_FILE: .claude/workflow/<branch>/qa-failures.md
+PLAN_FILE: .workflow/<branch>/plan.md
+QA_FAILURES_FILE: .workflow/<branch>/qa-failures.md
+PROGRESS_LOG_FILE: .workflow/<branch>/progress.log
 ```
 
-- `QA RESULT: PASS` → update `state.json` (`stage: "qa-passed"`), append `$(date -u +%Y-%m-%dT%H:%M:%SZ) qa qa-passed` to `progress.log`, proceed to step 5
-- `QA RESULT: FAIL` → update `state.json` (`stage: "qa-failed"`), append `$(date -u +%Y-%m-%dT%H:%M:%SZ) qa qa-failed — .claude/workflow/<branch>/qa-failures.md` to `progress.log`, enter the fix loop below
-- No `QA RESULT:` line present → append `$(date -u +%Y-%m-%dT%H:%M:%SZ) coordinator halt — qa returned no sentinel` to `progress.log`; stop and report `WORKFLOW ERROR: qa agent returned no sentinel`
+Handle each possible response per the Logging contract table:
+- `QA RESULT: PASS` → update `state.json` (`stage: "qa-passed"`); append `coordinator confirmed — qa PASS` and `coordinator stage — qa-passed`; proceed to step 5.
+- `QA RESULT: FAIL` → update `state.json` (`stage: "qa-failed"`); append `coordinator confirmed — qa FAIL — .workflow/<branch>/qa-failures.md` and `coordinator stage — qa-failed`; enter the fix loop below.
+- No `QA RESULT:` line present → follow the abort handling path (`coordinator halt — qa returned no sentinel`); stop and report `WORKFLOW ERROR: qa agent returned no sentinel`.
 
 #### Fix loop — attempt counter lives in state.json
 
-The attempt counter is the `attempt` field in `.claude/workflow/<branch>/state.json`. Never count attempts in conversation memory — always read from disk.
+The attempt counter is the `attempt` field in `.workflow/<branch>/state.json`. Never count attempts in conversation memory — always read from disk.
 
 On a QA FAIL:
 
 1. **Read** `state.json` and inspect `attempt`.
-2. If `attempt >= 3`: append `$(date -u +%Y-%m-%dT%H:%M:%SZ) coordinator halt — attempt cap reached` to `progress.log`; **STOP**. Do not invoke fix-mode. Read `.claude/workflow/<branch>/qa-failures.md` and report its contents to the user.
-3. Otherwise: increment `attempt` by 1, write `state.json` back (full object), then state aloud: `Starting Attempt N of 3` (where N is the new value).
+2. If `attempt >= 3`: follow the abort handling path with reason `attempt cap reached`; **STOP**. Do not invoke fix-mode. Read `.workflow/<branch>/qa-failures.md` and report its contents to the user.
+3. Otherwise: increment `attempt` by 1, write `state.json` back (full pretty-printed object). Append `coordinator attempt — N of 3` (where N is the new value) per the Logging contract table. Then state aloud: `Starting Attempt N of 3`.
 4. Invoke implementation in fix-mode with the input below.
-5. On success, update `state.json` (`stage: "implementation-done"`, overwrite `summary` with the freshly emitted value; `test_plan_file` stays `.claude/workflow/<branch>/test-plan.md`). Append `$(date -u +%Y-%m-%dT%H:%M:%SZ) implementation implementation-done — <summary>` to `progress.log`.
+5. On success, update `state.json` (`stage: "implementation-done"`, overwrite `summary` with the freshly emitted value). Append `coordinator confirmed — implementation SUMMARY captured` and `coordinator stage — implementation-done`.
 6. Re-run step 4 (QA) with the same input format.
 
 | Attempt | What runs |
@@ -156,31 +245,36 @@ On a QA FAIL:
 Each fix-mode invocation uses this input:
 ```
 MODE: fix
-QA_FAILURES_FILE: .claude/workflow/<branch>/qa-failures.md
-PLAN_FILE: .claude/workflow/<branch>/plan.md
-TEST_PLAN_FILE: .claude/workflow/<branch>/test-plan.md
+QA_FAILURES_FILE: .workflow/<branch>/qa-failures.md
+PLAN_FILE: .workflow/<branch>/plan.md
+TEST_PLAN_FILE: .workflow/<branch>/test-plan.md
+PROGRESS_LOG_FILE: .workflow/<branch>/progress.log
 ```
 
-If fix-mode returns `REPLAN NEEDED: <reason>`, append `$(date -u +%Y-%m-%dT%H:%M:%SZ) coordinator halt — REPLAN NEEDED: <reason>` to `progress.log`; stop immediately and report to the user (do not run QA again).
+If fix-mode returns `REPLAN NEEDED: <reason>`, follow the abort handling path; stop immediately and report to the user (do not run QA again).
 
 ### 5. Commit and PR
-Before invoking, `Read` `state.json` to get the latest field values. The `test_plan_file` is always the canonical path `.claude/workflow/<branch>/test-plan.md` — use this directly rather than reading from state.json. Pass input in this exact format:
+Before invoking, `Read` `state.json` to get the latest field values. Pass input in this exact format:
 ```
 MODE: commit-and-pr
 BRANCH: <state.json.branch>
 TITLE: <state.json.title>
 SUMMARY: <state.json.summary>
-TEST_PLAN_FILE: .claude/workflow/<branch>/test-plan.md
+TEST_PLAN_FILE: .workflow/<branch>/test-plan.md
+PROGRESS_LOG_FILE: .workflow/<branch>/progress.log
 ```
 
-Handle each possible response:
-- `PR_URL: <url>` → `Read` `state.json`, set `stage: "pr-opened"`, add `pr_url: "<url>"`, `Write` back full object; append `$(date -u +%Y-%m-%dT%H:%M:%SZ) pr pr-opened — <url>` to `progress.log`; capture `<url>` for step 6; proceed
-- `COMMIT RESULT: WRONG_BRANCH — expected <a>, got <b>` → append `$(date -u +%Y-%m-%dT%H:%M:%SZ) coordinator halt — WRONG_BRANCH` to `progress.log`; stop and report to the user; git state is unexpected
-- `COMMIT RESULT: NO_CHANGES` → append `$(date -u +%Y-%m-%dT%H:%M:%SZ) coordinator halt — NO_CHANGES` to `progress.log`; stop and report to the user; the branch has no diff to commit
-- No `PR_URL:` sentinel → append `$(date -u +%Y-%m-%dT%H:%M:%SZ) coordinator halt — pr returned no PR_URL sentinel` to `progress.log`; stop and report `WORKFLOW ERROR: pr agent (commit-and-PR) returned no PR_URL sentinel`
+Handle each possible response per the Logging contract table:
+- `PR_URL: <url>` → `Read` `state.json`, set `stage: "pr-opened"`, add `pr_url: "<url>"`, `Write` back full pretty-printed object. Append `coordinator confirmed — pr PR_URL: <url>` and `coordinator stage — pr-opened`. Capture `<url>` for step 6; proceed.
+- `COMMIT RESULT: WRONG_BRANCH — expected <a>, got <b>` → follow the abort handling path with reason `WRONG_BRANCH — expected <a>, got <b>`; stop and report to the user; git state is unexpected.
+- `COMMIT RESULT: NO_CHANGES` → follow the abort handling path with reason `NO_CHANGES`; stop and report to the user; the branch has no diff to commit.
+- No `PR_URL:` sentinel → follow the abort handling path with reason `pr returned no PR_URL sentinel`; stop and report `WORKFLOW ERROR: pr agent (commit-and-PR) returned no PR_URL sentinel`.
 
 ### 6. Done
-Emit a final line in this exact format:
+Append the final log line per the Logging contract table:
+- `coordinator success — <pr-url>`
+
+Emit a final line to the user in this exact format:
 ```
 WORKFLOW RESULT: SUCCESS — <pr-url>
 ```

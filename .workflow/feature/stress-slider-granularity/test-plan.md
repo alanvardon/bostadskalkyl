@@ -1,0 +1,5 @@
+- [ ] Open `bostadskalkyl.html` in a browser and scroll to Section 4 stress test
+- [ ] Confirm the stress slider can be moved in 0.01% increments (use arrow keys or mouse to fine-tune)
+- [ ] Confirm the displayed rate shows two decimals (e.g. `3.50%`, `3.51%`, `3.52%`)
+- [ ] Confirm slider bounds and value still read 0.5% – 12% with default 3.5%
+- [ ] Confirm dependent stress test outputs (monthly interest, total monthly, after ränteavdrag) update smoothly with finer movements

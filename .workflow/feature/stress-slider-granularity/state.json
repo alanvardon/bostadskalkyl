@@ -1,0 +1,1 @@
+{"branch":"feature/stress-slider-granularity","title":"Increase stress slider granularity","type":"refactor","stage":"pr-opened","attempt":1,"summary":"Increase stress slider step from 0.1 to 0.01 and display two decimals","test_plan_file":".claude/workflow/feature/stress-slider-granularity/test-plan.md","pr_url":"https://github.com/alanvardon/bostadskalkyl/pull/2"}

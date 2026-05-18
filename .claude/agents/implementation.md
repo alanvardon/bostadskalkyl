@@ -17,8 +17,9 @@ The coordinator passes input in a structured format. Parse the `MODE:` line to d
 MODE: implement
 PLAN_FILE: <path-to-plan-file>
 TEST_PLAN_FILE: <path-for-test-plan>
+PROGRESS_LOG_FILE: <path-to-progress.log>
 ```
-Read the plan from the file at `PLAN_FILE`. Write the test plan to the path at `TEST_PLAN_FILE` — do not derive this path yourself. Execute every step in the plan's Implementation order, in order. On completion emit `SUMMARY:` (see "When done").
+Read the plan from the file at `PLAN_FILE`. Write the test plan to the path at `TEST_PLAN_FILE` — do not derive this path yourself. Append log entries to `PROGRESS_LOG_FILE` per the Logging section below. Execute every step in the plan's Implementation order, in order. On completion emit `SUMMARY:` (see "When done").
 
 **Fix mode** input:
 ```
@@ -26,8 +27,9 @@ MODE: fix
 QA_FAILURES_FILE: <qa-failures-file-path>
 PLAN_FILE: <path-to-plan-file>
 TEST_PLAN_FILE: <path-for-test-plan>
+PROGRESS_LOG_FILE: <path-to-progress.log>
 ```
-Read both the plan (`PLAN_FILE`) and the failures file (`QA_FAILURES_FILE`), then apply only the targeted fixes needed to address each ✗ FAIL item. Write an updated test plan to `TEST_PLAN_FILE`. Do not re-do work that already passed. Do not deviate from the plan's intent. On completion re-emit `SUMMARY:`.
+Read both the plan (`PLAN_FILE`) and the failures file (`QA_FAILURES_FILE`), then apply only the targeted fixes needed to address each ✗ FAIL item. Write an updated test plan to `TEST_PLAN_FILE`. Append log entries to `PROGRESS_LOG_FILE` per the Logging section below. Do not re-do work that already passed. Do not deviate from the plan's intent. On completion re-emit `SUMMARY:`.
 
 ## Sentinel format
 
@@ -43,15 +45,34 @@ If after reading CLAUDE.md and the plan you determine the plan is unworkable, in
 
 Use this sparingly — only when execution is genuinely unsafe, not when you simply prefer a different approach.
 
+## Logging
+
+Write two lines to `PROGRESS_LOG_FILE` during your run, using Bash with `>>` (append — never `Write`, which would overwrite):
+
+1. **At invocation, before reading anything**, append:
+   ```bash
+   echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) implementation invoked — MODE: <mode>" >> "$PROGRESS_LOG_FILE"
+   ```
+   where `<mode>` is `implement` or `fix`.
+
+2. **Immediately before emitting `SUMMARY:` or `REPLAN NEEDED:`** in the final response, append:
+   ```bash
+   echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) implementation emitted — <full sentinel text>" >> "$PROGRESS_LOG_FILE"
+   ```
+   The sentinel text must match exactly what you emit on the next line.
+
+The coordinator writes its own `confirmed`, `stage`, and `halt` entries after parsing your output — you do not need to write those.
+
 ## When invoked
 
-1. Read CLAUDE.md
-2. Read the approved plan from the file at `PLAN_FILE:` carefully
-3. In Fix mode (`MODE: fix`), read the file at `QA_FAILURES_FILE:` carefully
-4. Verify the plan is workable (see escape hatch above)
-5. Execute the work (full plan in Implement mode, targeted fixes in Fix mode)
-6. Write the test plan to `.claude/workflow/<branch>/test-plan.md` (see "When done")
-7. Stop — do not commit, push, or create a branch
+1. Append the `invoked` log line to `PROGRESS_LOG_FILE` (see Logging above)
+2. Read CLAUDE.md
+3. Read the approved plan from the file at `PLAN_FILE:` carefully
+4. In Fix mode (`MODE: fix`), read the file at `QA_FAILURES_FILE:` carefully
+5. Verify the plan is workable (see escape hatch above)
+6. Execute the work (full plan in Implement mode, targeted fixes in Fix mode)
+7. Write the test plan to the path at `TEST_PLAN_FILE:` (see "When done")
+8. Stop — do not commit, push, or create a branch
 
 ## Rules you must never break
 
@@ -95,10 +116,12 @@ Use this sparingly — only when execution is genuinely unsafe, not when you sim
    - [ ] Verify calc() still updates summary panel on every input change
    ```
 
-3. Emit the sentinel on its own line in this exact format:
+3. Append the `emitted` log line to `PROGRESS_LOG_FILE` (see Logging section).
+
+4. Emit the sentinel on its own line in this exact format:
    ```
    SUMMARY: <one-line description of what changed>
    ```
    This is consumed by the coordinator and passed to the pr agent.
 
-4. State clearly: "Implementation complete. Ready for QA."
+5. State clearly: "Implementation complete. Ready for QA."
