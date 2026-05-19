@@ -1354,7 +1354,7 @@
           <span class="stress-slider-rate" id="stressRateDisplay">3.5%</span>
         </div>
         <input type="range" id="stressSlider" class="stress-slider-input"
-               min="0.5" max="12" step="0.1" value="3.5" oninput="calc()">
+               min="0.5" max="12" step="0.01" value="3.5" oninput="calc()">
         <div class="stress-slider-bounds">
           <span>0.5%</span>
           <span>12%</span>
@@ -1880,7 +1880,7 @@
       ? stressAnn * 0.30
       : threshold * 0.30 + (stressAnn - threshold) * 0.21;
     const stressAfter = stressTotal - stressRel / 12;
-    document.getElementById('stressRateDisplay').textContent = stressRate.toFixed(1) + '%';
+    document.getElementById('stressRateDisplay').textContent = stressRate.toFixed(2) + '%';
     document.getElementById('stressMonthlyInterest').textContent = fmt(stressMI);
     const stressTotalEl = document.getElementById('stressTotalMonthly');
     stressTotalEl.textContent = fmt(stressTotal);
