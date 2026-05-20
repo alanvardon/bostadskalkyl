@@ -10,26 +10,26 @@ You coordinate the full feature, fix, and refactor development workflow. Invoke 
 
 ## Sentinel contract
 
-Every subagent returns a structured sentinel. Match exactly one row before proceeding.
+Every step produces a structured sentinel. Match exactly one row before proceeding.
 If no sentinel matches, stop and report `WORKFLOW ERROR: <agent> returned no sentinel`.
 
 | Step | Agent | Sentinel | Action |
 |------|-------|----------|--------|
 | 1 | planning | `PLAN COMPLETE: title=<x>, type=<y>` | Capture title and type; proceed to user approval |
 | 1 | planning | missing `PLAN COMPLETE:` | Stop; report `WORKFLOW ERROR: planning returned no sentinel` |
-| 2 | pr (Mode 1) | `BRANCH RESULT: CREATED — <name>` | Store name; proceed |
-| 2 | pr (Mode 1) | `BRANCH RESULT: EXISTS — <name>` | Stop; report to user |
-| 2 | pr (Mode 1) | `BRANCH RESULT: DIRTY — <files>` | Stop; report to user |
-| 2 | pr (Mode 1) | `BRANCH RESULT: CANNOT_REACH_MAIN — <reason>` | Stop; report to user |
+| 2 | coordinator (create-feature-branch skill) | `BRANCH RESULT: CREATED — <name>` | Store name; proceed |
+| 2 | coordinator (create-feature-branch skill) | `BRANCH RESULT: EXISTS — <name>` | Stop; report to user |
+| 2 | coordinator (create-feature-branch skill) | `BRANCH RESULT: DIRTY — <files>` | Stop; report to user |
+| 2 | coordinator (create-feature-branch skill) | `BRANCH RESULT: CANNOT_REACH_MAIN — <reason>` | Stop; report to user |
 | 3 | implementation | `SUMMARY: <text>` | Capture for step 5 |
 | 3 | implementation | `REPLAN NEEDED: <reason>` | Log halt; stop; report to user |
 | 3 | implementation | missing `SUMMARY:` | Stop; report `WORKFLOW ERROR: implementation returned no SUMMARY sentinel` |
 | 4 | qa | `QA RESULT: PASS` | Proceed |
 | 4 | qa | `QA RESULT: FAIL` | Invoke fix mode with canonical failures path; retry (max 3 total) |
-| 5 | pr (Mode 2) | `PR_URL: <url>` | Capture URL; proceed to step 6 |
-| 5 | pr (Mode 2) | `COMMIT RESULT: WRONG_BRANCH — <reason>` | Stop; report to user |
-| 5 | pr (Mode 2) | `COMMIT RESULT: NO_CHANGES` | Stop; report to user |
-| 5 | pr (Mode 2) | missing `PR_URL:` | Stop; report `WORKFLOW ERROR: pr agent (commit-and-PR) returned no PR_URL sentinel` |
+| 5 | coordinator (commit-and-open-pr skill) | `PR_URL: <url>` | Capture URL; proceed to step 6 |
+| 5 | coordinator (commit-and-open-pr skill) | `COMMIT RESULT: WRONG_BRANCH — <reason>` | Stop; report to user |
+| 5 | coordinator (commit-and-open-pr skill) | `COMMIT RESULT: NO_CHANGES` | Stop; report to user |
+| 5 | coordinator (commit-and-open-pr skill) | missing `PR_URL:` | Stop; report `WORKFLOW ERROR: commit-and-open-pr skill returned no PR_URL sentinel` |
 | 6 | coordinator | `WORKFLOW RESULT: SUCCESS — <url>` | Emit, then report URL to user |
 
 ## Abort handling
@@ -96,7 +96,7 @@ Every event in the workflow produces at least one line in `progress.log`. The fo
 
 | Field | Allowed values |
 |-------|----------------|
-| `writer` | `coordinator`, `planning`, `pr`, `implementation`, `qa` |
+| `writer` | `coordinator`, `planning`, `implementation`, `qa` |
 | `event` | `invoked`, `emitted`, `confirmed`, `stage`, `attempt`, `halt`, `success` |
 | `detail` | Free text. For `emitted` lines, the full sentinel text. |
 
@@ -107,22 +107,22 @@ echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) coordinator stage — qa-passed" >> ".workf
 
 Use `>>` (append) — never `Write` to `progress.log`, which would overwrite.
 
-**Dual-write rule.** Each subagent writes its own `<agent> invoked` and `<agent> emitted` entries; the coordinator writes `confirmed`, `stage`, `halt`, `attempt`, and `success` entries when it parses or acts on those sentinels. Where the table below lists *(none)* for an agent line, the coordinator handles it solo (typically pre-branch events before the log file exists).
+**Dual-write rule.** Each subagent writes its own `<agent> invoked` and `<agent> emitted` entries; the coordinator writes `confirmed`, `stage`, `halt`, `attempt`, and `success` entries when it parses or acts on those sentinels. Where the table below lists *(none)* for an agent line, the coordinator handles it solo — either because no log file exists yet (pre-branch), or because the step is executed inline via a skill with no sub-agent output stream.
 
 ### Sentinel → log mapping
 
 | Step | Sentinel | Agent log line | Coordinator log line(s) |
 |------|----------|----------------|--------------------------|
 | 1 | `PLAN COMPLETE: title=X, type=Y` | *(none — no log file yet)* | `coordinator confirmed — planning PLAN COMPLETE: title=X, type=Y` *(written at step 2 after dir creation)* |
-| 2 | `BRANCH RESULT: CREATED — <name>` | *(none — log file being created)* | `coordinator confirmed — pr BRANCH RESULT: CREATED — <name>`, then `coordinator stage — branch-created` |
+| 2 | `BRANCH RESULT: CREATED — <name>` | *(none — coordinator runs inline)* | `coordinator confirmed — create-feature-branch BRANCH RESULT: CREATED — <name>`, then `coordinator stage — branch-created` |
 | 2 | `BRANCH RESULT: EXISTS/DIRTY/CANNOT_REACH_MAIN — …` | *(none)* | *(none — no log file)*. Report to user only. |
 | 3 | `SUMMARY: <text>` | `implementation emitted — SUMMARY: <text>` | `coordinator confirmed — implementation SUMMARY captured`, then `coordinator stage — implementation-done` |
 | 3 | `REPLAN NEEDED: <reason>` | `implementation emitted — REPLAN NEEDED: <reason>` | `coordinator halt — REPLAN NEEDED: <reason>`, then `coordinator stage — aborted` |
 | 4 | `QA RESULT: PASS` | `qa emitted — QA RESULT: PASS` | `coordinator confirmed — qa PASS`, then `coordinator stage — qa-passed` |
 | 4 | `QA RESULT: FAIL` | `qa emitted — QA RESULT: FAIL` | `coordinator confirmed — qa FAIL — .workflow/<branch>/qa-failures.md`, then `coordinator stage — qa-failed` |
 | 4 (loop) | *(internal — coordinator increments attempt)* | *(none)* | `coordinator attempt — N of 3` *(before invoking fix mode)* |
-| 5 | `PR_URL: <url>` | `pr emitted — PR_URL: <url>` | `coordinator confirmed — pr PR_URL: <url>`, then `coordinator stage — pr-opened` |
-| 5 | `COMMIT RESULT: WRONG_BRANCH/NO_CHANGES` | `pr emitted — COMMIT RESULT: <reason>` | `coordinator halt — <reason>`, then `coordinator stage — aborted` |
+| 5 | `PR_URL: <url>` | *(none — coordinator runs inline)* | `coordinator confirmed — commit-and-open-pr PR_URL: <url>`, then `coordinator stage — pr-opened` |
+| 5 | `COMMIT RESULT: WRONG_BRANCH/NO_CHANGES` | *(none — coordinator runs inline)* | `coordinator halt — <reason>`, then `coordinator stage — aborted` |
 | 6 | `WORKFLOW RESULT: SUCCESS — <url>` | *(none)* | `coordinator success — <url>` |
 | Any | Missing sentinel | *(none)* | `coordinator halt — <agent> returned no sentinel`, then `coordinator stage — aborted` |
 
@@ -141,19 +141,17 @@ Present the full plan to the user and ask:
 Do not proceed until the user confirms. If the user requests changes, re-invoke the `planning` agent with the original request plus the user's feedback, then re-validate the sentinel and present the revised plan. Repeat until the user confirms.
 
 ### 2. Create branch
-Invoke the `pr` agent in **create-branch mode**. Pass input in this exact format:
+Follow the `create-feature-branch` skill inline with these inputs:
 ```
-MODE: create-branch
 TITLE: <title from step 1>
 TYPE: <type from step 1>
 ```
 
-Capture the branch name and handle each possible sentinel:
+Run each git command yourself per the skill's instructions. Determine the outcome from the command results and handle each case:
 - `BRANCH RESULT: CREATED — <name>` — store `<name>` for use in step 5, then run **state initialization** below; proceed
 - `BRANCH RESULT: EXISTS — <name>` — stop and report to the user; the branch already exists from a previous attempt
 - `BRANCH RESULT: DIRTY — <files>` — stop and report to the user; do not proceed
 - `BRANCH RESULT: CANNOT_REACH_MAIN — <reason>` — stop and report to the user; the workflow cannot start from a known-clean main
-- No sentinel present — stop and report `WORKFLOW ERROR: pr agent (create-branch) returned no sentinel`
 
 **State initialization (after CREATED):**
 - Check whether `.workflow/<branch>/` already exists (Bash: `test -d ".workflow/<branch>" && echo EXISTS`). If the output is `EXISTS`, stop and report: `WORKFLOW ERROR: workflow state already exists for branch <branch> — delete .workflow/<branch>/ to proceed`. Do not proceed.
@@ -173,7 +171,7 @@ Capture the branch name and handle each possible sentinel:
   - `coordinator confirmed — planning PLAN COMPLETE: title=<title>, type=<type>`
   - `coordinator stage — planning-done`
 - Update `state.json` (`stage: "branch-created"`) and append step-2 log lines:
-  - `coordinator confirmed — pr BRANCH RESULT: CREATED — <branch>`
+  - `coordinator confirmed — create-feature-branch BRANCH RESULT: CREATED — <branch>`
   - `coordinator stage — branch-created`
 
 ### 3. Implement
@@ -254,21 +252,19 @@ PROGRESS_LOG_FILE: .workflow/<branch>/progress.log
 If fix-mode returns `REPLAN NEEDED: <reason>`, follow the abort handling path; stop immediately and report to the user (do not run QA again).
 
 ### 5. Commit and PR
-Before invoking, `Read` `state.json` to get the latest field values. Pass input in this exact format:
+`Read` `state.json` to get the latest field values, then follow the `commit-and-open-pr` skill inline with these inputs:
 ```
-MODE: commit-and-pr
 BRANCH: <state.json.branch>
 TITLE: <state.json.title>
 SUMMARY: <state.json.summary>
 TEST_PLAN_FILE: .workflow/<branch>/test-plan.md
-PROGRESS_LOG_FILE: .workflow/<branch>/progress.log
 ```
 
-Handle each possible response per the Logging contract table:
-- `PR_URL: <url>` → `Read` `state.json`, set `stage: "pr-opened"`, add `pr_url: "<url>"`, `Write` back full pretty-printed object. Append `coordinator confirmed — pr PR_URL: <url>` and `coordinator stage — pr-opened`. Capture `<url>` for step 6; proceed.
+Run each git/gh command yourself per the skill's instructions. Determine the outcome and handle each case per the Logging contract table:
+- `PR_URL: <url>` → `Read` `state.json`, set `stage: "pr-opened"`, add `pr_url: "<url>"`, `Write` back full pretty-printed object. Append `coordinator confirmed — commit-and-open-pr PR_URL: <url>` and `coordinator stage — pr-opened`. Capture `<url>` for step 6; proceed.
 - `COMMIT RESULT: WRONG_BRANCH — expected <a>, got <b>` → follow the abort handling path with reason `WRONG_BRANCH — expected <a>, got <b>`; stop and report to the user; git state is unexpected.
 - `COMMIT RESULT: NO_CHANGES` → follow the abort handling path with reason `NO_CHANGES`; stop and report to the user; the branch has no diff to commit.
-- No `PR_URL:` sentinel → follow the abort handling path with reason `pr returned no PR_URL sentinel`; stop and report `WORKFLOW ERROR: pr agent (commit-and-PR) returned no PR_URL sentinel`.
+- No `PR_URL:` produced → follow the abort handling path with reason `commit-and-open-pr skill returned no PR_URL sentinel`; stop and report `WORKFLOW ERROR: commit-and-open-pr skill returned no PR_URL sentinel`.
 
 ### 6. Done
 Append the final log line per the Logging contract table:

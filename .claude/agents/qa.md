@@ -43,52 +43,18 @@ The coordinator writes its own `confirmed`, `stage`, and `halt` entries after pa
 
 1. Append the `invoked` log line to `PROGRESS_LOG_FILE` (see Logging above)
 2. Read CLAUDE.md
-3. Read the approved plan from the file at `PLAN_FILE:`
-4. Run `git diff HEAD` to see all uncommitted changes (staged and unstaged)
-5. Run the syntax check (see below)
-6. Work through every item in the checklist
+3. Run the `static-checks` skill (see `.claude/skills/static-checks/SKILL.md`). Record each result as `✓ PASS` or `✗ FAIL`. Do not fix anything.
+4. Read the approved plan from the file at `PLAN_FILE:`
+5. Run `git diff HEAD` to see all uncommitted changes (staged and unstaged)
+6. Work through every item in the checklist below
 7. If any check fails, write a markdown failure report to the path at `QA_FAILURES_FILE` (see "Output format")
 
-## Syntax check
-
-Extract the inline `<script>` block (the one without a `src=` attribute) from `index.html` to a workflow file, then run `node --check` on it:
-
-```bash
-BRANCH=$(git branch --show-current)
-mkdir -p ".workflow/$BRANCH"
-awk '/^[[:space:]]*<script>[[:space:]]*$/{flag=1; next} /^[[:space:]]*<\/script>[[:space:]]*$/{flag=0} flag' index.html > ".workflow/$BRANCH/syntax-check.js"
-node --check ".workflow/$BRANCH/syntax-check.js"
-```
-
-Note: this extraction assumes `<script>` appears alone on its line with no attributes. This holds for the current single inline script in index.html — if that ever changes, update the awk pattern.
-
-The `syntax-check.js` file is a transient workflow artifact owned by qa (see the file table in [coordinator.md](coordinator.md)'s "Workflow state on disk" section). Safe to delete after qa completes.
-
-Report PASS or FAIL based on node's exit code.
-
 ## Checklist
-
-### Syntax
-- [ ] `node --check` passes on the inline JS
 
 ### Calculation integrity
 - [ ] calc() function is intact and callable
 - [ ] All new derived values are set inside calc()
 - [ ] All new inputs are read inside calc() using val()
-
-### Code quality
-- [ ] classList used to add/remove classes — never el.className =
-- [ ] No hardcoded colours — only CSS variables from :root
-- [ ] No hardcoded font families — only DM Sans or DM Serif Display
-- [ ] Currency inputs have data-type='currency' attribute
-- [ ] Number inputs use type='number'
-
-### Data persistence
-- [ ] New currency inputs added to CURRENCY_IDS
-- [ ] New number inputs added to NUMBER_IDS
-- [ ] New text inputs added to TEXT_IDS
-- [ ] New localStorage keys follow bostadskalkyl_* convention
-- [ ] New localStorage keys handled in readInputs() and writeInputs()
 
 ### Modals (if a modal was added)
 - [ ] Follows open/close pattern from CLAUDE.md

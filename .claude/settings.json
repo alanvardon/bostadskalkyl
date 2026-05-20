@@ -68,8 +68,33 @@
       "Write(.claude/settings.json)",
       "Edit(.claude/settings.json)",
       "Write(.claude/settings.local.json)",
-      "Edit(.claude/settings.local.json)"
+      "Edit(.claude/settings.local.json)",
+      "Write(scripts/**)",
+      "Edit(scripts/**)",
+      "Write(.claude/agents/**)",
+      "Edit(.claude/agents/**)",
+      "Write(.claude/hooks/**)",
+      "Edit(.claude/hooks/**)",
+      "Write(.claude/skills/**)",
+      "Edit(.claude/skills/**)"
     ],
     "defaultMode": "acceptEdits"
+  },
+  
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": ".claude/hooks/inspect-script.sh" }
+        ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          { "type": "command", "command": ".claude/hooks/block-secrets-pretool.sh" }
+        ]
+      }
+    ]
   }
 }
