@@ -1,8 +1,7 @@
 # Refactoring out of a single HTML file
 
-**Verdict:** A *light* split is worth doing once `index.html` crosses a
-maintainability threshold. A full framework rewrite is not yet
-warranted.
+**Verdict:** Tier 2 — light modularisation — confirmed as the plan (2026-05-20).
+A full framework rewrite is not warranted.
 
 ## What CLAUDE.md says today
 
@@ -68,29 +67,78 @@ Only worth it if the *complexity* of the app outgrows imperative
 `calc()` — many more sections, deeper interaction, or multiple
 "pages." We're not there.
 
-## Recommended path
-
-Do Tier 1 now. Stop. Re-evaluate Tier 2 once `app.js` is uncomfortable
-to navigate (rough threshold: >1500 lines, or you can't find `calc()`
-without ctrl-F'ing).
+## Confirmed plan: Tier 2
 
 ## Tradeoffs / risks
 
 - **Agent prompt drift.** Every agent file that mentions the inline
   script needs updating. Audit before, not after.
-- **Deployment.** Tier 1 still works on Netlify (just upload the three
-  files). Tier 3 requires a build step in the deploy.
+- **Deployment.** Multi-file still works on Netlify (upload all files).
+  Tier 3 would require a build step.
+- **Name collisions.** 7+ global script files share one namespace.
+  Mitigation: IIFEs or a `window.app` namespace. Start flat; fix if needed.
 
-## Rough plan (Tier 1)
+## Implementation plan
 
-1. Extract `<style>` → `styles.css`, replace with `<link>`
-2. Extract `<script>` → `app.js`, replace with `<script src="app.js">`
-3. Update `qa.md`'s syntax-check step to `node --check app.js` directly
-4. Update CLAUDE.md's "File structure" section
-5. Verify in browser: open the file, every feature still works
+1. Audit CLAUDE.md and any agent files — update all references to the
+   inline `<script>` block before touching any code
+2. Create `css/` and `js/` subdirectories
+3. Extract `<style>` → `css/styles.css`, replace with `<link>`
+4. Extract and split the `<script>` block into the files below, in order:
+   - `js/calc.js` — `calc()`, `val()`, `set()`, formatters
+   - `js/storage.js` — localStorage read/write helpers
+   - `js/modals.js` — generic open/close + click-outside pattern
+   - `js/drift.js` — driftkostnad state + its modal
+   - `js/savings.js` — savings state + its modal
+   - `js/scenarios.js` — scenario save/load/render
+   - `js/charts.js` — Chart.js wiring
+   - `js/app.js` — event listeners, init (loaded last)
+5. Replace the single `<script>` tag with 8 `<script src="js/...">` tags
+   in the load order above
+6. Update `qa.md`'s syntax-check step to run `node --check` on each `.js` file
+7. Update CLAUDE.md's "File structure" section
+8. Verify in browser: open `index.html` directly, every feature still works
+
+## File structure (confirmed 2026-05-20)
+
+Feature-based split, refined to add a missing `app.js` entry point and
+a `storage.js` for shared localStorage helpers:
+
+```
+├── index.html
+├── css/
+│   └── styles.css
+└── js/
+    ├── calc.js        # calc(), val(), set(), formatters
+    ├── storage.js     # localStorage read/write helpers (session, drift, savings keys)
+    ├── scenarios.js   # scenario save/load/render
+    ├── modals.js      # generic open/close + click-outside pattern
+    ├── drift.js       # driftkostnad state + its modal
+    ├── savings.js     # savings state + its modal
+    ├── charts.js      # Chart.js wiring
+    └── app.js         # event listeners, init — loaded last
+```
+
+**Load order** (script tags in this sequence, no ES modules):
+`calc.js` → `storage.js` → `modals.js` → `drift.js`, `savings.js`,
+`scenarios.js`, `charts.js` → `app.js`
+
+**Why `drift.js` and `savings.js` are separate from `modals.js`:**
+Both manage their own item-list state, so they're more than open/close
+wrappers and warrant their own files.
+
+**Why `storage.js` is needed:**
+`scenarios.js` only covers save/load of scenarios. Session state
+(`bostadskalkyl_session`) and drift/savings localStorage keys don't
+belong there — a shared `storage.js` avoids duplication.
+
+**Risk:** With 7+ global script files and no bundler, name collisions
+across files are possible. Mitigation: wrap each file in an IIFE, or
+expose a single `window.app` namespace. Start flat; fix collisions if
+they appear.
 
 ## Related
 
 - [[11-ui-ux-frameworks]] — frameworks question is adjacent but
   separable; can be answered independently
-- [[02-qa-agent-handoff]] — qa's syntax check simplifies after Tier 1
+- [[02-qa-agent-handoff]] — qa's syntax check simplifies after this refactor
