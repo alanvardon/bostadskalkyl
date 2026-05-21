@@ -131,6 +131,13 @@ The step descriptions below reference this table rather than restating the liter
 ## Workflow
 
 ### 1. Plan
+
+**Before planning — verify a clean working tree:**
+```
+git status --porcelain
+```
+If the output is non-empty, stop immediately and report to the user which files are uncommitted. Do not invoke the planning agent.
+
 Invoke the `planning` agent with the user's request.
 
 Look for the `PLAN COMPLETE: title=<x>, type=<y>` sentinel at the end of the plan. If missing, stop and report `WORKFLOW ERROR: planning returned no sentinel`. Capture `<title>` and `<type>` for step 2.
