@@ -70,13 +70,7 @@
       "Write(.claude/settings.local.json)",
       "Edit(.claude/settings.local.json)",
       "Write(scripts/**)",
-      "Edit(scripts/**)",
-      "Write(.claude/agents/**)",
-      "Edit(.claude/agents/**)",
-      "Write(.claude/hooks/**)",
-      "Edit(.claude/hooks/**)",
-      "Write(.claude/skills/**)",
-      "Edit(.claude/skills/**)"
+      "Edit(scripts/**)"
     ],
     "defaultMode": "acceptEdits"
   },

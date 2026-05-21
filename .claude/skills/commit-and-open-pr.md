@@ -45,10 +45,16 @@ Do not commit.
 
 ### 3. Commit
 
-Stage the changed files (prefer specific file names over `git add -A`), then commit:
+Stage the changed files and the workflow state for this branch. Do not stage `.workflow/<BRANCH>/syntax-check.js` — it is a transient artefact.
 
 ```
 git add <specific files>
+git add .workflow/<BRANCH>/plan.md .workflow/<BRANCH>/state.json .workflow/<BRANCH>/progress.log .workflow/<BRANCH>/test-plan.md
+```
+
+Only add workflow files that actually exist — skip any that are absent on this run. Then commit:
+
+```
 git commit --author="Claude <claude@anthropic.com>" -m "<type>(<scope>): <title>
 
 - <SUMMARY>

@@ -140,6 +140,11 @@ Present the full plan to the user and ask:
 
 Do not proceed until the user confirms. If the user requests changes, re-invoke the `planning` agent with the original request plus the user's feedback, then re-validate the sentinel and present the revised plan. Repeat until the user confirms.
 
+**After confirmation — write the plan to disk immediately:**
+Derive the branch name from `<title>` and `<type>` using the same rule as `create-feature-branch`: `<type>/` + title converted to lowercase kebab-case, truncated to 50 characters (slug only). Then:
+- `mkdir -p .workflow/<derived-branch>` (Bash)
+- Write the full approved plan to `.workflow/<derived-branch>/plan.md` (Write)
+
 ### 2. Create branch
 Follow the `create-feature-branch` skill inline with these inputs:
 ```
@@ -154,9 +159,7 @@ Run each git command yourself per the skill's instructions. Determine the outcom
 - `BRANCH RESULT: CANNOT_REACH_MAIN — <reason>` — stop and report to the user; the workflow cannot start from a known-clean main
 
 **State initialization (after CREATED):**
-- Check whether `.workflow/<branch>/` already exists (Bash: `test -d ".workflow/<branch>" && echo EXISTS`). If the output is `EXISTS`, stop and report: `WORKFLOW ERROR: workflow state already exists for branch <branch> — delete .workflow/<branch>/ to proceed`. Do not proceed.
-- `mkdir -p .workflow/<branch>` (Bash)
-- Write the full approved plan from step 1 to `.workflow/<branch>/plan.md` (Write).
+- Check whether `.workflow/<branch>/progress.log` already exists (Bash: `test -f ".workflow/<branch>/progress.log" && echo EXISTS`). If the output is `EXISTS`, stop and report: `WORKFLOW ERROR: workflow already in progress for branch <branch> — delete .workflow/<branch>/ to proceed`. Do not proceed. (`plan.md` and the directory were written at step 1 and are expected to exist here.)
 - Write `.workflow/<branch>/state.json` as pretty-printed JSON with initial fields (`summary` is added at step 3, `pr_url` at step 5):
   ```json
   {
@@ -260,7 +263,7 @@ SUMMARY: <state.json.summary>
 TEST_PLAN_FILE: .workflow/<branch>/test-plan.md
 ```
 
-Run each git/gh command yourself per the skill's instructions. Determine the outcome and handle each case per the Logging contract table:
+Run each git/gh command yourself per the skill's instructions. The skill will also stage `.workflow/<branch>/plan.md`, `state.json`, `progress.log`, and `test-plan.md` alongside the code changes — workflow state is part of every PR. Determine the outcome and handle each case per the Logging contract table:
 - `PR_URL: <url>` → `Read` `state.json`, set `stage: "pr-opened"`, add `pr_url: "<url>"`, `Write` back full pretty-printed object. Append `coordinator confirmed — commit-and-open-pr PR_URL: <url>` and `coordinator stage — pr-opened`. Capture `<url>` for step 6; proceed.
 - `COMMIT RESULT: WRONG_BRANCH — expected <a>, got <b>` → follow the abort handling path with reason `WRONG_BRANCH — expected <a>, got <b>`; stop and report to the user; git state is unexpected.
 - `COMMIT RESULT: NO_CHANGES` → follow the abort handling path with reason `NO_CHANGES`; stop and report to the user; the branch has no diff to commit.
