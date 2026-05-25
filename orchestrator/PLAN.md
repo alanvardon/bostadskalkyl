@@ -502,6 +502,49 @@ checkpoint you can inspect.
 **Why keep this around after Phase 11:** it's your "is the orchestrator
 itself broken?" sanity check when Claude Code + MCP add indirection layers.
 
+### Known gaps in the snippet above (address as you build)
+
+The snippet is the minimum that compiles. Two of the gaps below are
+*functional* — the CLI is unusable without them. The rest are polish you
+can defer until they annoy you. Tackle in this order.
+
+**Functional (must fix):**
+
+1. **Multi-turn approval loop.** The snippet handles ONE approval cycle.
+   If the user replies with feedback instead of "yes", the workflow
+   re-plans and hits `interrupt()` again — but the snippet doesn't loop,
+   so the second `GraphInterrupt` escapes uncaught. Wrap the
+   `try/except GraphInterrupt` in a `while True:` and break only when
+   `ainvoke` returns normally.
+
+2. **Progress signal during long tasks.** `implementation_task` runs for
+   5+ minutes (Claude Agent SDK editing files). `await workflow.ainvoke`
+   shows nothing during that time — you'll think it hung. Switch from
+   `ainvoke` to `astream(...)` and print one line per event, OR run a
+   background coroutine that prints `Implementing… (2m 15s)` every
+   ~15 seconds. Either is fine for a debug surface.
+
+**Polish (defer until annoying):**
+
+3. **Don't `print(dict)` for the plan.** The plan has a `plan_text` field
+   that's already markdown. `print(plan["plan_text"])` reads cleanly;
+   the full dict dump doesn't.
+4. **Highlight the PR URL.** Final result is `{"status": "succeeded",
+   "pr_url": "..."}`. Extract and print on its own line so you can click it.
+5. **Surface the `thread_id`.** Print it at the top of the run so if
+   something goes wrong you can `inspect_state <thread_id>` or resume
+   manually with `ainvoke(None, ...)`.
+6. **Colour / formatting.** `rich` makes the plan and the diff readable
+   in the terminal. Adds a dependency; weigh that against the fact that
+   the production surface is Claude Code, not this CLI.
+
+**What still doesn't belong here:**
+Don't add token-cost reporting, run history listing, multi-run dashboards,
+or interactive scenario selection. Those belong in a future admin tool
+(or just `inspect_state`). The CLI's job is "run one workflow end-to-end,
+prove the orchestrator works." Resist scope creep — every feature you
+add here is one you'll also have to keep working through Phases 11–12.
+
 ---
 
 ## Phase 11 — MCP server with two tools (1.5 hours)

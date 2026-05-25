@@ -1,0 +1,122 @@
+import asyncio
+from contextlib import asynccontextmanager
+from typing import AsyncIterator
+
+# LangGraph's Functional API: @entrypoint marks the top-level workflow
+# function, @task marks a checkpointable unit of work. Together they let
+# you write a workflow as ordinary async Python and get durability,
+# tracing, and resume-on-crash semantics for free.
+from langgraph.func import entrypoint, task
+
+# AsyncSqliteSaver replaces Phase 2's MemorySaver. Same checkpointer API,
+# but state is written to a SQLite file on disk — durable across process
+# restarts and crashes. The .aio submodule is the async variant; the
+# sync variant lives in langgraph.checkpoint.sqlite.
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+# JsonPlusSerializer is the default serde the checkpointer uses to encode
+# task inputs/outputs into the SQLite blob columns. We override it below
+# with an explicit allowlist of custom types — see _CUSTOM_SERDE.
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+
+from orchestrator.agents.planning import plan, PlanResult
+from orchestrator.agents.implementation import implement, ImplementationResult
+from orchestrator.git_ops import create_branch
+
+
+# Future LangGraph versions will refuse to deserialize types that aren't
+# on this allowlist (the warning today; a hard error tomorrow). Register
+# every Pydantic model that flows through a @task so resume keeps working
+# across upgrades. Each entry is (module_path, class_name).
+#
+# As Phase 6 adds QaResult, add it here too.
+_ALLOWED_MSGPACK_MODULES = [
+    ("orchestrator.agents.planning", "PlanResult"),
+    ("orchestrator.agents.implementation", "ImplementationResult"),
+]
+
+_CUSTOM_SERDE = JsonPlusSerializer(
+    allowed_msgpack_modules=_ALLOWED_MSGPACK_MODULES,
+)
+
+
+# @task wraps an async function so LangGraph can:
+#   - record its inputs and outputs to the checkpointer
+#   - skip re-running it on resume if its inputs haven't changed
+#   - surface it as a span in the LangSmith trace tree
+# @task knows nothing about which checkpointer is in use — that's
+# configured on the @entrypoint below.
+@task
+async def planning_task(request: str) -> PlanResult:
+    return await plan(request)
+
+
+# Deterministic git task (Phase 6a). Wraps the synchronous create_branch
+# function with asyncio.to_thread so it doesn't block the event loop —
+# subprocess.run is blocking, and even fast git commands shouldn't stall
+# the loop. The @task wrapper means a successful branch creation is
+# checkpointed: on resume, we don't re-run git checkout, we read the
+# branch name back from the checkpoint and move on.
+@task
+async def create_branch_task(plan_result: PlanResult) -> str:
+    return await asyncio.to_thread(create_branch, plan_result)
+
+
+# Phase 4 placeholder. Originally created so crash_demo had a long-running
+# step to Ctrl-C during. Phase 6b's implementation_task now provides a
+# much longer (5+ min) crash window, so this is vestigial — kept only to
+# avoid breaking crash_demo.py's documented flow. Safe to delete.
+@task
+async def step_two_task(plan_result: PlanResult) -> str:
+    await asyncio.sleep(5)
+    return f"step_two finished for plan {plan_result.title!r}"
+
+
+# Phase 6b. Runs the implementation agent (Claude Agent SDK in a loop)
+# to edit files according to the plan. The function body is short
+# because all the heavy lifting is inside implement() — the @task
+# wrapper exists so LangGraph can checkpoint the ImplementationResult
+# and skip re-running on resume. Implementation is the most expensive
+# task by far (minutes of LLM time, real file edits), so resume-skip
+# is the single biggest cost win the checkpointer gives us.
+@task
+async def implementation_task(
+    plan_result: PlanResult,
+    mode: str = "implement",
+    qa_failures: str | None = None,
+) -> ImplementationResult:
+    return await implement(plan_result, mode=mode, qa_failures=qa_failures)
+
+
+# build_workflow is a factory, not a module-level workflow definition.
+# Why: AsyncSqliteSaver.from_conn_string returns an async context manager
+# that opens the SQLite connection on entry and closes it on exit. The
+# @entrypoint decorator captures the checkpointer at definition time, so
+# the workflow MUST be defined inside the async-with block — there's no
+# clean way to attach a still-opening connection to a module-level decorator.
+# The asynccontextmanager wrapper lets callers do `async with build_workflow()`.
+@asynccontextmanager
+async def build_workflow(
+    db_path: str = ".orchestrator/checkpoints.db",
+) -> AsyncIterator:
+    async with AsyncSqliteSaver.from_conn_string(db_path) as checkpointer:
+        # AsyncSqliteSaver.from_conn_string doesn't accept a custom serde,
+        # so we swap it in after construction. Both attributes need to
+        # change: `serde` is the public one read by BaseCheckpointSaver,
+        # `jsonplus_serde` is the internal one AsyncSqliteSaver uses
+        # directly for some write paths.
+        checkpointer.serde = _CUSTOM_SERDE
+        checkpointer.jsonplus_serde = _CUSTOM_SERDE
+
+        @entrypoint(checkpointer=checkpointer)
+        async def workflow(request: str) -> dict:
+            plan_result = await planning_task(request)
+            branch_name = await create_branch_task(plan_result)
+            impl_result = await implementation_task(plan_result)
+            return {
+                "plan": plan_result.model_dump(),
+                "branch": branch_name,
+                "implementation": impl_result.model_dump(),
+            }
+
+        yield workflow
