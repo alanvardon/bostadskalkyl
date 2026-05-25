@@ -602,6 +602,69 @@
     color: var(--ink-faint);
   }
 
+  /* LTV tooltip */
+  .tooltip-anchor {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    cursor: default;
+  }
+  .tooltip-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.7rem;
+    color: var(--ink-soft);
+    cursor: help;
+    line-height: 1;
+  }
+  .tooltip-icon:focus { outline: 1px dotted var(--ink-soft); outline-offset: 1px; }
+  .tooltip-bubble {
+    position: absolute;
+    bottom: calc(100% + 6px);
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--ink);
+    color: var(--paper);
+    font-size: 0.75rem;
+    padding: 6px 10px;
+    border-radius: 6px;
+    white-space: normal;
+    max-width: 220px;
+    z-index: 50;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.15s ease;
+    text-align: left;
+    line-height: 1.4;
+    font-weight: 400;
+  }
+  .tooltip-bubble::after {
+    content: '';
+    position: absolute;
+    top: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    border: 5px solid transparent;
+    border-top-color: var(--ink);
+  }
+  .tooltip-anchor:hover .tooltip-bubble,
+  .tooltip-anchor:focus-within .tooltip-bubble {
+    opacity: 1;
+  }
+  @media (max-width: 600px) {
+    .tooltip-bubble {
+      left: 0;
+      transform: none;
+      max-width: 200px;
+    }
+    .tooltip-bubble::after {
+      left: 12px;
+      transform: none;
+    }
+  }
+
   .sum-card { transition: background 0.2s, border-color 0.2s; }
   .sum-card.pnl-positive { background: var(--accent-faint); border-color: #b8d4c0; }
   .sum-card.pnl-negative { background: var(--warn-faint); border-color: #e0c4a8; }
