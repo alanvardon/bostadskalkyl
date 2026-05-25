@@ -41,7 +41,13 @@ class _Stubs:
     async def qa(self, plan) -> QaResult:
         return QaResult(result="PASS")
 
-    def commit_and_pr(self, branch, title, summary, test_plan) -> str:
+    def commit(self, branch, title, summary) -> str:
+        return "abc123def456"
+
+    def push(self, branch) -> None:
+        pass
+
+    def pr_create(self, branch, title, summary, test_plan) -> str:
         self.commit_called = True
         return "https://github.com/test/pr/1"
 
@@ -53,7 +59,9 @@ def _patch(stubs: _Stubs, monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr("orchestrator.workflow.create_branch", stubs.create_branch)
     monkeypatch.setattr("orchestrator.workflow.implement", stubs.implement)
     monkeypatch.setattr("orchestrator.workflow.qa", stubs.qa)
-    monkeypatch.setattr("orchestrator.workflow.commit_and_pr", stubs.commit_and_pr)
+    monkeypatch.setattr("orchestrator.workflow.commit", stubs.commit)
+    monkeypatch.setattr("orchestrator.workflow.push", stubs.push)
+    monkeypatch.setattr("orchestrator.workflow.pr_create", stubs.pr_create)
 
     # The MCP tools call build_workflow() with no args, so it uses the
     # default db_path ".orchestrator/checkpoints.db" — relative to cwd.

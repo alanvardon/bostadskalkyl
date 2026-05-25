@@ -112,6 +112,51 @@ async def implement_feature(request: str) -> dict:
 
 
 @mcp.tool()
+async def resume_run(thread_id: str) -> dict:
+    """Resume a workflow that failed mid-task without restarting it.
+
+    Use this when a previous `implement_feature` or `approve_plan` call
+    returned an error (e.g. push failed, gh pr create failed). Phase 15's
+    split of commit/push/PR into three independent @tasks means the
+    successful steps are cached in the checkpointer — only the failed
+    task (and anything downstream) re-runs.
+
+    Use AFTER fixing the underlying issue. Examples:
+      - push failed → authenticate gh, restore network, then resume_run
+      - gh pr create failed (no remote, no auth) → fix auth, then resume_run
+      - commit failed mid-workflow → investigate, may need manual cleanup
+        before resume_run
+
+    Do NOT use this to resume a plan-approval interrupt — that's what
+    `approve_plan` is for. resume_run is specifically for recovering
+    from a task failure.
+
+    Args:
+        thread_id: The thread_id from the prior failed response.
+
+    Returns:
+        Same shape as approve_plan: another awaiting_approval (rare,
+        only if the workflow re-entered the planning loop somehow), a
+        succeeded dict with pr_url, or a failed dict.
+    """
+    config = {"configurable": {"thread_id": thread_id}}
+    # The functional API's resume incantation: ainvoke(None, config)
+    # continues a paused/failed workflow from its last checkpoint
+    # instead of starting a fresh run.
+    async with build_workflow() as workflow:
+        result = await workflow.ainvoke(None, config=config)
+    if "__interrupt__" in result:
+        return _awaiting_approval(
+            thread_id,
+            result,
+            "Workflow paused for plan approval. Show the plan to the "
+            "user and call approve_plan with their response.",
+        )
+    result["thread_id"] = thread_id
+    return result
+
+
+@mcp.tool()
 async def approve_plan(thread_id: str, response: str) -> dict:
     """Resume an awaiting workflow with the user's response to the plan.
 
@@ -156,9 +201,11 @@ async def approve_plan(thread_id: str, response: str) -> dict:
             "next response.",
         )
     # Pass the workflow's native status through ("succeeded" or "failed")
-    # rather than re-shaping. Dict spread order matters here: `**result`
-    # MUST come after any defaults, otherwise the workflow's status field
-    # is silently overridden.
+    # rather than re-shaping. Phase 15: also inject thread_id so the
+    # user has it available in chat for recovery — without this, the id
+    # disappears after the first approval cycle and the user can't
+    # call resume_run if something fails downstream.
+    result["thread_id"] = thread_id
     return result
 
 

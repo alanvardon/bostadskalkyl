@@ -23,7 +23,13 @@ from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from orchestrator.agents.planning import plan, PlanResult
 from orchestrator.agents.implementation import implement, ImplementationResult
 from orchestrator.agents.qa import qa, QaResult
-from orchestrator.git_ops import create_branch, commit_and_pr, verify_clean_tree
+from orchestrator.git_ops import (
+    commit,
+    create_branch,
+    pr_create,
+    push,
+    verify_clean_tree,
+)
 
 
 # Future LangGraph versions will refuse to deserialize types that aren't
@@ -110,28 +116,39 @@ async def qa_task(plan_result: PlanResult) -> QaResult:
     return await qa(plan_result)
 
 
-# Phase 6d. Deterministic git/PR task. Same shape as create_branch_task:
-# sync subprocess function in git_ops.py, bridged to async via
-# asyncio.to_thread. Returns the PR URL on success.
+# Phase 15: the old commit_and_pr_task split into three idempotent
+# tasks. Each step's success is checkpointed independently, so a
+# failure at push or pr_create can be resumed via the resume_run MCP
+# tool without re-committing or re-pushing work that already landed.
 #
-# Inputs come from upstream tasks:
-#   - branch: from create_branch_task
-#   - title:  from PlanResult
-#   - summary, test_plan: from ImplementationResult
-#
-# Currently fires unconditionally after qa_task. Phase 7's retry loop
-# will gate this on `qa.result == "PASS"` — for now a FAIL just opens
-# a PR that needs manual fixing, which is no worse than the existing
-# coordinator's behaviour.
+# push_task and pr_create_task take `sha` as an input even though they
+# don't use it directly — including it in the inputs invalidates the
+# @task cache key when the commit changes (e.g. if an earlier retry
+# produced a different commit), forcing those downstream tasks to run
+# fresh instead of returning stale cached results.
 @task
-async def commit_and_pr_task(
-    branch: str,
-    title: str,
-    summary: str,
-    test_plan: str,
+async def commit_task(branch: str, title: str, summary: str) -> str:
+    """Stage + commit any uncommitted changes; return HEAD SHA.
+    Idempotent: a clean tree with an existing ahead-of-base commit
+    returns that commit's SHA without re-committing."""
+    return await asyncio.to_thread(commit, branch, title, summary)
+
+
+@task
+async def push_task(branch: str, sha: str) -> None:
+    """Push branch with upstream tracking. Idempotent (git push is a
+    no-op when the remote is already up to date)."""
+    return await asyncio.to_thread(push, branch)
+
+
+@task
+async def pr_create_task(
+    branch: str, title: str, summary: str, test_plan: str, sha: str
 ) -> str:
+    """Open a PR and return its URL. Idempotent: if a PR already exists
+    for this branch, returns its URL instead of opening another."""
     return await asyncio.to_thread(
-        commit_and_pr, branch, title, summary, test_plan
+        pr_create, branch, title, summary, test_plan
     )
 
 
@@ -220,11 +237,21 @@ async def build_workflow(
                     "qa_failures": qa_failures,
                 }
 
-            pr_url = await commit_and_pr_task(
+            # Phase 15: three separate @tasks instead of one
+            # commit_and_pr_task. A failure between commit and push
+            # (or push and PR creation) is resumable via resume_run —
+            # completed tasks return cached SHAs/URLs; the failed task
+            # re-executes against the now-fixed underlying issue.
+            sha = await commit_task(
+                branch_name, plan_result.title, impl_result.summary
+            )
+            await push_task(branch_name, sha)
+            pr_url = await pr_create_task(
                 branch_name,
                 plan_result.title,
                 impl_result.summary,
                 impl_result.test_plan,
+                sha,
             )
             return {
                 "status": "succeeded",

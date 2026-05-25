@@ -7,9 +7,12 @@ The orchestrator has a hard split:
 This module owns the deterministic side. No prompts, no models, no
 structured output — just shell commands wrapped in Python. Ports of
 .claude/skills/create-feature-branch.md (Phase 6a) and
-.claude/skills/commit-and-open-pr.md (Phase 6d).
+.claude/skills/commit-and-open-pr.md (Phase 6d), with Phase 15 splitting
+the PR-creation pipeline into three idempotent steps (commit, push,
+pr_create) so a failure at any step is recoverable via @task caching.
 """
 
+import json
 import re
 import subprocess
 import sys
@@ -131,73 +134,80 @@ def create_branch(plan: PlanResult) -> str:
 
 
 class CommitAndPrError(RuntimeError):
-    """Raised when commit_and_pr can't safely complete.
+    """Raised when any of commit/push/pr_create can't safely complete.
 
-    Collapses several distinct failure modes (wrong branch, empty diff,
-    push failure, gh pr create failure) into one exception type. The
-    orchestrator treats this as a terminal workflow failure — the
-    implementation's checkpoint is preserved so you can fix the
-    underlying issue (e.g. log in to gh) and re-trigger without
-    re-paying for the LLM call.
+    Phase 15 split the monolithic commit_and_pr into three idempotent
+    steps, but they share one error type because callers treat them
+    uniformly: log, surface the thread_id, await a `resume_run` from
+    the user once the underlying issue is fixed.
     """
 
 
-def commit_and_pr(
-    branch: str,
-    title: str,
-    summary: str,
-    test_plan: str,
-) -> str:
-    """Stage all changes on the current branch, commit, push, open a PR.
+# Common base branch for PRs and "ahead of base" checks. Hardcoded for
+# now; orchestrator.toml's [pr] section will make it configurable.
+_BASE_BRANCH = "main"
 
-    Returns the PR URL on success. Raises CommitAndPrError if:
-      - the current branch doesn't match `branch` (refuse to commit to
-        the wrong place — most likely main if create_branch_task was
-        skipped)
-      - there are no changes to commit
-      - git push fails (network, auth, permissions)
-      - `gh pr create` fails (no remote, no gh auth, PR already exists)
 
-    Port of .claude/skills/commit-and-open-pr.md. Differences from the
-    skill:
-      - The skill staged specific files plus .workflow/<branch>/* state
-        files. Here we use `git add .` — the orchestrator's checkpointer
-        replaces the .workflow/ directory entirely, and project hooks
-        + .gitignore block secrets and noise.
-      - The skill's "scope" field is inferred from the diff by an LLM.
-        Deterministic Python can't do that reliably, so we omit it
-        (the skill explicitly permits this when scope is unclear).
-      - `test_plan` arrives as a string (from ImplementationResult),
-        not a file path — no read-from-disk branch.
+def _current_branch() -> str:
+    return _run(["git", "rev-parse", "--abbrev-ref", "HEAD"]).stdout.strip()
+
+
+def _assert_on_branch(branch: str) -> None:
+    """Refuse to touch the wrong branch.
+
+    The single most important check we make at this layer — accidentally
+    committing to main is the failure mode that takes the longest to
+    recover from. Phase 15 calls this from each split task so the check
+    isn't lost when the monolithic function is.
     """
-    # 1. Verify the current branch. If create_branch_task was skipped
-    # for any reason, the only way we get here is on main — and a
-    # commit-to-main is the single most important thing this function
-    # must refuse.
-    current = _run(["git", "rev-parse", "--abbrev-ref", "HEAD"]).stdout.strip()
+    current = _current_branch()
     if current != branch:
         raise CommitAndPrError(
             f"wrong branch: expected {branch!r}, got {current!r}"
         )
 
-    # 2. Guard against an empty diff. Better to fail loudly than to
-    # create an empty commit.
-    status = _run(["git", "status", "--porcelain"])
-    if not status.stdout.strip():
+
+def commit(branch: str, title: str, summary: str) -> str:
+    """Stage and commit any uncommitted changes; return the HEAD SHA.
+
+    **Idempotent.** If the working tree is already clean AND the branch
+    is ahead of `_BASE_BRANCH`, assume a previous attempt's commit is
+    already in place and return HEAD's SHA without re-committing. This
+    is the resume-after-failure path: if a previous workflow committed
+    locally but failed before push/PR creation, the next attempt sees
+    the commit already present and proceeds to push.
+
+    If the working tree is clean AND the branch is NOT ahead of base,
+    there's genuinely nothing to commit (the implementation phase made
+    no edits, or the changes were already reverted) — raise.
+
+    Returns:
+        The commit SHA (full 40-char hex).
+    """
+    _assert_on_branch(branch)
+
+    dirty = bool(_run(["git", "status", "--porcelain"]).stdout.strip())
+    ahead = int(
+        _run(
+            ["git", "rev-list", f"{_BASE_BRANCH}..HEAD", "--count"]
+        ).stdout.strip()
+        or "0"
+    )
+
+    if not dirty and ahead > 0:
+        # Previous attempt's commit is still here. Return its SHA.
+        return _run(["git", "rev-parse", "HEAD"]).stdout.strip()
+    if not dirty and ahead == 0:
         raise CommitAndPrError("no changes to commit")
 
-    # 3. Stage everything. .gitignore excludes .env, .orchestrator/,
-    # caches, etc; project pre-commit hooks block sensitive content as
-    # a second line of defence. `git add .` is the documented safe
-    # default for this project (see CLAUDE.md / user memory).
+    # Stage everything. .gitignore excludes .env, .orchestrator/, caches;
+    # project pre-commit hooks are the second line of defence. `git add
+    # .` is the documented safe default for this project.
     _run(["git", "add", "."])
 
-    # 4. Compose the commit message.
-    # Type prefix derived from the branch name (e.g. "feature/foo" →
-    # "feature"). Matches the convention in
-    # .claude/skills/commit-and-open-pr.md. Scope is omitted because
-    # we can't infer it deterministically; the skill explicitly allows
-    # this.
+    # Compose the commit message. Type prefix from the branch name
+    # (e.g. "feature/foo" → "feature"). Scope omitted — we can't infer
+    # it deterministically.
     type_prefix = branch.split("/", 1)[0] if "/" in branch else "feature"
     subject = f"{type_prefix}: {title.lower()}"
     commit_msg = f"{subject}\n\n- {summary}"
@@ -217,9 +227,17 @@ def commit_and_pr(
             f"commit failed: {(e.stderr or e.stdout).strip()}"
         ) from e
 
-    # 5. Push and set upstream. -u is important on first push of a new
-    # branch — without it the branch exists on origin but isn't tracking,
-    # and subsequent `git pull` / `gh pr create` behave inconsistently.
+    return _run(["git", "rev-parse", "HEAD"]).stdout.strip()
+
+
+def push(branch: str) -> None:
+    """Push branch to origin with upstream tracking.
+
+    **Idempotent.** `git push` is naturally a no-op when the remote is
+    already up to date ("Everything up-to-date"), and `-u` re-asserting
+    upstream tracking is a no-op if already set.
+    """
+    _assert_on_branch(branch)
     try:
         _run(["git", "push", "-u", "origin", branch])
     except subprocess.CalledProcessError as e:
@@ -227,33 +245,46 @@ def commit_and_pr(
             f"push failed: {(e.stderr or e.stdout).strip()}"
         ) from e
 
-    # 6. Open the PR. test_plan arrives as markdown bullets from
-    # ImplementationResult; we embed it directly. Body includes the
-    # Claude Code attribution per the skill's template.
-    pr_body = (
+
+def pr_create(branch: str, title: str, summary: str, test_plan: str) -> str:
+    """Open a PR for the branch and return its URL.
+
+    **Idempotent.** If a PR already exists for this branch (any state —
+    open, closed, merged), return its URL instead of trying to open
+    another. This handles the case where a previous attempt successfully
+    opened the PR but the workflow failed afterwards (or where the user
+    is `resume_run`-ing a thread whose pr_create_task already succeeded
+    on a prior invocation — the LangGraph cache should cover that, but
+    the in-function check is defence in depth).
+    """
+    _assert_on_branch(branch)
+
+    # Check for an existing PR. `gh pr view <branch>` exits non-zero if
+    # none exists — that's the signal to create one.
+    try:
+        existing = _run(["gh", "pr", "view", branch, "--json", "url"])
+        url = json.loads(existing.stdout).get("url")
+        if url:
+            return url
+    except subprocess.CalledProcessError:
+        # No PR exists; fall through to create one.
+        pass
+
+    body = (
         f"## Summary\n{summary}\n\n"
         f"## Test plan\n{test_plan}\n\n"
         "🤖 Generated with [Claude Code](https://claude.com/claude-code)"
     )
     try:
         result = _run(
-            [
-                "gh",
-                "pr",
-                "create",
-                "--title",
-                title,
-                "--body",
-                pr_body,
-            ]
+            ["gh", "pr", "create", "--title", title, "--body", body]
         )
     except subprocess.CalledProcessError as e:
         raise CommitAndPrError(
             f"gh pr create failed: {(e.stderr or e.stdout).strip()}"
         ) from e
 
-    # 7. `gh pr create` prints the PR URL on stdout (last line). Earlier
-    # lines may contain progress messages; take the last non-empty line.
+    # `gh pr create` prints the URL on the last non-empty stdout line.
     lines = [line for line in result.stdout.splitlines() if line.strip()]
     if not lines:
         raise CommitAndPrError("gh pr create produced no output")
@@ -266,11 +297,11 @@ if __name__ == "__main__":
     # No LLM call; doesn't touch the checkpointer. Just exercises the
     # subprocess plumbing against your real repo.
     #
-    # commit_and_pr isn't exposed here because (a) its inputs are
-    # awkward to pass as positional args (multi-line summary, markdown
-    # test plan) and (b) its side effects — a real PR opening on
-    # GitHub — make ad-hoc testing expensive. Test it via the workflow
-    # end-to-end run instead.
+    # commit/push/pr_create aren't exposed here because (a) their
+    # inputs are awkward to pass as positional args (multi-line summary,
+    # markdown test plan) and (b) their side effects — a real commit,
+    # push, and PR opening on GitHub — make ad-hoc testing expensive.
+    # Test them via the workflow end-to-end run instead.
     title = sys.argv[1] if len(sys.argv) > 1 else "test branch creation"
     branch_type = sys.argv[2] if len(sys.argv) > 2 else "feature"
     fake_plan = PlanResult(title=title, type=branch_type, plan_text="(test)")
