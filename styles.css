@@ -602,6 +602,68 @@
     color: var(--ink-faint);
   }
 
+  /* ── LTV tooltip ───────────────────────────────────────────── */
+  .tooltip-wrapper {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .tooltip-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 13px;
+    height: 13px;
+    border-radius: 50%;
+    background: var(--rule);
+    color: var(--ink-mid);
+    font-size: 9px;
+    font-weight: 700;
+    line-height: 1;
+    cursor: default;
+    flex-shrink: 0;
+  }
+
+  .tooltip-bubble {
+    display: none;
+    position: absolute;
+    bottom: calc(100% + 8px);
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--ink);
+    color: var(--paper);
+    padding: 6px 10px;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-weight: 400;
+    white-space: normal;
+    max-width: 220px;
+    width: max-content;
+    z-index: 50;
+    pointer-events: none;
+    text-transform: none;
+    letter-spacing: 0;
+    line-height: 1.4;
+  }
+
+  .tooltip-bubble::after {
+    content: '';
+    position: absolute;
+    top: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    border: 5px solid transparent;
+    border-top-color: var(--ink);
+  }
+
+  .tooltip-wrapper:hover .tooltip-bubble,
+  .tooltip-wrapper:focus-within .tooltip-bubble {
+    display: block;
+  }
+  /* ─────────────────────────────────────────────────────────── */
+
   .sum-card { transition: background 0.2s, border-color 0.2s; }
   .sum-card.pnl-positive { background: var(--accent-faint); border-color: #b8d4c0; }
   .sum-card.pnl-negative { background: var(--warn-faint); border-color: #e0c4a8; }
