@@ -55,15 +55,17 @@ _ENTRYPOINT_NAME = "workflow"
 
 # Maps "task that just completed" -> "task that's now running", so the
 # heartbeat can show what's actually happening rather than what's behind
-# us. The `qa` case is ambiguous (PASS goes to commit_and_pr, FAIL loops
-# back to implementation) — handled inline by reading the QaResult.
+# us. The `qa` case is ambiguous (PASS goes to commit, FAIL loops back
+# to implementation) — handled inline by reading the QaResult.
 # Keep in sync with the workflow body in orchestrator/workflow.py.
 _NEXT_STAGE = {
     None: "verify_clean_tree",
     "verify_clean_tree": "planning",
     "create_branch": "implementation",
     "implementation": "qa",
-    "commit_and_pr": "finishing",
+    "commit": "push",
+    "push": "pr_create",
+    "pr_create": "finishing",
 }
 
 
@@ -124,12 +126,12 @@ async def _run_with_progress(workflow, input_data, config) -> dict:
                         file=sys.stderr,
                     )
                     # Predict what's running now so the heartbeat label
-                    # is accurate. qa is ambiguous (PASS → commit_and_pr,
-                    # FAIL → another implementation attempt) — disambiguate
+                    # is accurate. qa is ambiguous (PASS → commit, FAIL
+                    # → another implementation attempt) — disambiguate
                     # by reading the QaResult.
                     if name == "qa":
                         next_stage = (
-                            "commit_and_pr"
+                            "commit"
                             if getattr(value, "result", None) == "PASS"
                             else "implementation (retry)"
                         )
@@ -145,24 +147,26 @@ async def _run_with_progress(workflow, input_data, config) -> dict:
     return final_result
 
 
-def _print_success(result: dict) -> None:
+def _print_success(result: dict, thread_id: str) -> None:
     """Format a successful workflow result with the PR URL prominent."""
     print()
     print(_RULE)
     print("Workflow complete")
     print(_RULE)
-    print(f"  Branch: {result['branch']}")
-    print(f"  PR:     {result['pr_url']}")
+    print(f"  Branch:    {result['branch']}")
+    print(f"  PR:        {result['pr_url']}")
+    print(f"  thread_id: {thread_id}")
     print(_RULE)
 
 
-def _print_qa_failure(result: dict) -> None:
+def _print_qa_failure(result: dict, thread_id: str) -> None:
     """Format a QA-exhausted workflow result (3 attempts, all FAIL)."""
     print()
     print(_RULE)
     print("Workflow failed after 3 implementation attempts")
     print(_RULE)
-    print(f"  Branch: {result['branch']}")
+    print(f"  Branch:    {result['branch']}")
+    print(f"  thread_id: {thread_id}")
     print("  Last QA failures:")
     for line in (result.get("qa_failures") or "").splitlines():
         print(f"    {line}")
@@ -223,7 +227,7 @@ async def run() -> None:
             # either approves ("yes") or triggers a re-plan with feedback.
             while "__interrupt__" in result:
                 interrupt_val = result["__interrupt__"][0].value
-                print("\n--- Plan for approval ---")
+                print(f"\n--- Plan for approval (thread_id: {thread_id}) ---")
                 print(interrupt_val["plan"]["plan_text"])
                 print("\n" + interrupt_val["ask"])
                 response = input("> ").strip()
@@ -234,14 +238,15 @@ async def run() -> None:
             # Workflow returned without an interrupt. Branch on status.
             status = result.get("status")
             if status == "succeeded":
-                _print_success(result)
+                _print_success(result, thread_id)
             elif status == "failed":
-                _print_qa_failure(result)
+                _print_qa_failure(result, thread_id)
                 sys.exit(1)
             else:
                 # Unknown shape — dump raw so we at least see something.
                 print("\n--- Result ---")
                 print(result)
+                print(f"\nthread_id: {thread_id}")
     except Exception as exc:
         _report_failure(thread_id, exc)
         sys.exit(1)

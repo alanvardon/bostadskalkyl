@@ -20,12 +20,13 @@ from orchestrator.agents.qa import QaResult
 
 
 class _Stubs:
-    """Recorder + scripted-response object for the 5 patched functions.
+    """Recorder + scripted-response object for the patched functions.
 
     The workflow's @task wrappers resolve `plan`, `implement`, `qa`,
-    `create_branch`, `commit_and_pr` from orchestrator.workflow's
-    module globals at call time, so monkey-patching those names on
-    that module is sufficient — no need to touch the agent modules.
+    `create_branch`, `commit`, `push`, `pr_create` from
+    orchestrator.workflow's module globals at call time, so
+    monkey-patching those names on that module is sufficient — no need
+    to touch the agent modules.
     """
 
     def __init__(self, qa_verdicts: list[QaResult]) -> None:
@@ -55,9 +56,15 @@ class _Stubs:
         self.qa_call_count += 1
         return verdict
 
-    def commit_and_pr(
-        self, branch: str, title: str, summary: str, test_plan: str
-    ) -> str:
+    def commit(self, branch: str, title: str, summary: str) -> str:
+        return "abc123def456"
+
+    def push(self, branch: str) -> None:
+        pass
+
+    def pr_create(self, branch: str, title: str, summary: str, test_plan: str) -> str:
+        # Phase 15: pr_create is the "did we reach the end" signal —
+        # this is the final task in the workflow's success path.
         self.commit_called = True
         return "https://github.com/test/pr/1"
 
@@ -73,9 +80,9 @@ async def _run(stubs: _Stubs, monkeypatch, tmp_path: Path) -> dict:
     )
     monkeypatch.setattr("orchestrator.workflow.implement", stubs.implement)
     monkeypatch.setattr("orchestrator.workflow.qa", stubs.qa)
-    monkeypatch.setattr(
-        "orchestrator.workflow.commit_and_pr", stubs.commit_and_pr
-    )
+    monkeypatch.setattr("orchestrator.workflow.commit", stubs.commit)
+    monkeypatch.setattr("orchestrator.workflow.push", stubs.push)
+    monkeypatch.setattr("orchestrator.workflow.pr_create", stubs.pr_create)
     monkeypatch.setattr(
         "orchestrator.workflow.verify_clean_tree", stubs.verify_clean_tree
     )
@@ -160,7 +167,7 @@ async def test_all_three_attempts_fail(monkeypatch, tmp_path):
     result = await _run(stubs, monkeypatch, tmp_path)
 
     # for/else: loop exhausted without break -> failed branch returns
-    # without ever calling commit_and_pr_task. A broken PR is worse
+    # without ever calling commit/push/pr_create. A broken PR is worse
     # than no PR.
     assert result["status"] == "failed"
     assert result["qa_failures"] == "fail 3"
