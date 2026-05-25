@@ -48,7 +48,7 @@ The split that matters:
 
 ## Pedagogical structure
 
-12 phases. Each phase introduces **one** concept and ends with a
+15 phases (0–14). Each phase introduces **one** concept and ends with a
 "run this and see X" verification step. Don't move on until the current
 phase runs cleanly — debugging gets exponentially harder with each
 layer of indirection added on top.
@@ -796,13 +796,129 @@ PASS, see the workflow pause for PR approval. Delete the file → run again
 
 ---
 
+## Phase 14 — Token and cost tracking (1.5 hours)
+
+**Build:** per-task token counts and a USD cost estimate surfaced as a
+summary banner in the CLI, and in the MCP server's terminal response.
+**Learn:** how structured outputs let you carry side-data (usage) along
+with the agent's primary result, and how checkpointer history makes
+aggregating across retries trivial.
+
+The orchestrator makes three LLM calls per attempt (planning,
+implementation, qa), and retries multiply that. Without per-task numbers
+you can't tell whether an expensive run was driven by long planning, a
+file-thrashy implementation, or a chatty QA — or whether retries are
+the real cost driver.
+
+LangSmith already captures all of this in the trace, so the pure
+*observability* need is solved. Phase 14 is for **offline visibility** —
+seeing the cost number in the CLI without opening a browser, and
+returning it to Claude Code so the chat can show it.
+
+### Steps
+
+1. Add `orchestrator/usage.py` with a `TaskUsage` Pydantic model and a
+   small `PRICES_USD_PER_MTOKEN` table sourced from anthropic.com/pricing:
+
+   ```python
+   class TaskUsage(BaseModel):
+       model: str
+       input_tokens: int
+       output_tokens: int
+       cache_read_tokens: int = 0
+       cache_creation_tokens: int = 0
+
+       def cost_usd(self) -> float | None: ...  # None for unknown models
+   ```
+
+2. Capture usage in each agent function. **The two SDKs report
+   differently — test each independently:**
+   - Raw Anthropic SDK (planning, qa): `response.usage.input_tokens`,
+     `response.usage.output_tokens`, plus `cache_read_input_tokens` /
+     `cache_creation_input_tokens` if prompt caching kicked in.
+   - Claude Agent SDK (implementation): the final `ResultMessage`
+     yielded from `query(...)` carries `usage` and `total_cost_usd`.
+     Use the SDK's reported cost when available; fall back to the
+     price table otherwise.
+
+3. Extend each `*Result` model with an optional `usage: TaskUsage | None`
+   field. Optional so old checkpoints stay deserialisable.
+
+4. After the workflow's final return, walk the checkpointer's task
+   history (`workflow.aget_state_history(config)`) and sum every
+   `usage` field across ALL recorded task results — including failed
+   retry attempts. The retry loop produces 1–3 implementation entries;
+   aggregate all of them. Attach the summary to the final result dict
+   under `"usage"`.
+
+5. In `cli.py`, print the summary after the success/failure banner:
+
+   ```
+   ============================================================
+   Token usage
+   ============================================================
+     planning:        4,213 in   /     521 out  ($0.014)
+     implementation:  82,440 in  /   3,917 out  ($0.31)
+     qa:             10,553 in   /     294 out  ($0.034)
+   ------------------------------------------------------------
+     TOTAL:          97,206 in   /   4,732 out  ($0.36)
+   ============================================================
+   ```
+
+6. The MCP server already passes the workflow result through; the
+   `usage` block surfaces in `approve_plan`'s final response
+   automatically. Claude Code can decide whether to mention it in chat.
+
+### What is deliberately NOT in Phase 14
+
+- **Per-task budgets / cost caps.** Tracking is observation; capping is
+  enforcement. Caps require a kill switch wired through every LLM call
+  — that's a Phase 15+ project, not a small extension of Phase 14.
+- **Charts or run-history dashboards.** LangSmith already does this.
+- **Per-attempt itemisation in the CLI banner.** Aggregate across the
+  retry loop; if you need per-attempt detail, look at the LangSmith
+  trace tree.
+- **Live token meters during long tasks.** The heartbeat shows elapsed
+  time; that's enough. Adding live token counts means hooking the SDK
+  stream events — disproportionate to the value.
+
+### Pedagogical landmines
+
+1. **Two SDKs, two usage shapes.** Don't assume `response.usage` looks
+   the same everywhere. Write one parser per SDK and test each.
+
+2. **Prompt caching makes the naïve cost calc wrong.** Cache reads are
+   ~10× cheaper than fresh reads, cache creation is ~25% more
+   expensive. Track all four token categories (input, output,
+   cache_read, cache_creation) or your numbers will drift on cached
+   runs.
+
+3. **The retry loop multiplies usage.** Failed attempts cost just as
+   much as successful ones — sometimes more, because fix-mode prompts
+   carry extra context. Make sure the aggregator iterates the full
+   task history from the checkpointer, not just the final state.
+
+4. **Prices change.** Hardcode them in `PRICES_USD_PER_MTOKEN`, source
+   from the public pricing page, and update when prices change (rare,
+   quarterly at most). Don't try to fetch live — that's a new API
+   dependency and a new failure mode for a value that changes slowly.
+
+**Run this and see X:** run any small feature end-to-end → see the
+"Token usage" banner with per-task and total breakdowns → cross-check
+the total against the same run's LangSmith trace; the two should agree
+to within a few percent (rounding + cache attribution differences).
+
+---
+
 ## What to skip on the first pass
 
 Defer until the basic version runs end-to-end:
 
 - **Parallel feature implementation.** Major topic on its own; needs git
   worktrees, concurrency caps, partial-failure semantics.
-- **Cost caps / token budgets.**
+- **Cost caps / token budgets.** Per-run *tracking* lands in Phase 14;
+  *capping* (a hard kill switch when a budget is hit) is a separate
+  enforcement layer and stays off the roadmap for now.
 - **Custom retry logic on Anthropic API errors.** The SDK handles transients;
   add only when you see a real need.
 - **Tests beyond a smoke test on each task.**
@@ -862,7 +978,8 @@ These don't change the plan but you'll want to decide as you go:
 | 11. MCP server | 1.5 hours |
 | 12. Register with Claude Code | 30 min |
 | 13. User-facing config file | 1 hour |
-| **Total** | **~11–16 focused hours** |
+| 14. Token and cost tracking | 1.5 hours |
+| **Total** | **~12–17 focused hours** |
 
 **Spread across multiple sessions.** The pedagogical value comes from
 running each phase and letting the model click before adding the next
