@@ -25,7 +25,11 @@ from orchestrator.agents.qa import qa, QaResult
 <<<<<<< Updated upstream
 <<<<<<< Updated upstream
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
 from orchestrator.git_ops import create_branch
+=======
+from orchestrator.git_ops import create_branch, commit_and_pr
+>>>>>>> Stashed changes
 =======
 from orchestrator.git_ops import create_branch, commit_and_pr
 >>>>>>> Stashed changes
@@ -114,7 +118,10 @@ async def qa_task(plan_result: PlanResult) -> QaResult:
 <<<<<<< Updated upstream
 <<<<<<< Updated upstream
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
 =======
+=======
+>>>>>>> Stashed changes
 =======
 >>>>>>> Stashed changes
 =======
@@ -146,6 +153,9 @@ async def commit_and_pr_task(
 
 <<<<<<< Updated upstream
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
+>>>>>>> Stashed changes
+=======
 >>>>>>> Stashed changes
 =======
 >>>>>>> Stashed changes
@@ -180,7 +190,10 @@ async def build_workflow(
 <<<<<<< Updated upstream
 <<<<<<< Updated upstream
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
 =======
+=======
+>>>>>>> Stashed changes
 =======
 >>>>>>> Stashed changes
 =======
@@ -193,6 +206,9 @@ async def build_workflow(
             )
 <<<<<<< Updated upstream
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
+>>>>>>> Stashed changes
+=======
 >>>>>>> Stashed changes
 =======
 >>>>>>> Stashed changes
@@ -206,6 +222,10 @@ async def build_workflow(
 <<<<<<< Updated upstream
 <<<<<<< Updated upstream
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
+=======
+                "pr_url": pr_url,
+>>>>>>> Stashed changes
 =======
                 "pr_url": pr_url,
 >>>>>>> Stashed changes
