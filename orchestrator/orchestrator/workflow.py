@@ -21,6 +21,7 @@ from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 
 from orchestrator.agents.planning import plan, PlanResult
 from orchestrator.agents.implementation import implement, ImplementationResult
+from orchestrator.agents.qa import qa, QaResult
 from orchestrator.git_ops import create_branch
 
 
@@ -28,11 +29,10 @@ from orchestrator.git_ops import create_branch
 # on this allowlist (the warning today; a hard error tomorrow). Register
 # every Pydantic model that flows through a @task so resume keeps working
 # across upgrades. Each entry is (module_path, class_name).
-#
-# As Phase 6 adds QaResult, add it here too.
 _ALLOWED_MSGPACK_MODULES = [
     ("orchestrator.agents.planning", "PlanResult"),
     ("orchestrator.agents.implementation", "ImplementationResult"),
+    ("orchestrator.agents.qa", "QaResult"),
 ]
 
 _CUSTOM_SERDE = JsonPlusSerializer(
@@ -88,6 +88,17 @@ async def implementation_task(
     return await implement(plan_result, mode=mode, qa_failures=qa_failures)
 
 
+# Phase 6c. Read-only LLM task: the QA agent reviews the uncommitted
+# diff against the approved plan and emits a PASS/FAIL verdict. No file
+# edits, no git operations. The QaResult feeds into Phase 7's retry
+# loop — on FAIL the orchestrator will call implementation_task again
+# in "fix" mode with the failure text. For now (linear chain, no
+# retries yet) we just record the verdict in the workflow result.
+@task
+async def qa_task(plan_result: PlanResult) -> QaResult:
+    return await qa(plan_result)
+
+
 # build_workflow is a factory, not a module-level workflow definition.
 # Why: AsyncSqliteSaver.from_conn_string returns an async context manager
 # that opens the SQLite connection on entry and closes it on exit. The
@@ -113,10 +124,12 @@ async def build_workflow(
             plan_result = await planning_task(request)
             branch_name = await create_branch_task(plan_result)
             impl_result = await implementation_task(plan_result)
+            qa_result = await qa_task(plan_result)
             return {
                 "plan": plan_result.model_dump(),
                 "branch": branch_name,
                 "implementation": impl_result.model_dump(),
+                "qa": qa_result.model_dump(),
             }
 
         yield workflow
