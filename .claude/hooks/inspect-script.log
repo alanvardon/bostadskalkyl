@@ -44,3 +44,7 @@ echo '{"tool_name":"Bash","tool_input":{"command":"ruby script.rb"}}' \
 [2026-05-20T20:46:18Z] BLOCKED script execution | command=./script.sh
 [2026-05-20T20:46:18Z] BLOCKED script execution | command=ruby script.rb
 [2026-05-20T20:46:18Z] BLOCKED script execution | command=perl script.pl
+[2026-05-22T19:12:26Z] BLOCKED script execution | command=bash .claude/skills/static-checks/static-checks.sh 2>&1
+[2026-05-22T19:17:16Z] BLOCKED script execution | command=bash /Users/avardon/Programming/bostadskalkyl/.claude/skills/static-checks/static-checks.sh 2>&1
+[2026-05-22T19:27:23Z] BLOCKED script execution | command=bash .claude/skills/static-checks/static-checks.sh 2>&1
+[2026-05-22T19:29:07Z] BLOCKED script execution | command=bash /Users/avardon/Programming/bostadskalkyl/.claude/skills/static-checks/static-checks.sh 2>&1
