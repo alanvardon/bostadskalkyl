@@ -1,3 +1,4 @@
+console.log('hello from orchestrator');
   // Shorthand aliases for App.calc and App.dom functions used throughout this file
   const fmt             = (...a) => App.calc.fmt(...a);
   const pct             = (...a) => App.calc.pct(...a);
