@@ -43,7 +43,9 @@ from orchestrator.usage import TaskUsage
 from orchestrator.prompt_loader import load_prompt
 
 from orchestrator.agents.planning import PlanResult
+from orchestrator.config import load_config
 from orchestrator.git_ops import REPO_ROOT
+from orchestrator.qa_scripts import run_qa_scripts
 
 
 _QA_SYSTEM_PROMPT = load_prompt("qa")
@@ -68,10 +70,30 @@ def _build_user_message(plan: PlanResult) -> str:
 async def qa(plan: PlanResult, model: str = "claude-sonnet-4-6") -> QaResult:
     """Run the QA agent and return its structured verdict.
 
-    Read-only: the agent has Read, Bash, Glob, Grep — explicitly no
+    Scripted gate runs first (before any LLM call). If any executable
+    script in `qa_scripts_dir` exits non-zero, a FAIL is returned
+    immediately with the script output embedded in `failures`.
+
+    Read-only: the LLM agent has Read, Bash, Glob, Grep — explicitly no
     Edit or Write. The orchestrator (not the agent) decides what
     happens after a FAIL.
     """
+    # --- Scripted QA gate (Phase 28) ------------------------------------
+    # Run before the LLM. Any non-zero exit from a script short-circuits
+    # the whole QA phase: no prompt is built, no model is called.
+    _config = load_config()
+    _scripted_outcome = run_qa_scripts(
+        repo_root=REPO_ROOT,
+        qa_scripts_dir=_config.qa_scripts_dir,
+        timeout=_config.qa_scripts_timeout,
+    )
+    if not _scripted_outcome.passed:
+        return QaResult(
+            result="FAIL",
+            failures=_scripted_outcome.failure_report,
+        )
+    # --- End scripted gate ----------------------------------------------
+
     # Closure-captured holder for the agent's final structured output.
     # Same pattern as implementation.py — the @tool below writes into
     # it, we read it after query() returns.

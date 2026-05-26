@@ -1,6 +1,9 @@
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
+
+logger = logging.getLogger(__name__)
 
 # LangGraph's Functional API: @entrypoint marks the top-level workflow
 # function, @task marks a checkpointable unit of work. Together they let
@@ -304,6 +307,15 @@ async def build_workflow(
                 write_qa(thread_id, qa_result)
                 if qa_result.result == "PASS":
                     break
+
+                # Log QA failure at ERROR level so scripted-gate failures
+                # (Phase 28) and LLM failures are both visible in the log.
+                logger.error(
+                    "QA FAIL (attempt %d/%d):\n%s",
+                    attempt,
+                    config.max_retries,
+                    qa_result.failures or "(no failure details)",
+                )
 
                 # Phase 13: optional gate on QA failure — user can abort
                 # rather than burning another retry attempt.
