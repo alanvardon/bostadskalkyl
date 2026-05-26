@@ -1,7 +1,7 @@
 """Per-run artifact folder (Phase 33).
 
-Writes each run's plan, implementation summary, test-plan, and QA
-verdict to disk as readable markdown under:
+Writes each run's plan, implementation summary, test-plan, QA verdict,
+and token usage to disk under:
 
     .orchestrator/runs/{thread_id}/          ← before branch exists
     .orchestrator/runs/{thread_id}-{slug}/   ← after create_branch
@@ -12,10 +12,12 @@ these files are for human debugging only.
 
 Usage in workflow.py:
     from orchestrator.run_artifacts import (
-        write_plan, write_implementation, write_qa, rename_with_branch
+        write_plan, write_implementation, write_qa, write_usage,
+        rename_with_branch,
     )
 """
 
+import json
 from pathlib import Path
 
 from orchestrator.agents.implementation import ImplementationResult
@@ -71,6 +73,18 @@ def write_qa(thread_id: str, qa: QaResult) -> None:
         )
         content = f"# QA Result: {qa.result}{failures_section}\n"
         (d / "qa.md").write_text(content, encoding="utf-8")
+    except OSError:
+        pass
+
+
+def write_usage(thread_id: str, usage: dict) -> None:
+    """Write usage.json — final token/cost summary for the run."""
+    try:
+        d = _run_dir(thread_id)
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "usage.json").write_text(
+            json.dumps(usage, indent=2), encoding="utf-8"
+        )
     except OSError:
         pass
 

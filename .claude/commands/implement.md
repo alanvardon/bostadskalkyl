@@ -31,6 +31,26 @@ three attempts). Surface the result to the user — the PR URL on
 success, the QA failures on failure. Include the `thread_id` in
 either case.
 
+**Always render the token usage table when the workflow completes**
+(status `"succeeded"` or `"failed"`). The result contains a `usage`
+key with `by_task` (per-agent breakdown) and `total`. If `usage` is
+present and non-empty, format it like this — using the actual values
+from the result:
+
+```
+Token usage
+───────────────────────────────────────────────────
+  planning          X,XXX in /   XXX out  ($0.XXX)
+  implementation   XX,XXX in / X,XXX out  ($0.XXX)
+  qa               XX,XXX in /   XXX out  ($0.XXX)
+───────────────────────────────────────────────────
+  TOTAL            XX,XXX in / X,XXX out  ($0.XXX)
+```
+
+Show `?` for cost if `cost_usd` is null (model not in the price
+table). The planning row covers all planner calls including any
+replanning rounds; implementation and QA cover all retry attempts.
+
 **If `approve_plan` raises an error** (e.g. push failed, gh pr create
 failed): the workflow stalled mid-task but the work done so far is
 preserved in the checkpointer. Tell the user what failed, surface the

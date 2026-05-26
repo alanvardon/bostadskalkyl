@@ -39,6 +39,7 @@ from orchestrator.run_artifacts import (
     write_implementation,
     write_plan,
     write_qa,
+    write_usage,
 )
 
 
@@ -316,22 +317,26 @@ async def build_workflow(
                         ),
                     })
                     if decision == "abort":
+                        _usage = aggregate_usage(usage_by_task)
+                        write_usage(thread_id, _usage)
                         return {
                             "status": "failed",
                             "plan": plan_result.model_dump(),
                             "branch": branch_name,
                             "qa_failures": qa_result.failures,
-                            "usage": aggregate_usage(usage_by_task),
+                            "usage": _usage,
                         }
 
                 qa_failures = qa_result.failures
             else:
+                _usage = aggregate_usage(usage_by_task)
+                write_usage(thread_id, _usage)
                 return {
                     "status": "failed",
                     "plan": plan_result.model_dump(),
                     "branch": branch_name,
                     "qa_failures": qa_failures,
-                    "usage": aggregate_usage(usage_by_task),
+                    "usage": _usage,
                 }
 
             # Phase 13: optional gate before committing and opening PR.
@@ -362,6 +367,8 @@ async def build_workflow(
                 config.pr.reviewers,
                 config.pr.labels,
             )
+            _usage = aggregate_usage(usage_by_task)
+            write_usage(thread_id, _usage)
             return {
                 "status": "succeeded",
                 "plan": plan_result.model_dump(),
@@ -369,7 +376,7 @@ async def build_workflow(
                 "implementation": impl_result.model_dump(),
                 "qa": qa_result.model_dump(),
                 "pr_url": pr_url,
-                "usage": aggregate_usage(usage_by_task),
+                "usage": _usage,
             }
 
         yield workflow

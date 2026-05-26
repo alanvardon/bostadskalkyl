@@ -40,4 +40,4 @@ draft = false
 reviewers = []
 
 # Labels to attach to the PR. Empty list = no labels attached.
-labels = ["feature", "bug", "refactor", "chose"]
+labels = ["feature", "bug", "refactor", "chore"]
