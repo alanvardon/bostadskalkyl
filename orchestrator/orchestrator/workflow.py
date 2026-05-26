@@ -26,6 +26,7 @@ from orchestrator.agents.planning import plan, PlanResult
 from orchestrator.agents.implementation import implement, ImplementationResult
 from orchestrator.agents.qa import qa, QaResult
 from orchestrator.config import OrchestratorConfig, load_config
+from orchestrator.usage import TaskUsage, aggregate_usage
 from orchestrator.git_ops import (
     commit,
     create_branch,
@@ -49,6 +50,7 @@ _ALLOWED_MSGPACK_MODULES = [
     ("orchestrator.agents.planning", "PlanResult"),
     ("orchestrator.agents.implementation", "ImplementationResult"),
     ("orchestrator.agents.qa", "QaResult"),
+    ("orchestrator.usage", "TaskUsage"),
 ]
 
 _CUSTOM_SERDE = JsonPlusSerializer(
@@ -206,12 +208,20 @@ async def build_workflow(
         async def workflow(request: str) -> dict:
             thread_id = get_config()["configurable"]["thread_id"]
 
-            # Fail fast on a dirty tree BEFORE the planning LLM call —
-            # otherwise we'd waste tokens (and the user's approval time)
-            # only to fail at create_branch_task downstream.
             await verify_clean_tree_task()
 
+            # Accumulate token usage across all agent calls for the run.
+            # Keys map to lists so retries (multiple impl/qa calls) are
+            # all summed in the final aggregate.
+            usage_by_task: dict[str, list[TaskUsage]] = {
+                "planning": [],
+                "implementation": [],
+                "qa": [],
+            }
+
             plan_result = await planning_task(request, config.models.planning)
+            if plan_result.usage:
+                usage_by_task["planning"].append(plan_result.usage)
             write_plan(thread_id, plan_result)
 
             # Phase 8: plan approval interrupt. The loop runs until the
@@ -243,6 +253,8 @@ async def build_workflow(
                     f"{request}\n\nFeedback: {approval}",
                     config.models.planning,
                 )
+                if plan_result.usage:
+                    usage_by_task["planning"].append(plan_result.usage)
                 write_plan(thread_id, plan_result)
 
             # Phase 13: optional branch-creation approval gate.
@@ -275,9 +287,10 @@ async def build_workflow(
                     qa_failures=qa_failures,
                     model=config.models.implementation,
                 )
+                if impl_result.usage:
+                    usage_by_task["implementation"].append(impl_result.usage)
                 write_implementation(thread_id, impl_result)
 
-                # Phase 13: optional gate between implementation and QA.
                 if config.human_in_loop.approve_implementation:
                     interrupt({
                         "kind": "implementation_approval",
@@ -285,6 +298,8 @@ async def build_workflow(
                     })
 
                 qa_result = await qa_task(plan_result, config.models.qa)
+                if qa_result.usage:
+                    usage_by_task["qa"].append(qa_result.usage)
                 write_qa(thread_id, qa_result)
                 if qa_result.result == "PASS":
                     break
@@ -306,19 +321,17 @@ async def build_workflow(
                             "plan": plan_result.model_dump(),
                             "branch": branch_name,
                             "qa_failures": qa_result.failures,
+                            "usage": aggregate_usage(usage_by_task),
                         }
 
                 qa_failures = qa_result.failures
             else:
-                # All attempts failed QA. Return without opening a PR —
-                # a broken PR is worse than no PR. The branch and all the
-                # attempted diffs are still in the repo; a human can review
-                # and decide what to do with them.
                 return {
                     "status": "failed",
                     "plan": plan_result.model_dump(),
                     "branch": branch_name,
                     "qa_failures": qa_failures,
+                    "usage": aggregate_usage(usage_by_task),
                 }
 
             # Phase 13: optional gate before committing and opening PR.
@@ -356,6 +369,7 @@ async def build_workflow(
                 "implementation": impl_result.model_dump(),
                 "qa": qa_result.model_dump(),
                 "pr_url": pr_url,
+                "usage": aggregate_usage(usage_by_task),
             }
 
         yield workflow

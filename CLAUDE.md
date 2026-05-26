@@ -1,145 +1,111 @@
-# Bostadskalkyl
+# CLAUDE.md
 
-A personal Swedish house purchase calculator. Multi-file HTML application
-that runs locally in the browser. No build step, no dependencies except
-Chart.js loaded via CDN.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## File structure
+## What this is
 
+Bostadskalkyl is a local-first, no-build-step web calculator for buying a house in Sweden. It models lagfart, pantbrev, amortisation, ränteavdrag, bank rate comparisons, and driftkostnad — with saved scenarios and payoff charts. All data lives in `localStorage`.
+
+## Commands
+
+**Run the app** — open `index.html` directly in a browser (no server needed).
+
+**Run tests** (pure-calc unit tests only):
 ```
-index.html   — HTML structure; links to styles.css; loads JS files at bottom of body
-styles.css   — all CSS (extracted from the old single-file <style> block)
-calc.js      — pure math and formatters (IIFE, exports window.App.calc)
-dom.js       — set(id, text, cls) and val(id) (IIFE, exports window.App.dom)
-storage.js   — async Promise-returning localStorage wrappers, onChange pub/sub,
-               _v1 key migration (IIFE, exports window.App.storage)
-modals.js    — all six modal open/close pairs, drift/savings CRUD,
-               in-memory drift/savings caches (IIFE, exports window.App.modals)
-charts.js    — amort chart, fullscreen chart, lump-sum logic
-               (IIFE, exports window.App.charts)
-app.js       — App.recalc(), state vars, event wiring, async boot
+node --test calc.test.js
 ```
 
-Script load order in index.html (bottom of body):
-```html
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
-<script src="calc.js"></script>
-<script src="dom.js"></script>
-<script src="storage.js"></script>
-<script src="modals.js"></script>
-<script src="charts.js"></script>
-<script src="app.js"></script>
+**Run static checks** (HTML integrity gate used by QA and implementation agents):
+```
+bash .claude/skills/static-checks/static-checks.sh
 ```
 
-## Architecture
+**Orchestrator CLI** (debug / standalone):
+```
+cd orchestrator
+implement-feature "your feature request here"
+```
 
-### Layout
-Two-column layout with independent scroll:
-- Left: inputs column (sections 1–4)
-- Right: summary column (fixed-width, 360px)
+**Orchestrator via MCP** — the preferred path from Claude Code chat; three tools are registered: `implement_feature`, `approve_plan`, `resume_run`.
 
-### Sections
-- Section 1: Selling current property
-- Section 2: Buying new property
-- Section 3: Monthly costs — dual bank comparison with ränteavdrag
-- Section 4: Interest rate stress test table
+## Frontend architecture
 
-### Key functions
-- `App.recalc()` — master calculation function in app.js, runs on every input change,
-  updates all derived values and summary panel. Synchronous.
-- `App.dom.set(id, text, cls)` — safely updates a DOM element's text and colour class
-  without wiping other classes
-- `App.dom.val(id)` — reads a numeric value from any input (handles currency formatting
-  and number inputs)
-- `App.calc.fmt(n)` — formats a number as Swedish currency
-- `App.calc.formatWithSpaces(n)` — formats a number with Swedish space separators
-- `App.calc.parseFormatted(str)` — parses a space-formatted string back to a number
-- `App.calc.lagfart(price)`, `pantbrevCost(loan, pb)`, `ranteavdrag(annual)`,
-  `equityPct(loan, price)`, `fastighetsavgiftCap(tax)`, `buildAmortSchedule(...)` — pure math
-- `App.modals.getSavingsTotal()` — returns sum of in-memory savings items cache
-- `App.modals.setDriftItems(items)` / `setSavingsItems(items)` — boot pre-load setters
-- `App.modals.updateHeaderLabel()` — updates scenario name label in header
+There is no build step. `index.html` loads six scripts in this fixed order — load order is a hard constraint:
 
-### One-writer-per-App.*-key rule
-Each key in the `window.App` namespace is assigned by exactly one file:
-- `App.calc` → calc.js
-- `App.dom` → dom.js
-- `App.storage` → storage.js
-- `App.modals` → modals.js
-- `App.charts` → charts.js
-- `App.recalc` → app.js
+```
+calc.js → dom.js → storage.js → modals.js → charts.js → app.js
+```
 
-### Modals
-Each modal follows the same pattern:
-- Backdrop div with class `modal-backdrop`, opened with `.open` class
-- `open[Name]Modal()` and `close[Name]Modal()` functions in modals.js
-- Click-outside-to-close on the backdrop element
-- All buttons wired via `addEventListener` (no inline onclick attributes)
+Each file is an IIFE that writes to a single namespace slot on `window.App`. The one-writer rule: **each `window.App.*` key has exactly one file that writes it.**
 
-Current modals:
-- `scenariosModal` — saved scenarios
-- `savePrompt` — save/update scenario prompt
-- `amortModal` — mortgage payoff comparison chart
-- `chartFullscreen` — fullscreen version of the amort chart
-- `driftModal` — itemised driftkostnad breakdown
-- `savingsModal` — savings entries
+| File | Namespace | Responsibility |
+|---|---|---|
+| `calc.js` | `App.calc` | Pure math functions; no DOM |
+| `dom.js` | `App.dom` | `set(id, text, cls)` and `val(id)` — the only DOM read/write API |
+| `storage.js` | `App.storage` | `localStorage` with versioned keys (`bostadskalkyl_*_v1`) |
+| `modals.js` | `App.modals` | Modal state, drift/savings item logic, scenario save/load UI |
+| `charts.js` | `App.charts` | Amortisation payoff chart (Chart.js) |
+| `app.js` | `App.recalc` | Orchestrates a full recalculation pass; reads all inputs and sets all output DOM nodes |
 
-### localStorage keys
-All keys use versioned `_v1` suffix; migration from unversioned runs once on first load (in storage.js):
-- `bostadskalkyl_scenarios_v1` — saved scenario objects
-- `bostadskalkyl_session_v1` — current session state (inputs + active scenario)
-- `bostadskalkyl_drift_items_v1` — driftkostnad line items
-- `bostadskalkyl_drift_yearly` — monthly/yearly toggle preference (no versioning needed)
-- `bostadskalkyl_savings_items_v1` — savings entries
-- `bostadskalkyl_theme` — light/dark theme preference (no versioning needed)
+**`App.recalc()` is the single recalculation entry point.** Every input change calls it. All new derived values must be calculated and set inside `App.recalc()`. All new inputs must be read inside `App.recalc()` using `val()`.
 
-### Input types
-- Currency inputs: `type="text"` with `data-type="currency"` —
-  formatted with space separators, stripped on focus
-- Number inputs: `type="number"` — used for rates, years, percentages
-- Text inputs: bank names, listing URL, modal label fields
+### Input arrays in `app.js`
 
-### Saved inputs
-Three arrays drive save/restore (defined in app.js):
-- `CURRENCY_IDS` — currency text inputs
-- `NUMBER_IDS` — number inputs
-- `TEXT_IDS` — plain text inputs (bank names, listing URL)
-The ranteavdrag toggle is saved separately as `data.ranteavdrag`.
+New inputs must be registered in the correct array or they won't be persisted:
+- `CURRENCY_IDS` — inputs with `data-type="currency"` (parsed via `parseFormatted`)
+- `NUMBER_IDS` — numeric inputs (parsed via `parseFloat`)
+- `TEXT_IDS` — plain text inputs
 
-## Swedish property conventions
-- Lagfart: 1.5% of purchase price
-- Pantbrev cost: 2% of new pantbrev amount needed
-- New pantbrev needed: loan amount minus existing pantbrev held
-- Ränteavdrag: 30% tax relief on first 100 000 kr/yr interest,
-  21% above that
-- Fastighetsavgift: capped at 9 287 kr/yr (2024)
-- Amortisation: set as annual % of loan, not a fixed term
-- LTV displayed as inverse (equity %) — green ≥30%, amber 15–30%,
-  red <15%
+### CSS rules
 
-## Design system
-- Fonts: DM Serif Display (headings), DM Sans (body)
-- Colour palette defined as CSS variables in `:root`
-- Key colours: `--accent` (green #2d5a3d), `--warn` (amber/brown #8b4a1a)
-- Positive values: `--accent` green
-- Negative values: `--warn` amber-brown
-- Cards: `sum-card` class, clickable variant adds `sum-card-clickable`
-- Currency always formatted with `sv-SE` locale via `fmt()` helper
+- Always use CSS variables from `:root` — never hardcode colours or fonts.
+- Only use `DM Sans` or `DM Serif Display`.
+- Use `classList.add()` / `classList.remove()` — never assign `el.className`.
 
-## Git workflow
-- Never commit directly to main
-- Create a branch for every change: `feature/*`, `fix/*`, `refactor/*`
-- Write a clear, specific commit message describing what changed and why
-- Push the branch and open a PR — do not merge without review
-- One logical change per PR — don't bundle unrelated changes
+### Modal open/close pattern
 
-## Things to never do
-- Never rename or remove `App.recalc()` — everything depends on it
-- Never write to a `window.App.*` key from more than one file (one-writer rule)
-- Never use `el.className = ...` to set classes — use `classList` to
-  avoid wiping existing classes (this was a past bug)
-- Never hardcode colours — always use CSS variables
-- Never add `position: fixed` inside modals — breaks iframe height
-- Never commit API keys, tokens or sensitive data
-- Never force push to any branch
-- Never merge to main without a PR
+Every modal must follow this exact pattern:
+- Open: `element.classList.add('open')` on the backdrop element
+- Close: `element.classList.remove('open')` on the backdrop element
+- Every modal must have a click-outside-to-close handler on the backdrop and a `×` close button (`modal-close` class)
+
+### localStorage conventions
+
+- Key names: `bostadskalkyl_<name>_v1` (versioned)
+- New keys must be handled in both `readInputs()` and `writeInputs()` in `app.js`
+
+## Orchestrator
+
+The `orchestrator/` subdirectory is a separate Python package (`bostadskalkyl-orchestrator`) that automates the plan → implement → QA → PR pipeline. It is **not** part of the web app.
+
+**Runtime:** Python 3.12, pyenv virtualenv `bk-orchestrator-env`. The MCP server must always be invoked via the full path `/Users/avardon/.pyenv/versions/bk-orchestrator-env/bin/python` — pyenv auto-activation does not apply to MCP subprocess spawns.
+
+**Key modules:**
+- `orchestrator/workflow.py` — LangGraph `@entrypoint` with three `@task` units: planning → implementation → QA, with an impl/QA retry loop (up to `max_retries`, default 3). Phase 15 split commit/push/PR into three separate `@task`s for idempotent resumability.
+- `orchestrator/agents/planning.py` — calls Claude via Anthropic SDK with structured output (forced tool use) to produce a `PlanResult`
+- `orchestrator/agents/implementation.py` — spawns a Claude agent (claude-agent-sdk) to edit files per the plan; supports `implement` and `fix` modes
+- `orchestrator/agents/qa.py` — read-only Claude agent that checks the uncommitted diff against the plan; emits PASS or FAIL
+- `orchestrator/mcp_server.py` — FastMCP server exposing `implement_feature`, `approve_plan`, `resume_run` to Claude Code
+- `orchestrator/config.py` — loads `orchestrator.toml` from the project root; all fields optional with defaults
+- `orchestrator/git_ops.py` — deterministic git operations (branch, commit, push, PR creation)
+- `orchestrator/run_artifacts.py` — writes plan/implementation/QA outputs to per-run folders in `.orchestrator/runs/`
+
+**Checkpointing:** `AsyncSqliteSaver` writes to `.orchestrator/checkpoints.db`. On mid-run crash, re-run with the same `thread_id` to resume. Completed `@task`s are skipped (their outputs are replayed from the checkpoint).
+
+**Config file:** `orchestrator.toml` at the project root. Controls `max_retries`, model IDs per agent, `human_in_loop` gates (plan approval, branch, impl, QA failure, PR), branch slug length, and PR settings.
+
+**MCP tool flow:**
+1. `implement_feature(request)` — starts a workflow, always pauses at plan approval, returns `{status: "awaiting_approval", thread_id, plan}`
+2. Show `plan.plan_text` to the user; ask for approval or feedback
+3. `approve_plan(thread_id, "yes")` — proceeds through branch creation, implementation (5+ min), QA, commit, push, PR
+4. `approve_plan(thread_id, "<feedback>")` — regenerates the plan with the feedback; loop until "yes"
+5. `resume_run(thread_id)` — use after fixing an underlying error (push failure, auth issue) to continue without re-running completed tasks
+
+## Agent system
+
+`.claude/agents/` holds the sub-agent definitions used by Claude Code directly (not the orchestrator Python agents):
+- `planning.md` — produces structured implementation plans; read-only
+- `implementation.md` — executes plans; writes files, self-gates with `static-checks`
+- `qa.md` — reviews uncommitted diffs; reports PASS/FAIL; does not fix
+
+The `/implement` slash command (`/.claude/commands/implement.md`) invokes the orchestrator MCP tools via Claude Code chat.

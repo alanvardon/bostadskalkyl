@@ -29,11 +29,14 @@ import sys
 from anthropic import AsyncAnthropic
 from claude_agent_sdk import (
     ClaudeAgentOptions,
+    ResultMessage,
     create_sdk_mcp_server,
     query,
     tool,
 )
 from pydantic import BaseModel
+
+from orchestrator.usage import TaskUsage
 
 from orchestrator.agents.planning import PlanResult
 from orchestrator.git_ops import REPO_ROOT
@@ -130,13 +133,9 @@ This call is how the orchestrator captures your output. If you don't call it, th
 
 
 class ImplementationResult(BaseModel):
-    # One-line description of what changed. Goes into the commit message
-    # (Phase 6d) and the PR title via the planning agent's title.
     summary: str
-
-    # Markdown checklist for manual verification. Becomes the PR's
-    # "Test plan" section.
     test_plan: str
+    usage: TaskUsage | None = None
 
 
 def _build_user_message(
@@ -239,25 +238,32 @@ async def implement(
 
     user_message = _build_user_message(plan, mode, qa_failures)
 
-    # Drive the agent loop. We don't need to inspect intermediate
-    # messages here — LangSmith captures them via the SDK's tracing,
-    # and the structured output comes through the tool call. We just
-    # need to consume the iterator so the loop actually runs.
-    async for _ in query(prompt=user_message, options=options):
-        pass
+    result_msg: ResultMessage | None = None
+    async for msg in query(prompt=user_message, options=options):
+        if isinstance(msg, ResultMessage):
+            result_msg = msg
 
     if "summary" not in captured:
-        # The agent finished its turn budget or hit an error without
-        # calling emit_implementation_result. Either the prompt failed
-        # to make the tool's necessity clear, or the agent ran out of
-        # turns mid-work. Either way we have nothing to return.
         raise RuntimeError(
             "implementation agent did not call emit_implementation_result"
+        )
+
+    usage: TaskUsage | None = None
+    if result_msg is not None and result_msg.usage:
+        u = result_msg.usage
+        usage = TaskUsage(
+            model=model,
+            input_tokens=u.get("input_tokens", 0),
+            output_tokens=u.get("output_tokens", 0),
+            cache_read_tokens=u.get("cache_read_input_tokens", 0),
+            cache_creation_tokens=u.get("cache_creation_input_tokens", 0),
+            reported_cost_usd=result_msg.total_cost_usd,
         )
 
     return ImplementationResult(
         summary=captured["summary"],
         test_plan=captured["test_plan"],
+        usage=usage,
     )
 
 

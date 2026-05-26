@@ -31,12 +31,15 @@ import sys
 
 from claude_agent_sdk import (
     ClaudeAgentOptions,
+    ResultMessage,
     create_sdk_mcp_server,
     query,
     tool,
 )
 from pydantic import BaseModel
 from typing import Literal
+
+from orchestrator.usage import TaskUsage
 
 from orchestrator.agents.planning import PlanResult
 from orchestrator.git_ops import REPO_ROOT
@@ -112,15 +115,9 @@ This call is how the orchestrator captures your verdict. If you don't call it, t
 
 
 class QaResult(BaseModel):
-    # PASS = every check passed. FAIL = one or more failed. Pydantic's
-    # Literal validation is the hard gate — anything else raises at
-    # construction time.
     result: Literal["PASS", "FAIL"]
-
-    # Markdown failure report when result == "FAIL". None when PASS.
-    # Feeds back into implementation_task as `qa_failures` on the next
-    # retry attempt (Phase 7's fix loop).
     failures: str | None = None
+    usage: TaskUsage | None = None
 
 
 def _build_user_message(plan: PlanResult) -> str:
@@ -201,20 +198,29 @@ async def qa(plan: PlanResult, model: str = "claude-sonnet-4-6") -> QaResult:
 
     user_message = _build_user_message(plan)
 
-    async for _ in query(prompt=user_message, options=options):
-        pass
+    result_msg: ResultMessage | None = None
+    async for msg in query(prompt=user_message, options=options):
+        if isinstance(msg, ResultMessage):
+            result_msg = msg
 
     if "result" not in captured:
         raise RuntimeError("qa agent did not call emit_qa_result")
 
-    # Empty string → None for the failures field. Cleaner downstream:
-    # the retry loop (Phase 7) can `if qa.failures:` rather than
-    # checking truthy strings.
     failures = captured["failures"] or None
 
-    # Pydantic's Literal["PASS", "FAIL"] raises ValidationError here if
-    # the agent emitted anything else — that's the hard gate.
-    return QaResult(result=captured["result"], failures=failures)
+    usage: TaskUsage | None = None
+    if result_msg is not None and result_msg.usage:
+        u = result_msg.usage
+        usage = TaskUsage(
+            model=model,
+            input_tokens=u.get("input_tokens", 0),
+            output_tokens=u.get("output_tokens", 0),
+            cache_read_tokens=u.get("cache_read_input_tokens", 0),
+            cache_creation_tokens=u.get("cache_creation_input_tokens", 0),
+            reported_cost_usd=result_msg.total_cost_usd,
+        )
+
+    return QaResult(result=captured["result"], failures=failures, usage=usage)
 
 
 # Standalone test:
