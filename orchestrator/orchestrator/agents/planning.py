@@ -25,6 +25,8 @@ from pydantic import BaseModel
 # Anything outside the allowed set raises a ValidationError immediately.
 from typing import Literal
 
+from orchestrator.usage import TaskUsage
+
 
 
 
@@ -95,19 +97,17 @@ Do not write any code. Do not make any changes.
 # PlanResult is the structured output the planning agent returns.
 # Wrapping the agent's response in a model means callers never have to
 # inspect raw strings or dicts — they work with validated, typed attributes.
-class PlanResult(BaseModel):
-    # Short human-readable name for the plan, e.g. "Add dark mode toggle".
+# Schema used as the emit_plan tool's input_schema. Excludes `usage` so
+# the model is never asked to fill in token-count data.
+class _PlanSchema(BaseModel):
     title: str
-
-    # Classifies the intent of the change so downstream agents can adapt
-    # their behaviour (e.g. a fix needs regression tests; a refactor doesn't
-    # need new docs). Pydantic rejects any value not in this tuple.
     type: Literal["feature", "fix", "refactor"]
-
-    # The full plan written by the planning agent — markdown prose describing
-    # what to implement and why. Kept as free text so the implementing agent
-    # can read it like a spec without further parsing.
     plan_text: str
+
+
+class PlanResult(_PlanSchema):
+    # Populated after the API call returns; not part of the LLM tool schema.
+    usage: TaskUsage | None = None
 
 
 async def plan(request: str, model: str = "claude-sonnet-4-6") -> PlanResult:
@@ -135,7 +135,7 @@ async def plan(request: str, model: str = "claude-sonnet-4-6") -> PlanResult:
             {
                 "name": "emit_plan",
                 "description": "Emit the structured implementation plan for the requested change.",
-                "input_schema": PlanResult.model_json_schema(),
+                "input_schema": _PlanSchema.model_json_schema(),
             }
         ],
         # tool_choice forces the model to call emit_plan rather than reply
@@ -143,11 +143,17 @@ async def plan(request: str, model: str = "claude-sonnet-4-6") -> PlanResult:
         tool_choice={"type": "tool", "name": "emit_plan"},
         messages=[{"role": "user", "content": request}],
     )
-    # The response.content list contains content blocks; with forced tool_choice
-    # there will be exactly one of type "tool_use". Its .input is a dict matching
-    # PlanResult's schema — model_validate runs Pydantic's full validation on it.
     tool_use = next(block for block in response.content if block.type == "tool_use")
-    return PlanResult.model_validate(tool_use.input)
+    result = PlanResult.model_validate(tool_use.input)
+    u = response.usage
+    result.usage = TaskUsage(
+        model=model,
+        input_tokens=u.input_tokens,
+        output_tokens=u.output_tokens,
+        cache_read_tokens=getattr(u, "cache_read_input_tokens", 0) or 0,
+        cache_creation_tokens=getattr(u, "cache_creation_input_tokens", 0) or 0,
+    )
+    return result
 
 
 # Allow `python -m orchestrator.agents.planning "add dark mode"` to run the

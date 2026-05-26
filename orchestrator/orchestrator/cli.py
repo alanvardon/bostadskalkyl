@@ -158,6 +158,7 @@ def _print_success(result: dict, thread_id: str) -> None:
     print(f"  PR:        {result['pr_url']}")
     print(f"  thread_id: {thread_id}")
     print(_RULE)
+    _print_usage_banner(result)
 
 
 def _print_qa_failure(result: dict, thread_id: str) -> None:
@@ -176,6 +177,40 @@ def _print_qa_failure(result: dict, thread_id: str) -> None:
         "The branch and attempted diffs are in your repo; review and decide "
         "what to do with them."
     )
+    _print_usage_banner(result)
+
+
+def _fmt_cost(cost: float | None) -> str:
+    if cost is None:
+        return "?"
+    return f"${cost:.3f}"
+
+
+def _print_usage_banner(result: dict) -> None:
+    usage = result.get("usage")
+    if not usage or "by_task" not in usage:
+        return
+
+    _THIN = "-" * 60
+    print()
+    print(_RULE)
+    print("Token usage")
+    print(_RULE)
+    by_task = usage["by_task"]
+    for task_name, data in by_task.items():
+        cost_str = _fmt_cost(data.get("cost_usd"))
+        print(
+            f"  {task_name:<18} {data['input_tokens']:>8,} in  /"
+            f"  {data['output_tokens']:>6,} out  ({cost_str})"
+        )
+    total = usage["total"]
+    print(_THIN)
+    cost_str = _fmt_cost(total.get("cost_usd"))
+    print(
+        f"  {'TOTAL':<18} {total['input_tokens']:>8,} in  /"
+        f"  {total['output_tokens']:>6,} out  ({cost_str})"
+    )
+    print(_RULE)
 
 
 def _report_failure(thread_id: str, exc: Exception) -> None:
