@@ -1,6 +1,14 @@
 # orchestrator.toml — all fields are optional; values shown are the defaults.
 # Place this file at the project root (same directory you run the CLI from).
 
+# [qa]
+# Directory (relative to project root) containing executable scripted QA checks.
+# Every executable file is run in sorted order before the LLM QA agent.
+# A non-zero exit from any script aborts QA immediately.
+# qa_scripts_dir = ".orchestrator/qa"
+# Maximum seconds allowed per script before it is killed (exit code 124).
+# qa_scripts_timeout = 60
+
 # Maximum number of implementation+QA loop attempts before giving up.
 # On failure the branch and diffs are preserved for manual review.
 max_retries = 3

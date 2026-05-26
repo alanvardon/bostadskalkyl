@@ -71,6 +71,8 @@ class PrConfig(BaseModel):
 class OrchestratorConfig(BaseModel):
     max_retries: int = 3
     db_path: str = ".orchestrator/checkpoints.db"
+    qa_scripts_dir: str = ".orchestrator/qa"
+    qa_scripts_timeout: int = 60
     models: ModelsConfig = Field(default_factory=ModelsConfig)
     human_in_loop: HumanInLoopConfig = Field(default_factory=HumanInLoopConfig)
     branch: BranchConfig = Field(default_factory=BranchConfig)
