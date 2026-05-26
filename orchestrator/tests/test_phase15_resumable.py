@@ -202,19 +202,19 @@ class _ResumeStubs:
     def verify_clean_tree(self) -> None:
         pass
 
-    async def plan(self, request: str) -> PlanResult:
+    async def plan(self, request: str, model: str = "claude-sonnet-4-6") -> PlanResult:
         return PlanResult(title="t", type="feature", plan_text="p")
 
-    def create_branch(self, plan: PlanResult) -> str:
+    def create_branch(self, plan: PlanResult, max_slug_length: int = 50) -> str:
         return "feature/test"
 
-    async def implement(self, plan, mode="implement", qa_failures=None):
+    async def implement(self, plan, mode="implement", qa_failures=None, model="claude-sonnet-4-6"):
         return ImplementationResult(summary="s", test_plan="tp")
 
-    async def qa(self, plan) -> QaResult:
+    async def qa(self, plan, model="claude-sonnet-4-6") -> QaResult:
         return QaResult(result="PASS")
 
-    def commit(self, branch, title, summary) -> str:
+    def commit(self, branch, title, summary, base_branch="main") -> str:
         self.commit_call_count += 1
         return "abc123"
 
@@ -223,7 +223,7 @@ class _ResumeStubs:
         if self.fail_push_once and self.push_call_count == 1:
             raise CommitAndPrError("push failed: simulated network blip")
 
-    def pr_create(self, branch, title, summary, test_plan) -> str:
+    def pr_create(self, branch, title, summary, test_plan, base_branch="main", draft=False, reviewers=None, labels=None) -> str:
         self.pr_create_call_count += 1
         return "https://github.com/test/pr/1"
 

@@ -25,6 +25,7 @@ from langgraph.config import get_config
 from orchestrator.agents.planning import plan, PlanResult
 from orchestrator.agents.implementation import implement, ImplementationResult
 from orchestrator.agents.qa import qa, QaResult
+from orchestrator.config import OrchestratorConfig, load_config
 from orchestrator.git_ops import (
     commit,
     create_branch,
@@ -62,8 +63,8 @@ _CUSTOM_SERDE = JsonPlusSerializer(
 # @task knows nothing about which checkpointer is in use — that's
 # configured on the @entrypoint below.
 @task
-async def planning_task(request: str) -> PlanResult:
-    return await plan(request)
+async def planning_task(request: str, model: str = "claude-sonnet-4-6") -> PlanResult:
+    return await plan(request, model=model)
 
 
 # Pre-flight check. Runs FIRST in the workflow — before planning — so a
@@ -83,8 +84,10 @@ async def verify_clean_tree_task() -> None:
 # checkpointed: on resume, we don't re-run git checkout, we read the
 # branch name back from the checkpoint and move on.
 @task
-async def create_branch_task(plan_result: PlanResult) -> str:
-    return await asyncio.to_thread(create_branch, plan_result)
+async def create_branch_task(
+    plan_result: PlanResult, max_slug_length: int = 50
+) -> str:
+    return await asyncio.to_thread(create_branch, plan_result, max_slug_length)
 
 
 # Phase 4 placeholder. Originally created so crash_demo had a long-running
@@ -109,8 +112,9 @@ async def implementation_task(
     plan_result: PlanResult,
     mode: str = "implement",
     qa_failures: str | None = None,
+    model: str = "claude-sonnet-4-6",
 ) -> ImplementationResult:
-    return await implement(plan_result, mode=mode, qa_failures=qa_failures)
+    return await implement(plan_result, mode=mode, qa_failures=qa_failures, model=model)
 
 
 # Phase 6c. Read-only LLM task: the QA agent reviews the uncommitted
@@ -120,8 +124,10 @@ async def implementation_task(
 # in "fix" mode with the failure text. For now (linear chain, no
 # retries yet) we just record the verdict in the workflow result.
 @task
-async def qa_task(plan_result: PlanResult) -> QaResult:
-    return await qa(plan_result)
+async def qa_task(
+    plan_result: PlanResult, model: str = "claude-sonnet-4-6"
+) -> QaResult:
+    return await qa(plan_result, model=model)
 
 
 # Phase 15: the old commit_and_pr_task split into three idempotent
@@ -135,11 +141,13 @@ async def qa_task(plan_result: PlanResult) -> QaResult:
 # produced a different commit), forcing those downstream tasks to run
 # fresh instead of returning stale cached results.
 @task
-async def commit_task(branch: str, title: str, summary: str) -> str:
+async def commit_task(
+    branch: str, title: str, summary: str, base_branch: str = "main"
+) -> str:
     """Stage + commit any uncommitted changes; return HEAD SHA.
     Idempotent: a clean tree with an existing ahead-of-base commit
     returns that commit's SHA without re-committing."""
-    return await asyncio.to_thread(commit, branch, title, summary)
+    return await asyncio.to_thread(commit, branch, title, summary, base_branch)
 
 
 @task
@@ -151,12 +159,21 @@ async def push_task(branch: str, sha: str) -> None:
 
 @task
 async def pr_create_task(
-    branch: str, title: str, summary: str, test_plan: str, sha: str
+    branch: str,
+    title: str,
+    summary: str,
+    test_plan: str,
+    sha: str,
+    base_branch: str = "main",
+    draft: bool = False,
+    reviewers: list[str] | None = None,
+    labels: list[str] | None = None,
 ) -> str:
     """Open a PR and return its URL. Idempotent: if a PR already exists
     for this branch, returns its URL instead of opening another."""
     return await asyncio.to_thread(
-        pr_create, branch, title, summary, test_plan
+        pr_create, branch, title, summary, test_plan,
+        base_branch, draft, reviewers or [], labels or [],
     )
 
 
@@ -169,9 +186,14 @@ async def pr_create_task(
 # The asynccontextmanager wrapper lets callers do `async with build_workflow()`.
 @asynccontextmanager
 async def build_workflow(
-    db_path: str = ".orchestrator/checkpoints.db",
+    db_path: str | None = None,
+    config: OrchestratorConfig | None = None,
 ) -> AsyncIterator:
-    async with AsyncSqliteSaver.from_conn_string(db_path) as checkpointer:
+    if config is None:
+        config = load_config()
+    effective_db_path = db_path if db_path is not None else config.db_path
+
+    async with AsyncSqliteSaver.from_conn_string(effective_db_path) as checkpointer:
         # AsyncSqliteSaver.from_conn_string doesn't accept a custom serde,
         # so we swap it in after construction. Both attributes need to
         # change: `serde` is the public one read by BaseCheckpointSaver,
@@ -189,7 +211,7 @@ async def build_workflow(
             # only to fail at create_branch_task downstream.
             await verify_clean_tree_task()
 
-            plan_result = await planning_task(request)
+            plan_result = await planning_task(request, config.models.planning)
             write_plan(thread_id, plan_result)
 
             # Phase 8: plan approval interrupt. The loop runs until the
@@ -198,30 +220,46 @@ async def build_workflow(
             # original request, then the new plan is surfaced for another
             # round of review.
             #
+            # Phase 13: gated by config.human_in_loop.approve_plan.
+            # false = auto-approve (fully autonomous mode).
+            #
             # Landmine #4: create_branch_task (the first side effect) is
             # intentionally AFTER this block. interrupt() re-executes the
             # entrypoint body on resume; tasks already completed with the
             # same inputs return their cached result without a new LLM call,
             # so planning_task(request) on re-execution is effectively free.
             while True:
-                approval = interrupt({
-                    "kind": "plan_approval",
-                    "plan": plan_result.model_dump(),
-                    "ask": "Approve this plan? Reply 'yes' or describe changes.",
-                })
+                if config.human_in_loop.approve_plan:
+                    approval = interrupt({
+                        "kind": "plan_approval",
+                        "plan": plan_result.model_dump(),
+                        "ask": "Approve this plan? Reply 'yes' or describe changes.",
+                    })
+                else:
+                    approval = "yes"
                 if approval == "yes":
                     break
                 plan_result = await planning_task(
-                    f"{request}\n\nFeedback: {approval}"
+                    f"{request}\n\nFeedback: {approval}",
+                    config.models.planning,
                 )
                 write_plan(thread_id, plan_result)
 
-            branch_name = await create_branch_task(plan_result)
+            # Phase 13: optional branch-creation approval gate.
+            if config.human_in_loop.approve_branch:
+                interrupt({
+                    "kind": "branch_approval",
+                    "ask": "Proceed with branch creation?",
+                })
+
+            branch_name = await create_branch_task(
+                plan_result, config.branch.max_slug_length
+            )
             rename_with_branch(thread_id, branch_name)
 
-            # Phase 7: retry loop. Up to 3 attempts: first is always
-            # "implement" (fresh execution); subsequent attempts are
-            # "fix" mode, passing qa_failures so the agent knows exactly
+            # Phase 7: retry loop. Up to config.max_retries attempts: first
+            # is always "implement" (fresh execution); subsequent attempts
+            # are "fix" mode, passing qa_failures so the agent knows exactly
             # what to correct without re-doing passing work.
             #
             # Python's for/else: the `else` block runs only if the loop
@@ -229,19 +267,50 @@ async def build_workflow(
             # means QA passed — the else block (failure path) is skipped.
             qa_failures: str | None = None
             impl_result = None
-            for attempt in range(1, 4):
+            for attempt in range(1, config.max_retries + 1):
                 mode = "implement" if attempt == 1 else "fix"
                 impl_result = await implementation_task(
-                    plan_result, mode=mode, qa_failures=qa_failures
+                    plan_result,
+                    mode=mode,
+                    qa_failures=qa_failures,
+                    model=config.models.implementation,
                 )
                 write_implementation(thread_id, impl_result)
-                qa_result = await qa_task(plan_result)
+
+                # Phase 13: optional gate between implementation and QA.
+                if config.human_in_loop.approve_implementation:
+                    interrupt({
+                        "kind": "implementation_approval",
+                        "ask": "Implementation complete. Proceed to QA?",
+                    })
+
+                qa_result = await qa_task(plan_result, config.models.qa)
                 write_qa(thread_id, qa_result)
                 if qa_result.result == "PASS":
                     break
+
+                # Phase 13: optional gate on QA failure — user can abort
+                # rather than burning another retry attempt.
+                if config.human_in_loop.approve_qa_failure:
+                    decision = interrupt({
+                        "kind": "qa_failure",
+                        "failures": qa_result.failures,
+                        "ask": (
+                            f"QA FAIL (attempt {attempt}/{config.max_retries}). "
+                            "Retry? Reply 'yes' or 'abort'."
+                        ),
+                    })
+                    if decision == "abort":
+                        return {
+                            "status": "failed",
+                            "plan": plan_result.model_dump(),
+                            "branch": branch_name,
+                            "qa_failures": qa_result.failures,
+                        }
+
                 qa_failures = qa_result.failures
             else:
-                # All 3 attempts failed QA. Return without opening a PR —
+                # All attempts failed QA. Return without opening a PR —
                 # a broken PR is worse than no PR. The branch and all the
                 # attempted diffs are still in the repo; a human can review
                 # and decide what to do with them.
@@ -252,13 +321,21 @@ async def build_workflow(
                     "qa_failures": qa_failures,
                 }
 
+            # Phase 13: optional gate before committing and opening PR.
+            if config.human_in_loop.approve_pr:
+                interrupt({
+                    "kind": "pr_approval",
+                    "ask": "QA passed. Open a PR?",
+                })
+
             # Phase 15: three separate @tasks instead of one
             # commit_and_pr_task. A failure between commit and push
             # (or push and PR creation) is resumable via resume_run —
             # completed tasks return cached SHAs/URLs; the failed task
             # re-executes against the now-fixed underlying issue.
             sha = await commit_task(
-                branch_name, plan_result.title, impl_result.summary
+                branch_name, plan_result.title, impl_result.summary,
+                config.pr.base_branch,
             )
             await push_task(branch_name, sha)
             pr_url = await pr_create_task(
@@ -267,6 +344,10 @@ async def build_workflow(
                 impl_result.summary,
                 impl_result.test_plan,
                 sha,
+                config.pr.base_branch,
+                config.pr.draft,
+                config.pr.reviewers,
+                config.pr.labels,
             )
             return {
                 "status": "succeeded",

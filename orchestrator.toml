@@ -1,0 +1,43 @@
+# orchestrator.toml — all fields are optional; values shown are the defaults.
+# Place this file at the project root (same directory you run the CLI from).
+
+# Maximum number of implementation+QA loop attempts before giving up.
+# On failure the branch and diffs are preserved for manual review.
+max_retries = 3
+
+# SQLite checkpoint database path (relative to cwd / project root).
+db_path = ".orchestrator/checkpoints.db"
+
+[models]
+# Claude model IDs used by each agent.
+# Swap to "claude-opus-4-7" for higher quality, "claude-haiku-4-5-20251001" for speed/cost.
+planning       = "claude-sonnet-4-6"
+implementation = "claude-sonnet-4-6"
+qa             = "claude-sonnet-4-6"
+
+[human_in_loop]
+# Each flag gates an interrupt() at that workflow stage boundary.
+# true  = pause and ask; false = auto-proceed (fully autonomous for that stage).
+approve_plan           = true   # pause for plan review before any code is written
+approve_branch         = false  # pause before the feature branch is created
+approve_implementation = false  # pause after each implementation attempt, before QA
+approve_qa_failure     = false  # pause on QA FAIL — lets you abort instead of retrying
+approve_pr             = false  # pause after QA PASS, before commit + PR is opened
+
+[branch]
+# Maximum length of the kebab-case slug in the branch name.
+# e.g. "feature/ltv-calculation-rounding-error" — slug part only, not the prefix.
+max_slug_length = 50
+
+[pr]
+# Base branch the PR targets.
+base_branch = "main"
+
+# Open the PR as a draft (true) or ready-for-review (false).
+draft = false
+
+# GitHub usernames to request review from. Empty list = no reviewers requested.
+reviewers = []
+
+# Labels to attach to the PR. Empty list = no labels attached.
+labels = ["feature", "bug", "refactor", "chose"]

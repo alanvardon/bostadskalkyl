@@ -110,7 +110,7 @@ class PlanResult(BaseModel):
     plan_text: str
 
 
-async def plan(request: str) -> PlanResult:
+async def plan(request: str, model: str = "claude-sonnet-4-6") -> PlanResult:
     """Ask Claude to produce a plan, return it as a validated PlanResult.
 
     Uses Anthropic's tool-use-as-structured-output pattern:
@@ -128,7 +128,7 @@ async def plan(request: str) -> PlanResult:
     """
     client = AsyncAnthropic()
     response = await client.messages.create(
-        model="claude-sonnet-4-6",
+        model=model,
         max_tokens=4096,
         system=PLANNING_SYSTEM_PROMPT,
         tools=[

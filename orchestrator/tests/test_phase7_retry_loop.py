@@ -35,10 +35,10 @@ class _Stubs:
         self.qa_call_count = 0
         self.commit_called = False
 
-    async def plan(self, request: str) -> PlanResult:
+    async def plan(self, request: str, model: str = "claude-sonnet-4-6") -> PlanResult:
         return PlanResult(title="t", type="feature", plan_text="p")
 
-    def create_branch(self, plan: PlanResult) -> str:
+    def create_branch(self, plan: PlanResult, max_slug_length: int = 50) -> str:
         return "feature/test"
 
     async def implement(
@@ -46,23 +46,34 @@ class _Stubs:
         plan: PlanResult,
         mode: str = "implement",
         qa_failures: str | None = None,
+        model: str = "claude-sonnet-4-6",
     ) -> ImplementationResult:
         self.impl_calls.append((mode, qa_failures))
         n = len(self.impl_calls)
         return ImplementationResult(summary=f"s{n}", test_plan=f"tp{n}")
 
-    async def qa(self, plan: PlanResult) -> QaResult:
+    async def qa(self, plan: PlanResult, model: str = "claude-sonnet-4-6") -> QaResult:
         verdict = self.qa_verdicts[self.qa_call_count]
         self.qa_call_count += 1
         return verdict
 
-    def commit(self, branch: str, title: str, summary: str) -> str:
+    def commit(self, branch: str, title: str, summary: str, base_branch: str = "main") -> str:
         return "abc123def456"
 
     def push(self, branch: str) -> None:
         pass
 
-    def pr_create(self, branch: str, title: str, summary: str, test_plan: str) -> str:
+    def pr_create(
+        self,
+        branch: str,
+        title: str,
+        summary: str,
+        test_plan: str,
+        base_branch: str = "main",
+        draft: bool = False,
+        reviewers: list | None = None,
+        labels: list | None = None,
+    ) -> str:
         # Phase 15: pr_create is the "did we reach the end" signal —
         # this is the final task in the workflow's success path.
         self.commit_called = True

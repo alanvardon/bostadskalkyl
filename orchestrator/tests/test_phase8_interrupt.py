@@ -32,31 +32,31 @@ class _Stubs:
         self.impl_calls: list[tuple[str, str | None]] = []
         self.commit_called = False
 
-    async def plan(self, request: str) -> PlanResult:
+    async def plan(self, request: str, model: str = "claude-sonnet-4-6") -> PlanResult:
         self.plan_calls.append(request)
         # Return a distinct plan_text per call so tests can detect
         # which plan was surfaced at each interrupt.
         n = len(self.plan_calls)
         return PlanResult(title=f"title-{n}", type="feature", plan_text=f"plan-{n}")
 
-    def create_branch(self, plan: PlanResult) -> str:
+    def create_branch(self, plan: PlanResult, max_slug_length: int = 50) -> str:
         return "feature/test"
 
-    async def implement(self, plan, mode="implement", qa_failures=None):
+    async def implement(self, plan, mode="implement", qa_failures=None, model="claude-sonnet-4-6"):
         self.impl_calls.append((mode, qa_failures))
         n = len(self.impl_calls)
         return ImplementationResult(summary=f"s{n}", test_plan=f"tp{n}")
 
-    async def qa(self, plan: PlanResult) -> QaResult:
+    async def qa(self, plan: PlanResult, model: str = "claude-sonnet-4-6") -> QaResult:
         return QaResult(result="PASS")
 
-    def commit(self, branch, title, summary) -> str:
+    def commit(self, branch, title, summary, base_branch="main") -> str:
         return "abc123def456"
 
     def push(self, branch) -> None:
         pass
 
-    def pr_create(self, branch, title, summary, test_plan) -> str:
+    def pr_create(self, branch, title, summary, test_plan, base_branch="main", draft=False, reviewers=None, labels=None) -> str:
         self.commit_called = True
         return "https://github.com/test/pr/1"
 
