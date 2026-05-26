@@ -133,7 +133,7 @@ def _build_user_message(plan: PlanResult) -> str:
     return "\n".join(["## Plan", "", plan.plan_text])
 
 
-async def qa(plan: PlanResult) -> QaResult:
+async def qa(plan: PlanResult, model: str = "claude-sonnet-4-6") -> QaResult:
     """Run the QA agent and return its structured verdict.
 
     Read-only: the agent has Read, Bash, Glob, Grep — explicitly no
@@ -195,7 +195,7 @@ async def qa(plan: PlanResult) -> QaResult:
         # keep it set for consistency. The real safety floor is the
         # tool allowlist plus project deny rules.
         permission_mode="acceptEdits",
-        model="claude-sonnet-4-6",
+        model=model,
         setting_sources=["project"],
     )
 

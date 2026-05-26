@@ -87,7 +87,7 @@ def verify_clean_tree() -> None:
         )
 
 
-def create_branch(plan: PlanResult) -> str:
+def create_branch(plan: PlanResult, max_slug_length: int = 50) -> str:
     """Create a feature branch from main based on the plan's title and type.
 
     Returns the branch name on success. Raises BranchCreationError if:
@@ -118,7 +118,7 @@ def create_branch(plan: PlanResult) -> str:
 
     # 3. Derive the branch name. `<type>/<kebab-slug>` — same scheme as
     # your current coordinator.
-    slug = _slugify(plan.title)
+    slug = _slugify(plan.title, max_slug_length)
     branch_name = f"{plan.type}/{slug}"
 
     # 4. Refuse to clobber an existing branch. If the user retries a
@@ -143,9 +143,7 @@ class CommitAndPrError(RuntimeError):
     """
 
 
-# Common base branch for PRs and "ahead of base" checks. Hardcoded for
-# now; orchestrator.toml's [pr] section will make it configurable.
-_BASE_BRANCH = "main"
+_BASE_BRANCH = "main"  # kept for push/pr_create defaults; override via config.pr.base_branch
 
 
 def _current_branch() -> str:
@@ -167,7 +165,7 @@ def _assert_on_branch(branch: str) -> None:
         )
 
 
-def commit(branch: str, title: str, summary: str) -> str:
+def commit(branch: str, title: str, summary: str, base_branch: str = "main") -> str:
     """Stage and commit any uncommitted changes; return the HEAD SHA.
 
     **Idempotent.** If the working tree is already clean AND the branch
@@ -189,7 +187,7 @@ def commit(branch: str, title: str, summary: str) -> str:
     dirty = bool(_run(["git", "status", "--porcelain"]).stdout.strip())
     ahead = int(
         _run(
-            ["git", "rev-list", f"{_BASE_BRANCH}..HEAD", "--count"]
+            ["git", "rev-list", f"{base_branch}..HEAD", "--count"]
         ).stdout.strip()
         or "0"
     )
@@ -246,7 +244,16 @@ def push(branch: str) -> None:
         ) from e
 
 
-def pr_create(branch: str, title: str, summary: str, test_plan: str) -> str:
+def pr_create(
+    branch: str,
+    title: str,
+    summary: str,
+    test_plan: str,
+    base_branch: str = "main",
+    draft: bool = False,
+    reviewers: list[str] | None = None,
+    labels: list[str] | None = None,
+) -> str:
     """Open a PR for the branch and return its URL.
 
     **Idempotent.** If a PR already exists for this branch (any state —
@@ -275,10 +282,15 @@ def pr_create(branch: str, title: str, summary: str, test_plan: str) -> str:
         f"## Test plan\n{test_plan}\n\n"
         "🤖 Generated with [Claude Code](https://claude.com/claude-code)"
     )
+    cmd = ["gh", "pr", "create", "--title", title, "--body", body, "--base", base_branch]
+    if draft:
+        cmd.append("--draft")
+    for reviewer in (reviewers or []):
+        cmd += ["--reviewer", reviewer]
+    for label in (labels or []):
+        cmd += ["--label", label]
     try:
-        result = _run(
-            ["gh", "pr", "create", "--title", title, "--body", body]
-        )
+        result = _run(cmd)
     except subprocess.CalledProcessError as e:
         raise CommitAndPrError(
             f"gh pr create failed: {(e.stderr or e.stdout).strip()}"

@@ -162,6 +162,7 @@ async def implement(
     plan: PlanResult,
     mode: str = "implement",
     qa_failures: str | None = None,
+    model: str = "claude-sonnet-4-6",
 ) -> ImplementationResult:
     """Run the implementation agent and return its structured result.
 
@@ -230,7 +231,7 @@ async def implement(
         # still apply (.env, secrets, etc.).
         permission_mode="acceptEdits",
         # Pin the model so behaviour is stable across SDK upgrades.
-        model="claude-sonnet-4-6",
+        model=model,
         # Read CLAUDE.md and the project's .claude/settings.json so
         # the agent inherits project rules and permission deny lists.
         setting_sources=["project"],
