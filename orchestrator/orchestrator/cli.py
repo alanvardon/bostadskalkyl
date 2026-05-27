@@ -29,7 +29,7 @@ load_dotenv()
 
 from langgraph.types import Command
 
-from orchestrator.git_ops import BranchCreationError, CommitAndPrError
+from orchestrator.git_ops import BranchCreationError, CommitAndPrError, PreHookError
 from orchestrator.run_log import append_run
 from orchestrator.workflow import build_workflow
 
@@ -39,6 +39,7 @@ from orchestrator.workflow import build_workflow
 _KNOWN_ERRORS: tuple[type[Exception], ...] = (
     BranchCreationError,
     CommitAndPrError,
+    PreHookError,
 )
 
 _RULE = "=" * 60
@@ -223,7 +224,10 @@ def _report_failure(thread_id: str, exc: Exception) -> None:
         traceback.print_exc()
         print()
 
-    if isinstance(exc, _KNOWN_ERRORS):
+    if isinstance(exc, PreHookError):
+        print(f"\nWorkflow aborted by pre-hook {exc.script!r}:", file=sys.stderr)
+        print(f"  {exc.output}", file=sys.stderr)
+    elif isinstance(exc, _KNOWN_ERRORS):
         print(f"\nWorkflow failed ({type(exc).__name__}):", file=sys.stderr)
         print(f"  {exc}", file=sys.stderr)
     else:
