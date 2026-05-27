@@ -103,9 +103,9 @@ async def verify_clean_tree_task() -> None:
 # branch name back from the checkpoint and move on.
 @task
 async def create_branch_task(
-    plan_result: PlanResult, max_slug_length: int = 50
+    plan_result: PlanResult, max_slug_length: int = 50, thread_id: str = ""
 ) -> str:
-    return await asyncio.to_thread(create_branch, plan_result, max_slug_length)
+    return await asyncio.to_thread(create_branch, plan_result, max_slug_length, thread_id)
 
 
 # Phase 4 placeholder. Originally created so crash_demo had a long-running
@@ -283,7 +283,7 @@ async def build_workflow(
                 })
 
             branch_name = await create_branch_task(
-                plan_result, config.branch.max_slug_length
+                plan_result, config.branch.max_slug_length, thread_id
             )
             rename_with_branch(thread_id, branch_name)
 
