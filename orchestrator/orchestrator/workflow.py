@@ -108,16 +108,6 @@ async def create_branch_task(
     return await asyncio.to_thread(create_branch, plan_result, max_slug_length, thread_id)
 
 
-# Phase 4 placeholder. Originally created so crash_demo had a long-running
-# step to Ctrl-C during. Phase 6b's implementation_task now provides a
-# much longer (5+ min) crash window, so this is vestigial — kept only to
-# avoid breaking crash_demo.py's documented flow. Safe to delete.
-@task
-async def step_two_task(plan_result: PlanResult) -> str:
-    await asyncio.sleep(5)
-    return f"step_two finished for plan {plan_result.title!r}"
-
-
 # Phase 6b. Runs the implementation agent (Claude Agent SDK in a loop)
 # to edit files according to the plan. The function body is short
 # because all the heavy lifting is inside implement() — the @task
