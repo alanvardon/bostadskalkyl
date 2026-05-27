@@ -46,6 +46,7 @@ from orchestrator.agents.planning import PlanResult
 from orchestrator.config import load_config
 from orchestrator.git_ops import REPO_ROOT
 from orchestrator.qa_scripts import run_qa_scripts
+from orchestrator.tool_profile import load_tool_profile
 
 
 _QA_SYSTEM_PROMPT = load_prompt("qa")
@@ -127,20 +128,21 @@ async def qa(plan: PlanResult, model: str = "claude-sonnet-4-6") -> QaResult:
         tools=[emit_qa_result],
     )
 
+    # Load tool profile from orchestrator.toml (falls back to defaults if
+    # absent). The pinned MCP tool for the QA verdict is injected here and
+    # does not need to be listed in orchestrator.toml.
+    _profile = load_tool_profile("qa")
+    _allowed_tools = _profile.allowed_tools + ["mcp__orchestrator__emit_qa_result"]
+
     options = ClaudeAgentOptions(
         system_prompt=_QA_SYSTEM_PROMPT,
-        # Read-only set. Bash is here so the agent can run `git diff HEAD`
-        # and the static-checks skill — both of which are read-only in
-        # practice. The project's .claude/settings.json deny rules
-        # (loaded via setting_sources=["project"]) still apply, blocking
-        # destructive bash even if the agent tried.
-        allowed_tools=[
-            "Read",
-            "Bash",
-            "Glob",
-            "Grep",
-            "mcp__orchestrator__emit_qa_result",
-        ],
+        # Read-only tools from the operator-configurable profile, plus the
+        # pinned MCP tool for the structured verdict. The project's
+        # .claude/settings.json deny rules (loaded via
+        # setting_sources=["project"]) still apply, blocking destructive
+        # bash even if the agent tried.
+        allowed_tools=_allowed_tools,
+        disallowed_tools=_profile.disallowed_tools,
         mcp_servers={"orchestrator": orchestrator_mcp},
         # Same repo root as implementation — QA reviews changes in the
         # bostadskalkyl tree, not the orchestrator/ subdirectory.

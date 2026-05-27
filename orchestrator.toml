@@ -49,3 +49,20 @@ reviewers = []
 
 # Labels to attach to the PR. Empty list = no labels attached.
 labels = ["feature", "bug", "refactor", "chore"]
+
+# ---------------------------------------------------------------------------
+# Tool permission profiles
+# Pinned MCP server tools (e.g. mcp__orchestrator__emit_implementation_result)
+# are injected automatically by the orchestrator and do not need to be listed
+# here.
+# Note: [tools.planning] has no effect — the planning agent uses the raw
+# Anthropic SDK and ignores this section. A warning is emitted if present.
+# ---------------------------------------------------------------------------
+
+[tools.implementation]
+allowed_tools    = ["Read", "Edit", "Write", "Bash"]
+disallowed_tools = []
+
+[tools.qa]
+allowed_tools    = ["Read", "Grep", "Bash"]
+disallowed_tools = []
