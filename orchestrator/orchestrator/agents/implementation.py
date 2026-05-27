@@ -41,6 +41,7 @@ from orchestrator.prompt_loader import load_prompt
 
 from orchestrator.agents.planning import PlanResult
 from orchestrator.git_ops import REPO_ROOT
+from orchestrator.tool_profile import load_tool_profile
 
 
 _IMPLEMENTATION_SYSTEM_PROMPT = load_prompt("implementation")
@@ -119,21 +120,21 @@ async def implement(
         tools=[emit_implementation_result],
     )
 
+    # Load tool profile from orchestrator.toml (falls back to defaults if
+    # absent). The pinned MCP tool for structured output is injected here
+    # and does not need to be listed in orchestrator.toml.
+    _profile = load_tool_profile("implementation")
+    _allowed_tools = _profile.allowed_tools + [
+        "mcp__orchestrator__emit_implementation_result"
+    ]
+
     options = ClaudeAgentOptions(
         system_prompt=_IMPLEMENTATION_SYSTEM_PROMPT,
-        # File-editing tools the agent needs, plus our custom tool. The
-        # MCP-namespaced name format is mcp__<server-name>__<tool-name>.
-        # Note: no Git, no commit, no PR tools — the orchestrator owns
-        # those entirely.
-        allowed_tools=[
-            "Read",
-            "Edit",
-            "Write",
-            "Bash",
-            "Glob",
-            "Grep",
-            "mcp__orchestrator__emit_implementation_result",
-        ],
+        # File-editing tools from the operator-configurable profile, plus
+        # the pinned MCP tool for structured output. Note: no Git, no
+        # commit, no PR tools — the orchestrator owns those entirely.
+        allowed_tools=_allowed_tools,
+        disallowed_tools=_profile.disallowed_tools,
         mcp_servers={"orchestrator": orchestrator_mcp},
         # cwd must be the bostadskalkyl repo root — the agent edits
         # files there, not in the orchestrator/ subdirectory.
