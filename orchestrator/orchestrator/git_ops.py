@@ -101,7 +101,12 @@ def verify_clean_tree() -> None:
         )
 
 
-def create_branch(plan: PlanResult, max_slug_length: int = 50) -> str:
+def _strip_thread_prefix(thread_id: str) -> str:
+    """Strip a leading word- prefix (e.g. 'run-', 'test-') from a thread id."""
+    return re.sub(r"^[a-z]+-", "", thread_id)
+
+
+def create_branch(plan: PlanResult, max_slug_length: int = 50, thread_id: str = "") -> str:
     """Create a feature branch from main based on the plan's title and type.
 
     Returns the branch name on success. Raises BranchCreationError if:
@@ -133,8 +138,9 @@ def create_branch(plan: PlanResult, max_slug_length: int = 50) -> str:
     # 3. Derive the branch name. `<type>/<kebab-slug>` — same scheme as
     # your current coordinator. Sanitize type since it's now free-form.
     type_prefix = _sanitize_type(plan.type)
-    slug = _slugify(plan.title, max_slug_length)
-    branch_name = f"{type_prefix}/{slug}"
+    suffix = f"-{_strip_thread_prefix(thread_id)}" if thread_id else ""
+    slug = _slugify(plan.title, max_slug_length - len(suffix))
+    branch_name = f"{type_prefix}/{slug}{suffix}"
 
     # 4. Refuse to clobber an existing branch. If the user retries a
     # request that already produced a branch, they need to either delete
@@ -299,13 +305,15 @@ def pr_create(
     """
     _assert_on_branch(branch)
 
-    # Check for an existing PR. `gh pr view <branch>` exits non-zero if
-    # none exists — that's the signal to create one.
+    # Check for an existing open PR. `gh pr view <branch>` exits non-zero
+    # if none exists — that's the signal to create one. Only reuse the URL
+    # when state is OPEN; a closed PR means a previous attempt was rejected
+    # and we should open a fresh one.
     try:
-        existing = _run(["gh", "pr", "view", branch, "--json", "url"])
-        url = json.loads(existing.stdout).get("url")
-        if url:
-            return url
+        existing = _run(["gh", "pr", "view", branch, "--json", "url,state"])
+        data = json.loads(existing.stdout)
+        if data.get("state") == "OPEN" and data.get("url"):
+            return data["url"]
     except subprocess.CalledProcessError:
         # No PR exists; fall through to create one.
         pass
