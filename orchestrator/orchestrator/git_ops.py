@@ -161,6 +161,24 @@ class CommitAndPrError(RuntimeError):
     """
 
 
+class PreHookError(Exception):
+    """Raised when a pre-hook script exits with a non-zero status.
+
+    The `output` attribute carries the script's stdout, which is surfaced
+    as the abort reason so hook authors can write clear, actionable messages.
+    The `returncode` is 124 when the script timed out (POSIX `timeout(1)`
+    convention).
+    """
+
+    def __init__(self, script: str, output: str, returncode: int) -> None:
+        super().__init__(
+            f"pre-hook {script!r} failed (exit {returncode}): {output}"
+        )
+        self.script = script
+        self.output = output
+        self.returncode = returncode
+
+
 _BASE_BRANCH = "main"  # kept for push/pr_create defaults; override via config.pr.base_branch
 
 

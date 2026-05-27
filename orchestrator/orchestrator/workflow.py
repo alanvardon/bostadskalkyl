@@ -36,7 +36,9 @@ from orchestrator.git_ops import (
     pr_create,
     push,
     verify_clean_tree,
+    PreHookError,
 )
+from orchestrator.pre_hooks import run_pre_hooks
 from orchestrator.run_artifacts import (
     rename_with_branch,
     write_implementation,
@@ -78,9 +80,17 @@ async def planning_task(request: str, model: str = "claude-sonnet-4-6") -> PlanR
 # round. Defence in depth: create_branch_task also calls verify_clean_tree
 # internally, since the tree could be dirtied between approval and branch
 # creation (the user has time to make edits during plan review).
+#
+# Phase 29: after the tree check, run any user-defined pre-hook scripts
+# from `.orchestrator/pre-hooks/` (configurable). A non-zero exit from
+# any script raises PreHookError, which propagates out of the task and
+# aborts the workflow — same pattern as BranchCreationError from
+# verify_clean_tree. The hook's stdout becomes the displayed abort reason.
 @task
 async def verify_clean_tree_task() -> None:
     await asyncio.to_thread(verify_clean_tree)
+    _cfg = load_config()
+    await asyncio.to_thread(run_pre_hooks, _cfg.pre_hooks_dir, _cfg.pre_hooks_timeout)
 
 
 # Deterministic git task (Phase 6a). Wraps the synchronous create_branch
