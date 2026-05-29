@@ -31,6 +31,7 @@ load_dotenv()
 from langgraph.types import Command
 
 from orchestrator.config import apply_overrides, load_config
+from orchestrator.errors import FatalError, OrchestratorError, RetriableError, UserActionError
 from orchestrator.git_ops import BranchCreationError, CommitAndPrError, PreHookError
 from orchestrator.manifest import ManifestError
 from orchestrator.run_log import append_run
@@ -44,6 +45,7 @@ _KNOWN_ERRORS: tuple[type[Exception], ...] = (
     CommitAndPrError,
     PreHookError,
     ManifestError,
+    OrchestratorError,
 )
 
 _RULE = "=" * 60
@@ -149,7 +151,7 @@ async def _run_with_progress(workflow, input_data, config) -> dict:
         await hb
 
     if final_result is None:
-        raise RuntimeError("astream completed without a final result")
+        raise FatalError("astream completed without a final result")
     return final_result
 
 
@@ -221,37 +223,59 @@ def _print_usage_banner(result: dict) -> None:
 def _report_failure(thread_id: str, exc: Exception) -> None:
     """Print a human-readable error and exit non-zero.
 
-    ORCHESTRATOR_DEBUG=1 enables full traceback. thread_id is always
-    surfaced so the user can resume manually after fixing the root cause.
+    Banner style diverges per error class (Phase 21):
+      UserActionError  — tells the user exactly what to do, then how to resume
+      RetriableError   — transient; resume_run can be called immediately
+      FatalError       — non-retriable; start a fresh run
+      everything else  — unexpected; suggest ORCHESTRATOR_DEBUG=1
+
+    ORCHESTRATOR_DEBUG=1 always enables the full traceback.
     """
     if os.environ.get("ORCHESTRATOR_DEBUG"):
         traceback.print_exc()
         print()
 
     if isinstance(exc, PreHookError):
-        print(f"\nWorkflow aborted by pre-hook {exc.script!r}:", file=sys.stderr)
-        print(f"  {exc.output}", file=sys.stderr)
-    elif isinstance(exc, _KNOWN_ERRORS):
-        print(f"\nWorkflow failed ({type(exc).__name__}):", file=sys.stderr)
-        print(f"  {exc}", file=sys.stderr)
+        print(f"\n{_RULE}", file=sys.stderr)
+        print("Pre-hook aborted the workflow", file=sys.stderr)
+        print(_RULE, file=sys.stderr)
+        print(f"  Hook:   {exc.script!r} (exit {exc.returncode})", file=sys.stderr)
+        print(f"  Output: {exc.output}", file=sys.stderr)
+        print(f"  Action: {exc.action}", file=sys.stderr)
+        print(f"  thread_id: {thread_id}", file=sys.stderr)
+    elif isinstance(exc, UserActionError):
+        print(f"\n{_RULE}", file=sys.stderr)
+        print(f"Workflow paused — action required  [{type(exc).__name__}]", file=sys.stderr)
+        print(_RULE, file=sys.stderr)
+        print(f"  Error:  {exc}", file=sys.stderr)
+        print(f"  Action: {exc.action}", file=sys.stderr)
+        print(f"  thread_id: {thread_id}", file=sys.stderr)
+        print("Once resolved, call resume_run or re-run with the same thread_id.", file=sys.stderr)
+    elif isinstance(exc, RetriableError):
+        print(f"\n{_RULE}", file=sys.stderr)
+        print("Transient error — safe to retry  [RetriableError]", file=sys.stderr)
+        print(_RULE, file=sys.stderr)
+        print(f"  Error:  {exc}", file=sys.stderr)
+        print(f"  thread_id: {thread_id}", file=sys.stderr)
+        print("Call resume_run immediately — no manual action required.", file=sys.stderr)
+    elif isinstance(exc, FatalError):
+        print(f"\n{_RULE}", file=sys.stderr)
+        print("Fatal error — start a fresh run  [FatalError]", file=sys.stderr)
+        print(_RULE, file=sys.stderr)
+        print(f"  Error:  {exc}", file=sys.stderr)
+        print(f"  thread_id: {thread_id}", file=sys.stderr)
+        print("This error cannot be retried. Fix the root cause and start fresh.", file=sys.stderr)
     else:
         print(
             f"\nWorkflow failed with unexpected error "
             f"({type(exc).__name__}): {exc}",
             file=sys.stderr,
         )
+        print(f"  thread_id: {thread_id}", file=sys.stderr)
         print(
             "  Run with ORCHESTRATOR_DEBUG=1 to see the full traceback.",
             file=sys.stderr,
         )
-
-    print(f"\nthread_id: {thread_id}", file=sys.stderr)
-    print(
-        "Fix the underlying issue, then resume by re-running with the same "
-        "thread_id\n(or start a fresh run — the planning checkpoint is "
-        "preserved either way).",
-        file=sys.stderr,
-    )
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:

@@ -26,7 +26,10 @@ logger = logging.getLogger(__name__)
 WORKFLOW_VERSION = "1.1.0"
 
 
-class IncompatibleCheckpointError(RuntimeError):
+from orchestrator.errors import FatalError
+
+
+class IncompatibleCheckpointError(FatalError):
     """Raised on resume when the checkpoint was created by a different
     WORKFLOW_VERSION than the code now attempting to resume it.
 
@@ -44,7 +47,7 @@ class IncompatibleCheckpointError(RuntimeError):
         )
 
 
-class IncompatibleManifestError(RuntimeError):
+class IncompatibleManifestError(FatalError):
     """Phase 33: raised on resume when the step manifest in orchestrator.toml
     was edited since the run started. The resolved manifest is snapshotted
     into the first checkpoint; a different hash on resume means the injected

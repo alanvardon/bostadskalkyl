@@ -30,6 +30,8 @@ from typing import Any
 
 from mcp.server.fastmcp import Context
 
+from orchestrator.errors import FatalError
+
 
 # Keep in sync with the @entrypoint function name in workflow.py.
 # The final workflow result arrives as a stream event keyed by this
@@ -156,5 +158,5 @@ async def run_with_progress(
         await hb
 
     if final_result is None:
-        raise RuntimeError("astream completed without a final result")
+        raise FatalError("astream completed without a final result")
     return final_result

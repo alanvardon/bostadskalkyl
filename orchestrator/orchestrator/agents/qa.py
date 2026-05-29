@@ -39,6 +39,7 @@ from claude_agent_sdk import (
 from pydantic import BaseModel
 from typing import Literal
 
+from orchestrator.errors import FatalError
 from orchestrator.usage import TaskUsage
 from orchestrator.prompt_loader import load_prompt
 
@@ -166,7 +167,7 @@ async def qa(plan: PlanResult, model: str = "claude-sonnet-4-6") -> QaResult:
             result_msg = msg
 
     if "result" not in captured:
-        raise RuntimeError("qa agent did not call emit_qa_result")
+        raise FatalError("qa agent did not call emit_qa_result")
 
     failures = captured["failures"] or None
 

@@ -43,6 +43,7 @@ from typing import Annotated, Literal, Union
 
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
+from orchestrator.errors import FatalError
 from orchestrator.paths import find_project_root
 from orchestrator.usage import TaskUsage
 
@@ -59,7 +60,7 @@ SEAMS: tuple[str, ...] = (
 )
 
 
-class ManifestError(ValueError):
+class ManifestError(FatalError):
     """Raised at load time for a malformed or invalid step manifest."""
 
 
