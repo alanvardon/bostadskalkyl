@@ -13,7 +13,7 @@ from langgraph.types import Command
 from orchestrator.agents.implementation import ImplementationResult
 from orchestrator.agents.planning import PlanResult
 from orchestrator.agents.qa import QaResult
-from orchestrator.git_ops import BranchCreationError
+from orchestrator.git_ops import DirtyTreeError
 
 
 class _Stubs:
@@ -24,7 +24,7 @@ class _Stubs:
 
     def verify_clean_tree(self) -> None:
         if self.dirty:
-            raise BranchCreationError("working tree is dirty. [test fixture]")
+            raise DirtyTreeError("working tree is dirty. [test fixture]")
 
     async def plan(self, request: str, model: str = "claude-sonnet-4-6") -> PlanResult:
         self.plan_called = True
@@ -72,10 +72,11 @@ async def test_dirty_tree_fails_before_planning(monkeypatch, tmp_path):
 
     config = {"configurable": {"thread_id": f"test-{uuid.uuid4().hex[:8]}"}}
     async with build_workflow(db_path=str(tmp_path / "ckpt.db")) as workflow:
-        # The pre-flight check raises BranchCreationError. LangGraph
-        # wraps it in its own task-failure machinery, so we just assert
-        # the original is in the chain.
-        with pytest.raises(BranchCreationError):
+        # The pre-flight check raises DirtyTreeError (a BranchCreationError
+        # subclass). LangGraph wraps it in its own task-failure machinery, so
+        # we just assert the original is in the chain — and specifically that
+        # it's the dirty-tree type, not a generic branch-creation failure.
+        with pytest.raises(DirtyTreeError):
             await workflow.ainvoke("test request", config=config)
 
     # The single most important assertion: planning was NEVER called.
