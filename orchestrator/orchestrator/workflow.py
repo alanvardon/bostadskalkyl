@@ -301,7 +301,7 @@ async def planning_task(request: str, model: str = "claude-sonnet-4-6") -> PlanR
 # Phase 29: after the tree check, run any user-defined pre-hook scripts
 # from `.orchestrator/pre-hooks/` (configurable). A non-zero exit from
 # any script raises PreHookError, which propagates out of the task and
-# aborts the workflow — same pattern as BranchCreationError from
+# aborts the workflow — same pattern as DirtyTreeError from
 # verify_clean_tree. The hook's stdout becomes the displayed abort reason.
 @task
 async def verify_clean_tree_task() -> None:

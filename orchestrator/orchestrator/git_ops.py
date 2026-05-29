@@ -28,11 +28,27 @@ REPO_ROOT = find_project_root()
 class BranchCreationError(RuntimeError):
     """Raised when create_branch can't safely create a new branch.
 
-    Three distinct cases all collapse into this exception: dirty tree,
-    cannot-reach-main, and branch-already-exists. The message carries the
-    detail. The orchestrator treats this as a terminal workflow failure
-    — planning's checkpoint is preserved so you can fix the underlying
-    issue and re-trigger without re-paying for the LLM call.
+    Two cases collapse into this exception: cannot-reach-main and
+    branch-already-exists. The message carries the detail. The orchestrator
+    treats this as a terminal workflow failure — planning's checkpoint is
+    preserved so you can fix the underlying issue and re-trigger without
+    re-paying for the LLM call.
+
+    (Dirty-tree failures raise the DirtyTreeError subclass below; see why
+    there.)
+    """
+
+
+class DirtyTreeError(BranchCreationError):
+    """Raised by verify_clean_tree when the working tree has uncommitted
+    changes.
+
+    A subclass of BranchCreationError so every existing `except
+    BranchCreationError` still catches it — but its OWN type, because the
+    pre-flight clean-tree check runs first in the workflow (before planning,
+    long before any branch is created). Before this existed, a dirty tree
+    surfaced in tracebacks/logs as a bare 'BranchCreationError', which read
+    as a branch-creation failure when nothing of the sort had happened.
     """
 
 
@@ -86,7 +102,7 @@ def _run(args: list[str]) -> subprocess.CompletedProcess:
 
 
 def verify_clean_tree() -> None:
-    """Raise BranchCreationError if the working tree has uncommitted changes.
+    """Raise DirtyTreeError if the working tree has uncommitted changes.
 
     Pre-flight check used at the very start of the workflow (so a dirty
     tree fails before paying for any LLM calls) and again inside
@@ -95,7 +111,7 @@ def verify_clean_tree() -> None:
     """
     status = _run(["git", "status", "--porcelain"])
     if status.stdout.strip():
-        raise BranchCreationError(
+        raise DirtyTreeError(
             f"working tree is dirty. Commit or stash your changes, then "
             f"retry.\n\n{status.stdout.strip()}"
         )
@@ -109,10 +125,10 @@ def _strip_thread_prefix(thread_id: str) -> str:
 def create_branch(plan: PlanResult, max_slug_length: int = 50, thread_id: str = "") -> str:
     """Create a feature branch from main based on the plan's title and type.
 
-    Returns the branch name on success. Raises BranchCreationError if:
-      - the working tree is dirty (would lose uncommitted changes)
-      - main can't be reached (offline, fetch failure, ...)
-      - the derived branch already exists
+    Returns the branch name on success. Raises:
+      - DirtyTreeError if the working tree is dirty (uncommitted changes)
+      - BranchCreationError if main can't be reached (offline, fetch
+        failure, ...) or the derived branch already exists
 
     Leaves HEAD on the new branch. Subsequent tasks (implementation,
     commit) assume that.
