@@ -32,6 +32,7 @@ from langgraph.types import Command
 
 from orchestrator.config import apply_overrides, load_config
 from orchestrator.git_ops import BranchCreationError, CommitAndPrError, PreHookError
+from orchestrator.manifest import ManifestError
 from orchestrator.run_log import append_run
 from orchestrator.workflow import build_workflow
 
@@ -42,6 +43,7 @@ _KNOWN_ERRORS: tuple[type[Exception], ...] = (
     BranchCreationError,
     CommitAndPrError,
     PreHookError,
+    ManifestError,
 )
 
 _RULE = "=" * 60
@@ -337,6 +339,16 @@ async def run() -> None:
                 _print_success(result, thread_id)
             elif status == "failed":
                 _print_qa_failure(result, thread_id)
+                sys.exit(1)
+            elif status == "aborted":
+                # Phase 33: a human_gate step was resumed with an abort.
+                print()
+                print(_RULE)
+                print(f"Workflow aborted at human gate: {result.get('aborted_at')}")
+                print(_RULE)
+                print(f"  thread_id: {thread_id}")
+                print("Nothing was committed (gates run before the commit line).")
+                _print_usage_banner(result)
                 sys.exit(1)
             else:
                 # Unknown shape — dump raw so we at least see something.

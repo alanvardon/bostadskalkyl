@@ -16,10 +16,13 @@ logger = logging.getLogger(__name__)
 # this constant; a mismatch refuses the resume with a clear error instead
 # of risking a confusing deserialization failure mid-run.
 # 1.0.0 → 1.1.0 (Phase 33): the body gained the manifest-hash gate and five
-# run_seam() insertion points, plus new tasks (record_manifest_hash_task,
-# script_step_task, llm_agent_step_task). That's a body change, so the bump
-# makes any checkpoint created before Phase 33 refuse to resume (clean version
-# error) rather than resume into a changed task graph.
+# run_seam() insertion points, plus new tasks (record_manifest_hash_task and
+# the per-step tasks built by _make_script_task / _make_llm_agent_task). That's
+# a body change, so the bump makes any checkpoint created before Phase 33
+# refuse to resume (clean version error) rather than resume into a changed
+# task graph. (Phase 33's later refinements — per-id step task names, after_qa
+# firing only on PASS, human_gate abort — all landed before 1.1.0 shipped, so
+# they fold into this same version.)
 WORKFLOW_VERSION = "1.1.0"
 
 
@@ -157,49 +160,79 @@ async def record_version_task() -> str:
     return WORKFLOW_VERSION
 
 
-# Phase 33: manifest snapshot. Same replay trick as record_version_task —
-# returns the live manifest hash on the first run (and persists it), the
-# cached creation-time hash on every resume. The body compares it against
-# the freshly-loaded manifest and refuses the resume if orchestrator.toml's
-# steps changed mid-run.
+# Phase 33: manifest snapshot. Mirrors record_version_task EXACTLY — takes no
+# input and recomputes the hash itself, so its checkpointed value is
+# unambiguously "the manifest hash at run-creation time" with nothing that
+# could look input-dependent. Returns the live hash on the first run (and
+# persists it), the cached creation-time hash on every resume. The body
+# compares it against the freshly-loaded manifest and refuses the resume if
+# orchestrator.toml's steps changed mid-run.
 @task
-async def record_manifest_hash_task(current_hash: str) -> str:
-    return current_hash
+async def record_manifest_hash_task() -> str:
+    return load_manifest().manifest_hash()
 
 
-# Phase 33: generic per-type step runners. @task-wrapped so injected steps
-# inherit checkpointing, tracing, and resume-skip exactly like the spine
-# tasks. Inputs are primitives (not Pydantic Step models) so the serde
-# allowlist needs only StepResult, not every step subtype.
+# Phase 33: per-step task factories. Each injected step is wrapped in a @task
+# NAMED for its step id (`step:<id>`) — so it appears under its own id in the
+# LangSmith trace tree and gets its own checkpoint identity, instead of every
+# script (or every llm_agent) step collapsing onto one shared task name.
 #
-# `attempt` is part of the inputs purely so seams INSIDE the impl/QA retry
-# loop (after_impl, after_qa) get a distinct checkpoint entry per attempt —
-# the step re-runs against each attempt's changed code and each run resumes
-# to its own result, rather than two attempts colliding on one cache key.
-# Seams outside the loop always pass attempt=0.
-@task
-async def script_step_task(
-    step_id: str, path: str, timeout: int, repo_root: str, attempt: int = 0
-) -> StepResult:
-    return await execute_script(
-        ScriptStep(id=step_id, path=path, timeout=timeout), Path(repo_root)
-    )
+# A fresh wrapper is built per call on purpose. LangGraph derives a task's
+# identity from its NAME plus its call position in the entrypoint body — not
+# from the function object or its inputs — so a freshly-built, deterministically
+# named task replays correctly on resume. (It also sidesteps task()'s mutation
+# of func.__name__: each wrapper closes over its own fresh function, so names
+# never clobber each other.) Step inputs are primitives, not Pydantic Step
+# models, so the serde allowlist needs only StepResult.
+#
+# `attempt` is carried purely for context (it tags the trace inputs and the
+# human_gate payload); per-attempt distinctness comes from call position, not
+# from this value.
+def _make_script_task(step_id: str):
+    async def run_script_step(
+        step_id: str, path: str, timeout: int, repo_root: str, attempt: int = 0
+    ) -> StepResult:
+        return await execute_script(
+            ScriptStep(id=step_id, path=path, timeout=timeout), Path(repo_root)
+        )
+
+    return task(run_script_step, name=f"step:{step_id}")
 
 
-@task
-async def llm_agent_step_task(
-    step_id: str,
-    agent: str,
-    model: str,
-    repo_root: str,
-    plan_text: str,
-    attempt: int = 0,
-) -> StepResult:
-    return await execute_llm_agent(
-        LlmAgentStep(id=step_id, agent=agent, model=model),
-        Path(repo_root),
-        plan_text,
-    )
+def _make_llm_agent_task(step_id: str):
+    async def run_llm_agent_step(
+        step_id: str,
+        agent: str,
+        model: str,
+        repo_root: str,
+        plan_text: str,
+        attempt: int = 0,
+    ) -> StepResult:
+        return await execute_llm_agent(
+            LlmAgentStep(id=step_id, agent=agent, model=model),
+            Path(repo_root),
+            plan_text,
+        )
+
+    return task(run_llm_agent_step, name=f"step:{step_id}")
+
+
+class StepGateAborted(RuntimeError):
+    """Phase 33: raised when a human_gate step is resumed with an abort
+    decision ('abort'/'no'/'stop'). Propagates out of run_seam to the
+    entrypoint body, which converts it into a clean status="aborted" return.
+    All seams run before the commit line, so an abort never leaves a
+    half-shipped state.
+    """
+
+    def __init__(self, step_id: str) -> None:
+        self.step_id = step_id
+        super().__init__(f"workflow aborted at human_gate step {step_id!r}")
+
+
+# Resume values (case-insensitive) that mean "stop the run" at a human_gate.
+# Anything else proceeds — replying to a gate is how you resume past it.
+_GATE_ABORT_WORDS = frozenset({"abort", "no", "stop"})
 
 
 async def run_seam(
@@ -229,21 +262,25 @@ async def run_seam(
     for step in steps:
         check_cancel()
         if isinstance(step, HumanGateStep):
-            # A pause for acknowledgement. Any resume value proceeds; the
-            # gate exists to make a human look, not to branch the flow.
-            interrupt({
+            # A human checkpoint. The resume value decides: an abort word
+            # ('abort'/'no'/'stop') stops the run cleanly via StepGateAborted;
+            # anything else (including 'yes' or empty) proceeds — replying is
+            # how you resume past the gate.
+            decision = interrupt({
                 "kind": "step_human_gate",
                 "step_id": step.id,
                 "ask": step.ask,
                 "attempt": attempt,
             })
+            if isinstance(decision, str) and decision.strip().lower() in _GATE_ABORT_WORDS:
+                raise StepGateAborted(step.id)
             continue
         if isinstance(step, ScriptStep):
-            await script_step_task(
-                step.id, step.path, step.timeout, repo_root, attempt
-            )
+            step_task = _make_script_task(step.id)
+            await step_task(step.id, step.path, step.timeout, repo_root, attempt)
         elif isinstance(step, LlmAgentStep):
-            result = await llm_agent_step_task(
+            step_task = _make_llm_agent_task(step.id)
+            result = await step_task(
                 step.id, step.agent, step.model, repo_root, plan_text, attempt
             )
             if result.usage:
@@ -433,9 +470,7 @@ async def build_workflow(
                 # mid-run orchestrator.toml edit refuses the resume.
                 manifest = load_manifest()
                 current_manifest_hash = manifest.manifest_hash()
-                stored_manifest_hash = await record_manifest_hash_task(
-                    current_manifest_hash
-                )
+                stored_manifest_hash = await record_manifest_hash_task()
                 if stored_manifest_hash != current_manifest_hash:
                     raise IncompatibleManifestError(
                         stored_manifest_hash, current_manifest_hash
@@ -551,14 +586,14 @@ async def build_workflow(
                         usage_by_task["qa"].append(qa_result.usage)
                     write_qa(thread_id, qa_result)
 
-                    # Phase 33 seam: after_qa — fires after each QA run (pass
-                    # or fail), per attempt.
-                    await run_seam(
-                        "after_qa", manifest, plan_result.plan_text,
-                        _check_cancel, usage_by_task, attempt,
-                    )
-
                     if qa_result.result == "PASS":
+                        # Phase 33 seam: after_qa — fires ONCE, only after QA
+                        # has passed and is finished (not on failed attempts).
+                        # `attempt` is the passing attempt number.
+                        await run_seam(
+                            "after_qa", manifest, plan_result.plan_text,
+                            _check_cancel, usage_by_task, attempt,
+                        )
                         break
 
                     # Log QA failure at ERROR level so scripted-gate failures
@@ -654,6 +689,21 @@ async def build_workflow(
                     "implementation": impl_result.model_dump(),
                     "qa": qa_result.model_dump(),
                     "pr_url": pr_url,
+                    "usage": _usage,
+                }
+
+            except StepGateAborted as exc:
+                # Phase 33: a human_gate step was resumed with an abort
+                # decision. Every seam runs before the commit line, so there's
+                # nothing half-shipped to unwind — return a clean status and
+                # whatever usage was spent up to the gate. branch_name may not
+                # exist yet (gates can fire pre-branch), so it isn't referenced.
+                _usage = aggregate_usage(usage_by_task)
+                write_usage(thread_id, _usage)
+                return {
+                    "status": "aborted",
+                    "thread_id": thread_id,
+                    "aborted_at": exc.step_id,
                     "usage": _usage,
                 }
 

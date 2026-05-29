@@ -75,14 +75,16 @@ disallowed_tools = []
 #
 # Seams (all run before the commit line, so cancel stays safe):
 #   before_plan · after_plan · after_impl · after_qa · before_commit
-# before_plan / after_plan / before_commit run once. after_impl and after_qa
-# run on EVERY impl/QA retry attempt (the code changes each attempt), so a
-# step there fires once per attempt — keep that in mind for costly llm_agent
-# steps (put those at before_commit if you want them to run only once).
+# before_plan / after_plan / before_commit run once. after_impl fires on
+# EVERY impl attempt (the code changes each attempt). after_qa fires ONCE,
+# only after QA has PASSED (never on a failed attempt). Put costly llm_agent
+# steps at before_commit (or after_qa) so they run on the final, passing code.
 #
 # Step types:
 #   script      — run an executable; non-zero exit aborts the workflow
-#   human_gate  — pause for acknowledgement (resume to proceed)
+#                 (must be chmod +x with a shebang — see NOTES.md)
+#   human_gate  — pause for a decision: reply 'abort' (or 'no'/'stop') to stop
+#                 the run, any other reply to proceed
 #   llm_agent   — run a markdown agent at .orchestrator/agents/<agent>.md
 #
 # `id` is the step's resume identity — don't rename it mid-run. The manifest

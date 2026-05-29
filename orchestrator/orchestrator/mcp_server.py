@@ -41,6 +41,7 @@ from orchestrator.cancellation import (
 )
 from orchestrator.config import apply_overrides, load_config
 from orchestrator.idempotency import reserve as idempotency_reserve
+from orchestrator.manifest import ManifestError
 from orchestrator.mcp_progress import run_with_progress
 from orchestrator.paths import find_project_root
 from orchestrator.run_log import append_run
@@ -102,6 +103,25 @@ def _incompatible_manifest(
     }
 
 
+def _invalid_manifest(thread_id: str, exc: ManifestError) -> dict:
+    """Shape a ManifestError into a structured response (Phase 33).
+
+    The [steps] config in orchestrator.toml is malformed (unknown seam,
+    duplicate id, missing script, unknown agent, …). This is caught at the
+    top of the workflow body, before any LLM spend, so no tokens are wasted —
+    surface the specific reason instead of a raw traceback.
+    """
+    return {
+        "status": "invalid_manifest",
+        "thread_id": thread_id,
+        "error": str(exc),
+        "next": (
+            f"The [steps] config in orchestrator.toml is invalid: {exc}. "
+            "Fix it, then run again (no tokens were spent)."
+        ),
+    }
+
+
 def _awaiting_approval(thread_id: str, result: dict, hint: str) -> dict:
     """Shape an interrupt result into the awaiting_approval response.
 
@@ -111,11 +131,22 @@ def _awaiting_approval(thread_id: str, result: dict, hint: str) -> dict:
     "kind" and "ask", so `plan` is read defensively.
     """
     interrupt_val = result["__interrupt__"][0].value
+    kind = interrupt_val.get("kind")
+    # Phase 33 human_gate steps have their own resume contract: any reply
+    # proceeds, the abort words stop the run. Override the (plan-centric)
+    # caller hint so the chat surfaces that instead.
+    if kind == "step_human_gate":
+        hint = (
+            "A pluggable human_gate step is asking for a decision (see `ask`). "
+            "Call approve_plan with this thread_id and the user's reply: "
+            "'abort' (or 'no'/'stop') stops the run cleanly; any other reply "
+            "proceeds past the gate."
+        )
     return {
         "status": "awaiting_approval",
         "thread_id": thread_id,
         "plan": interrupt_val.get("plan"),
-        "kind": interrupt_val.get("kind"),
+        "kind": kind,
         "ask": interrupt_val.get("ask"),
         "next": hint,
     }
@@ -256,8 +287,11 @@ async def implement_feature(
     # per-task progress notifications during the 5+ min runs. ctx is
     # injected by FastMCP; None when called outside the MCP transport
     # (tests, ad-hoc invocations).
-    async with build_workflow(config=effective_config) as workflow:
-        result = await run_with_progress(workflow, request, config, ctx)
+    try:
+        async with build_workflow(config=effective_config) as workflow:
+            result = await run_with_progress(workflow, request, config, ctx)
+    except ManifestError as exc:
+        return _invalid_manifest(thread_id, exc)
     if "__interrupt__" in result:
         return _awaiting_approval(
             thread_id,
@@ -334,6 +368,8 @@ async def resume_run(
         return _incompatible_checkpoint(thread_id, exc)
     except IncompatibleManifestError as exc:
         return _incompatible_manifest(thread_id, exc)
+    except ManifestError as exc:
+        return _invalid_manifest(thread_id, exc)
     if "__interrupt__" in result:
         return _awaiting_approval(
             thread_id,
@@ -430,6 +466,8 @@ async def approve_plan(
         return _incompatible_checkpoint(thread_id, exc)
     except IncompatibleManifestError as exc:
         return _incompatible_manifest(thread_id, exc)
+    except ManifestError as exc:
+        return _invalid_manifest(thread_id, exc)
     if "__interrupt__" in result:
         return _awaiting_approval(
             thread_id,
