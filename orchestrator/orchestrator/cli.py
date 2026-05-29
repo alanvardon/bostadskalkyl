@@ -32,6 +32,7 @@ from langgraph.types import Command
 
 from orchestrator.config import apply_overrides, load_config
 from orchestrator.git_ops import BranchCreationError, CommitAndPrError, PreHookError
+from orchestrator.manifest import ManifestError
 from orchestrator.run_log import append_run
 from orchestrator.workflow import build_workflow
 
@@ -42,6 +43,7 @@ _KNOWN_ERRORS: tuple[type[Exception], ...] = (
     BranchCreationError,
     CommitAndPrError,
     PreHookError,
+    ManifestError,
 )
 
 _RULE = "=" * 60
@@ -315,9 +317,17 @@ async def run() -> None:
             # either approves ("yes") or triggers a re-plan with feedback.
             while "__interrupt__" in result:
                 interrupt_val = result["__interrupt__"][0].value
-                print(f"\n--- Plan for approval (thread_id: {thread_id}) ---")
-                print(interrupt_val["plan"]["plan_text"])
-                print("\n" + interrupt_val["ask"])
+                plan = interrupt_val.get("plan")
+                if plan is not None:
+                    # Plan-approval interrupt: show the full plan text.
+                    print(f"\n--- Plan for approval (thread_id: {thread_id}) ---")
+                    print(plan["plan_text"])
+                else:
+                    # A non-plan gate (branch/impl/pr approval, or a Phase 33
+                    # human_gate step): just show the prompt.
+                    kind = interrupt_val.get("kind", "approval")
+                    print(f"\n--- {kind} (thread_id: {thread_id}) ---")
+                print("\n" + interrupt_val.get("ask", "Proceed? Reply 'yes'."))
                 response = input("> ").strip()
                 result = await _run_with_progress(
                     workflow, Command(resume=response), config
@@ -329,6 +339,16 @@ async def run() -> None:
                 _print_success(result, thread_id)
             elif status == "failed":
                 _print_qa_failure(result, thread_id)
+                sys.exit(1)
+            elif status == "aborted":
+                # Phase 33: a human_gate step was resumed with an abort.
+                print()
+                print(_RULE)
+                print(f"Workflow aborted at human gate: {result.get('aborted_at')}")
+                print(_RULE)
+                print(f"  thread_id: {thread_id}")
+                print("Nothing was committed (gates run before the commit line).")
+                _print_usage_banner(result)
                 sys.exit(1)
             else:
                 # Unknown shape — dump raw so we at least see something.

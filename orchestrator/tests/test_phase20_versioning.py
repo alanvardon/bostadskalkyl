@@ -88,6 +88,9 @@ async def test_resume_version_mismatch_refuses(monkeypatch, tmp_path):
     _patch(_Stubs(), monkeypatch)
     from orchestrator.workflow import build_workflow
 
+    import orchestrator.workflow as wf
+    original_version = wf.WORKFLOW_VERSION
+
     config = {"configurable": {"thread_id": f"test-{uuid.uuid4().hex[:8]}"}}
     async with build_workflow(db_path=str(tmp_path / "ckpt.db")) as workflow:
         result = await workflow.ainvoke("req", config=config)
@@ -95,11 +98,12 @@ async def test_resume_version_mismatch_refuses(monkeypatch, tmp_path):
 
         # Simulate an incompatible code change landing while the run is
         # paused at the plan-approval interrupt: bump the live version.
-        # record_version_task is cached at "1.0.0" from the first run.
+        # record_version_task is cached at the original version from the
+        # first run. (Version-agnostic so it survives future bumps.)
         monkeypatch.setattr("orchestrator.workflow.WORKFLOW_VERSION", "9.9.9")
 
         with pytest.raises(IncompatibleCheckpointError) as ei:
             await workflow.ainvoke(Command(resume="yes"), config=config)
 
-    assert ei.value.stored_version == "1.0.0"
+    assert ei.value.stored_version == original_version
     assert ei.value.current_version == "9.9.9"

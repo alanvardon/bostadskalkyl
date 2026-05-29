@@ -15,7 +15,15 @@ logger = logging.getLogger(__name__)
 # On every resume, the version stored at run creation is compared against
 # this constant; a mismatch refuses the resume with a clear error instead
 # of risking a confusing deserialization failure mid-run.
-WORKFLOW_VERSION = "1.0.0"
+# 1.0.0 → 1.1.0 (Phase 33): the body gained the manifest-hash gate and five
+# run_seam() insertion points, plus new tasks (record_manifest_hash_task and
+# the per-step tasks built by _make_script_task / _make_llm_agent_task). That's
+# a body change, so the bump makes any checkpoint created before Phase 33
+# refuse to resume (clean version error) rather than resume into a changed
+# task graph. (Phase 33's later refinements — per-id step task names, after_qa
+# firing only on PASS, human_gate abort — all landed before 1.1.0 shipped, so
+# they fold into this same version.)
+WORKFLOW_VERSION = "1.1.0"
 
 
 class IncompatibleCheckpointError(RuntimeError):
@@ -33,6 +41,24 @@ class IncompatibleCheckpointError(RuntimeError):
             f"checkpoint was created with workflow v{stored_version}; "
             f"current is v{current_version}. This run cannot be safely "
             f"resumed — start a fresh run."
+        )
+
+
+class IncompatibleManifestError(RuntimeError):
+    """Phase 33: raised on resume when the step manifest in orchestrator.toml
+    was edited since the run started. The resolved manifest is snapshotted
+    into the first checkpoint; a different hash on resume means the injected
+    step graph changed underneath the run, so we refuse rather than resume
+    into a shifted graph. Extends Phase 20's version gate with a second hash.
+    """
+
+    def __init__(self, stored_hash: str, current_hash: str) -> None:
+        self.stored_hash = stored_hash
+        self.current_hash = current_hash
+        super().__init__(
+            f"step manifest changed since this run started "
+            f"(snapshot {stored_hash}, current {current_hash}). In-flight "
+            f"runs can't absorb a manifest edit — start a fresh run."
         )
 
 # LangGraph's Functional API: @entrypoint marks the top-level workflow
@@ -60,6 +86,15 @@ from orchestrator.agents.implementation import implement, ImplementationResult
 from orchestrator.agents.qa import qa, QaResult
 from orchestrator.cancellation import WorkflowCancelled, raise_if_cancelled
 from orchestrator.config import OrchestratorConfig, load_config
+from orchestrator.manifest import (
+    HumanGateStep,
+    LlmAgentStep,
+    ScriptStep,
+    StepResult,
+    WorkflowManifest,
+    load_manifest,
+)
+from orchestrator.steps import execute_llm_agent, execute_script
 from orchestrator.usage import TaskUsage, aggregate_usage
 from orchestrator.git_ops import (
     commit,
@@ -89,6 +124,9 @@ _ALLOWED_MSGPACK_MODULES = [
     ("orchestrator.agents.implementation", "ImplementationResult"),
     ("orchestrator.agents.qa", "QaResult"),
     ("orchestrator.usage", "TaskUsage"),
+    # Phase 33: one registered type for ALL injected steps, so the allowlist
+    # stays closed however many steps users add.
+    ("orchestrator.manifest", "StepResult"),
 ]
 
 _CUSTOM_SERDE = JsonPlusSerializer(
@@ -120,6 +158,133 @@ _CUSTOM_SERDE = JsonPlusSerializer(
 @task
 async def record_version_task() -> str:
     return WORKFLOW_VERSION
+
+
+# Phase 33: manifest snapshot. Mirrors record_version_task EXACTLY — takes no
+# input and recomputes the hash itself, so its checkpointed value is
+# unambiguously "the manifest hash at run-creation time" with nothing that
+# could look input-dependent. Returns the live hash on the first run (and
+# persists it), the cached creation-time hash on every resume. The body
+# compares it against the freshly-loaded manifest and refuses the resume if
+# orchestrator.toml's steps changed mid-run.
+@task
+async def record_manifest_hash_task() -> str:
+    return load_manifest().manifest_hash()
+
+
+# Phase 33: per-step task factories. Each injected step is wrapped in a @task
+# NAMED for its step id (`step:<id>`) — so it appears under its own id in the
+# LangSmith trace tree and gets its own checkpoint identity, instead of every
+# script (or every llm_agent) step collapsing onto one shared task name.
+#
+# A fresh wrapper is built per call on purpose. LangGraph derives a task's
+# identity from its NAME plus its call position in the entrypoint body — not
+# from the function object or its inputs — so a freshly-built, deterministically
+# named task replays correctly on resume. (It also sidesteps task()'s mutation
+# of func.__name__: each wrapper closes over its own fresh function, so names
+# never clobber each other.) Step inputs are primitives, not Pydantic Step
+# models, so the serde allowlist needs only StepResult.
+#
+# `attempt` is carried purely for context (it tags the trace inputs and the
+# human_gate payload); per-attempt distinctness comes from call position, not
+# from this value.
+def _make_script_task(step_id: str):
+    async def run_script_step(
+        step_id: str, path: str, timeout: int, repo_root: str, attempt: int = 0
+    ) -> StepResult:
+        return await execute_script(
+            ScriptStep(id=step_id, path=path, timeout=timeout), Path(repo_root)
+        )
+
+    return task(run_script_step, name=f"step:{step_id}")
+
+
+def _make_llm_agent_task(step_id: str):
+    async def run_llm_agent_step(
+        step_id: str,
+        agent: str,
+        model: str,
+        repo_root: str,
+        plan_text: str,
+        attempt: int = 0,
+    ) -> StepResult:
+        return await execute_llm_agent(
+            LlmAgentStep(id=step_id, agent=agent, model=model),
+            Path(repo_root),
+            plan_text,
+        )
+
+    return task(run_llm_agent_step, name=f"step:{step_id}")
+
+
+class StepGateAborted(RuntimeError):
+    """Phase 33: raised when a human_gate step is resumed with an abort
+    decision ('abort'/'no'/'stop'). Propagates out of run_seam to the
+    entrypoint body, which converts it into a clean status="aborted" return.
+    All seams run before the commit line, so an abort never leaves a
+    half-shipped state.
+    """
+
+    def __init__(self, step_id: str) -> None:
+        self.step_id = step_id
+        super().__init__(f"workflow aborted at human_gate step {step_id!r}")
+
+
+# Resume values (case-insensitive) that mean "stop the run" at a human_gate.
+# Anything else proceeds — replying to a gate is how you resume past it.
+_GATE_ABORT_WORDS = frozenset({"abort", "no", "stop"})
+
+
+async def run_seam(
+    seam: str,
+    manifest: WorkflowManifest,
+    plan_text: str,
+    check_cancel,
+    usage_by_task: dict,
+    attempt: int = 0,
+) -> None:
+    """Run every injected step at `seam`, in declared order.
+
+    A plain async helper (not a @task) so human_gate steps can call
+    interrupt(), which must run in the entrypoint body. Script and llm_agent
+    steps dispatch to their @tasks (checkpointed). Cancel is checked before
+    each step (between-step semantics, inherited from the spine). Each
+    llm_agent step's usage is accumulated under its own `id`.
+
+    `attempt` distinguishes per-attempt checkpoint entries for seams that run
+    inside the impl/QA retry loop (after_impl, after_qa); it is 0 for seams
+    that run once outside the loop.
+    """
+    steps = manifest.for_seam(seam)
+    if not steps:
+        return
+    repo_root = str(find_project_root())
+    for step in steps:
+        check_cancel()
+        if isinstance(step, HumanGateStep):
+            # A human checkpoint. The resume value decides: an abort word
+            # ('abort'/'no'/'stop') stops the run cleanly via StepGateAborted;
+            # anything else (including 'yes' or empty) proceeds — replying is
+            # how you resume past the gate.
+            decision = interrupt({
+                "kind": "step_human_gate",
+                "step_id": step.id,
+                "ask": step.ask,
+                "attempt": attempt,
+            })
+            if isinstance(decision, str) and decision.strip().lower() in _GATE_ABORT_WORDS:
+                raise StepGateAborted(step.id)
+            continue
+        if isinstance(step, ScriptStep):
+            step_task = _make_script_task(step.id)
+            await step_task(step.id, step.path, step.timeout, repo_root, attempt)
+        elif isinstance(step, LlmAgentStep):
+            step_task = _make_llm_agent_task(step.id)
+            result = await step_task(
+                step.id, step.agent, step.model, repo_root, plan_text, attempt
+            )
+            if result.usage:
+                usage_by_task.setdefault(step.id, []).append(result.usage)
 
 
 @task
@@ -299,8 +464,25 @@ async def build_workflow(
                 if stored_version != WORKFLOW_VERSION:
                     raise IncompatibleCheckpointError(stored_version, WORKFLOW_VERSION)
 
+                # Phase 33: load + validate the injected-step manifest (raises
+                # ManifestError on a bad config, before any LLM spend), then
+                # gate on its hash the same way as the version above — a
+                # mid-run orchestrator.toml edit refuses the resume.
+                manifest = load_manifest()
+                current_manifest_hash = manifest.manifest_hash()
+                stored_manifest_hash = await record_manifest_hash_task()
+                if stored_manifest_hash != current_manifest_hash:
+                    raise IncompatibleManifestError(
+                        stored_manifest_hash, current_manifest_hash
+                    )
+
                 _check_cancel()
                 await verify_clean_tree_task()
+
+                # Phase 33 seam: before_plan (no plan context yet).
+                await run_seam(
+                    "before_plan", manifest, "", _check_cancel, usage_by_task
+                )
 
                 _check_cancel()
                 plan_result = await planning_task(request, config.models.planning)
@@ -342,6 +524,12 @@ async def build_workflow(
                         usage_by_task["planning"].append(plan_result.usage)
                     write_plan(thread_id, plan_result)
 
+                # Phase 33 seam: after_plan (plan is finalised/approved).
+                await run_seam(
+                    "after_plan", manifest, plan_result.plan_text,
+                    _check_cancel, usage_by_task,
+                )
+
                 # Phase 13: optional branch-creation approval gate.
                 if config.human_in_loop.approve_branch:
                     interrupt({
@@ -378,6 +566,14 @@ async def build_workflow(
                         usage_by_task["implementation"].append(impl_result.usage)
                     write_implementation(thread_id, impl_result)
 
+                    # Phase 33 seam: after_impl — fires on EVERY attempt, since
+                    # each attempt produces freshly changed code. `attempt`
+                    # keeps each run a distinct checkpoint entry.
+                    await run_seam(
+                        "after_impl", manifest, plan_result.plan_text,
+                        _check_cancel, usage_by_task, attempt,
+                    )
+
                     if config.human_in_loop.approve_implementation:
                         interrupt({
                             "kind": "implementation_approval",
@@ -389,7 +585,15 @@ async def build_workflow(
                     if qa_result.usage:
                         usage_by_task["qa"].append(qa_result.usage)
                     write_qa(thread_id, qa_result)
+
                     if qa_result.result == "PASS":
+                        # Phase 33 seam: after_qa — fires ONCE, only after QA
+                        # has passed and is finished (not on failed attempts).
+                        # `attempt` is the passing attempt number.
+                        await run_seam(
+                            "after_qa", manifest, plan_result.plan_text,
+                            _check_cancel, usage_by_task, attempt,
+                        )
                         break
 
                     # Log QA failure at ERROR level so scripted-gate failures
@@ -442,6 +646,13 @@ async def build_workflow(
                         "ask": "QA passed. Open a PR?",
                     })
 
+                # Phase 33 seam: before_commit (last chance before the spine
+                # commits — still before the commit line, so cancel-safe).
+                await run_seam(
+                    "before_commit", manifest, plan_result.plan_text,
+                    _check_cancel, usage_by_task,
+                )
+
                 # Phase 15: three separate @tasks instead of one
                 # commit_and_pr_task. A failure between commit and push
                 # (or push and PR creation) is resumable via resume_run —
@@ -478,6 +689,21 @@ async def build_workflow(
                     "implementation": impl_result.model_dump(),
                     "qa": qa_result.model_dump(),
                     "pr_url": pr_url,
+                    "usage": _usage,
+                }
+
+            except StepGateAborted as exc:
+                # Phase 33: a human_gate step was resumed with an abort
+                # decision. Every seam runs before the commit line, so there's
+                # nothing half-shipped to unwind — return a clean status and
+                # whatever usage was spent up to the gate. branch_name may not
+                # exist yet (gates can fire pre-branch), so it isn't referenced.
+                _usage = aggregate_usage(usage_by_task)
+                write_usage(thread_id, _usage)
+                return {
+                    "status": "aborted",
+                    "thread_id": thread_id,
+                    "aborted_at": exc.step_id,
                     "usage": _usage,
                 }
 
