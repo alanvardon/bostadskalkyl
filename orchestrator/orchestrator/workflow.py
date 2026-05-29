@@ -15,7 +15,12 @@ logger = logging.getLogger(__name__)
 # On every resume, the version stored at run creation is compared against
 # this constant; a mismatch refuses the resume with a clear error instead
 # of risking a confusing deserialization failure mid-run.
-WORKFLOW_VERSION = "1.0.0"
+# 1.0.0 → 1.1.0 (Phase 33): the body gained the manifest-hash gate and five
+# run_seam() insertion points, plus new tasks (record_manifest_hash_task,
+# script_step_task, llm_agent_step_task). That's a body change, so the bump
+# makes any checkpoint created before Phase 33 refuse to resume (clean version
+# error) rather than resume into a changed task graph.
+WORKFLOW_VERSION = "1.1.0"
 
 
 class IncompatibleCheckpointError(RuntimeError):
