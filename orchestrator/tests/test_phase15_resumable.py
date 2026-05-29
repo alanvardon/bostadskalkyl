@@ -263,7 +263,7 @@ async def test_resume_run_skips_commit_after_push_failure(monkeypatch, tmp_path)
 
     # Approve. The workflow runs commit → push (FAILS) → structured error.
     failed = await approve_plan(thread_id, "yes")
-    assert failed["status"] == "commit_pr_failed"
+    assert failed["status"] == "user_action_required"
     assert "simulated network blip" in failed["error"]
     assert failed["thread_id"] == thread_id
 

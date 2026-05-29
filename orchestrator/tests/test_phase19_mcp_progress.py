@@ -24,6 +24,7 @@ from typing import Any
 import pytest
 
 from orchestrator.agents.qa import QaResult
+from orchestrator.errors import FatalError
 from orchestrator.mcp_progress import run_with_progress
 
 
@@ -266,7 +267,7 @@ async def test_stream_without_final_result_raises(monkeypatch):
     workflow = _FakeWorkflow(events)
     ctx = _FakeContext()
 
-    with pytest.raises(RuntimeError, match="without a final result"):
+    with pytest.raises(FatalError, match="without a final result"):
         await run_with_progress(
             workflow, "req", {"configurable": {"thread_id": "x"}}, ctx
         )

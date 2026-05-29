@@ -40,9 +40,8 @@ from orchestrator.cancellation import (
     mark_cancelled,
 )
 from orchestrator.config import apply_overrides, load_config
+from orchestrator.errors import FatalError, RetriableError, UserActionError
 from orchestrator.idempotency import reserve as idempotency_reserve
-from orchestrator.git_ops import CommitAndPrError
-from orchestrator.manifest import ManifestError
 from orchestrator.mcp_progress import run_with_progress
 from orchestrator.paths import find_project_root
 from orchestrator.run_log import append_run
@@ -104,42 +103,51 @@ def _incompatible_manifest(
     }
 
 
-def _commit_pr_failed(thread_id: str, exc: CommitAndPrError) -> dict:
-    """Shape a CommitAndPrError into a structured response.
 
-    Raised when commit, push, or pr_create fails (auth, network, pre-commit
-    hook, …). The checkpoint already has planning/implementation/QA cached —
-    fix the underlying issue then call resume_run to retry only the failed
-    git step.
+def _user_action_required(thread_id: str, exc: UserActionError) -> dict:
+    """Shape a UserActionError into a structured response (Phase 21).
+
+    The `action` field tells the user exactly what to do before calling
+    resume_run. Specific subclasses (CommitAndPrError, DirtyTreeError, etc.)
+    are caught by this same handler since they all inherit UserActionError.
     """
     return {
-        "status": "commit_pr_failed",
+        "status": "user_action_required",
         "thread_id": thread_id,
         "error": str(exc),
-        "next": (
-            f"A git operation failed: {exc}. Fix the underlying issue "
-            "(auth, network, pre-commit hook, etc.) then call "
-            "resume_run(thread_id) — planning, implementation, and QA "
-            "are cached and won't re-run."
-        ),
+        "action": exc.action,
     }
 
 
-def _invalid_manifest(thread_id: str, exc: ManifestError) -> dict:
-    """Shape a ManifestError into a structured response (Phase 33).
+def _retriable_error(thread_id: str, exc: RetriableError) -> dict:
+    """Shape a RetriableError into a structured response (Phase 21).
 
-    The [steps] config in orchestrator.toml is malformed (unknown seam,
-    duplicate id, missing script, unknown agent, …). This is caught at the
-    top of the workflow body, before any LLM spend, so no tokens are wasted —
-    surface the specific reason instead of a raw traceback.
+    Transient failures: call resume_run immediately without any manual
+    intervention.
     """
     return {
-        "status": "invalid_manifest",
+        "status": "retriable_error",
+        "thread_id": thread_id,
+        "error": str(exc),
+        "next": "Transient failure. Call resume_run(thread_id) to retry immediately.",
+    }
+
+
+def _fatal_error(thread_id: str, exc: FatalError) -> dict:
+    """Shape a FatalError into a structured response (Phase 21).
+
+    Non-retriable. Fix the root cause and start a fresh implement_feature.
+    The specific subclasses IncompatibleCheckpointError and
+    IncompatibleManifestError still have their own handlers above so they
+    can surface extra structured fields (version numbers, hash values).
+    """
+    return {
+        "status": "fatal",
         "thread_id": thread_id,
         "error": str(exc),
         "next": (
-            f"The [steps] config in orchestrator.toml is invalid: {exc}. "
-            "Fix it, then run again (no tokens were spent)."
+            "This is a non-retriable error. Fix the root cause and start a "
+            "fresh implement_feature run."
         ),
     }
 
@@ -312,10 +320,17 @@ async def implement_feature(
     try:
         async with build_workflow(config=effective_config) as workflow:
             result = await run_with_progress(workflow, request, config, ctx)
-    except CommitAndPrError as exc:
-        return _commit_pr_failed(thread_id, exc)
-    except ManifestError as exc:
-        return _invalid_manifest(thread_id, exc)
+    except (IncompatibleCheckpointError, IncompatibleManifestError) as exc:
+        # These FatalError subclasses get their own handlers for structured fields.
+        if isinstance(exc, IncompatibleCheckpointError):
+            return _incompatible_checkpoint(thread_id, exc)
+        return _incompatible_manifest(thread_id, exc)
+    except UserActionError as exc:
+        return _user_action_required(thread_id, exc)
+    except RetriableError as exc:
+        return _retriable_error(thread_id, exc)
+    except FatalError as exc:
+        return _fatal_error(thread_id, exc)
     if "__interrupt__" in result:
         return _awaiting_approval(
             thread_id,
@@ -388,14 +403,16 @@ async def resume_run(
     try:
         async with build_workflow() as workflow:
             result = await run_with_progress(workflow, None, config, ctx)
-    except CommitAndPrError as exc:
-        return _commit_pr_failed(thread_id, exc)
-    except IncompatibleCheckpointError as exc:
-        return _incompatible_checkpoint(thread_id, exc)
-    except IncompatibleManifestError as exc:
+    except (IncompatibleCheckpointError, IncompatibleManifestError) as exc:
+        if isinstance(exc, IncompatibleCheckpointError):
+            return _incompatible_checkpoint(thread_id, exc)
         return _incompatible_manifest(thread_id, exc)
-    except ManifestError as exc:
-        return _invalid_manifest(thread_id, exc)
+    except UserActionError as exc:
+        return _user_action_required(thread_id, exc)
+    except RetriableError as exc:
+        return _retriable_error(thread_id, exc)
+    except FatalError as exc:
+        return _fatal_error(thread_id, exc)
     if "__interrupt__" in result:
         return _awaiting_approval(
             thread_id,
@@ -488,14 +505,16 @@ async def approve_plan(
             result = await run_with_progress(
                 workflow, Command(resume=response), config, ctx
             )
-    except CommitAndPrError as exc:
-        return _commit_pr_failed(thread_id, exc)
-    except IncompatibleCheckpointError as exc:
-        return _incompatible_checkpoint(thread_id, exc)
-    except IncompatibleManifestError as exc:
+    except (IncompatibleCheckpointError, IncompatibleManifestError) as exc:
+        if isinstance(exc, IncompatibleCheckpointError):
+            return _incompatible_checkpoint(thread_id, exc)
         return _incompatible_manifest(thread_id, exc)
-    except ManifestError as exc:
-        return _invalid_manifest(thread_id, exc)
+    except UserActionError as exc:
+        return _user_action_required(thread_id, exc)
+    except RetriableError as exc:
+        return _retriable_error(thread_id, exc)
+    except FatalError as exc:
+        return _fatal_error(thread_id, exc)
     if "__interrupt__" in result:
         return _awaiting_approval(
             thread_id,

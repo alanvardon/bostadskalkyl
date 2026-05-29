@@ -36,6 +36,7 @@ from claude_agent_sdk import (
 )
 from pydantic import BaseModel
 
+from orchestrator.errors import FatalError
 from orchestrator.usage import TaskUsage
 from orchestrator.prompt_loader import load_prompt
 
@@ -162,7 +163,7 @@ async def implement(
             result_msg = msg
 
     if "summary" not in captured:
-        raise RuntimeError(
+        raise FatalError(
             "implementation agent did not call emit_implementation_result"
         )
 

@@ -19,13 +19,14 @@ import sys
 from pathlib import Path
 
 from orchestrator.agents.planning import PlanResult
+from orchestrator.errors import UserActionError
 from orchestrator.paths import find_project_root
 
 
 REPO_ROOT = find_project_root()
 
 
-class BranchCreationError(RuntimeError):
+class BranchCreationError(UserActionError):
     """Raised when create_branch can't safely create a new branch.
 
     Two cases collapse into this exception: cannot-reach-main and
@@ -37,6 +38,15 @@ class BranchCreationError(RuntimeError):
     (Dirty-tree failures raise the DirtyTreeError subclass below; see why
     there.)
     """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(
+            message,
+            action=(
+                "Fix the underlying issue (branch already exists, network "
+                "unreachable, etc.) then start a fresh implement_feature run."
+            ),
+        )
 
 
 class DirtyTreeError(BranchCreationError):
@@ -50,6 +60,13 @@ class DirtyTreeError(BranchCreationError):
     surfaced in tracebacks/logs as a bare 'BranchCreationError', which read
     as a branch-creation failure when nothing of the sort had happened.
     """
+
+    def __init__(self, message: str) -> None:
+        UserActionError.__init__(
+            self,
+            message,
+            action="Commit or stash your changes, then call resume_run.",
+        )
 
 
 def _sanitize_type(raw: str, max_len: int = 20) -> str:
@@ -170,7 +187,7 @@ def create_branch(plan: PlanResult, max_slug_length: int = 50, thread_id: str = 
     return branch_name
 
 
-class CommitAndPrError(RuntimeError):
+class CommitAndPrError(UserActionError):
     """Raised when any of commit/push/pr_create can't safely complete.
 
     Phase 15 split the monolithic commit_and_pr into three idempotent
@@ -179,8 +196,18 @@ class CommitAndPrError(RuntimeError):
     the user once the underlying issue is fixed.
     """
 
+    def __init__(self, message: str) -> None:
+        super().__init__(
+            message,
+            action=(
+                "Fix the underlying issue (auth, network, pre-commit hook, "
+                "etc.) then call resume_run(thread_id) — planning, "
+                "implementation, and QA are cached and won't re-run."
+            ),
+        )
 
-class PreHookError(Exception):
+
+class PreHookError(UserActionError):
     """Raised when a pre-hook script exits with a non-zero status.
 
     The `output` attribute carries the script's stdout, which is surfaced
@@ -191,7 +218,11 @@ class PreHookError(Exception):
 
     def __init__(self, script: str, output: str, returncode: int) -> None:
         super().__init__(
-            f"pre-hook {script!r} failed (exit {returncode}): {output}"
+            f"pre-hook {script!r} failed (exit {returncode}): {output}",
+            action=(
+                f"Fix the failure in pre-hook {script!r} "
+                f"(exit {returncode}), then call resume_run."
+            ),
         )
         self.script = script
         self.output = output
