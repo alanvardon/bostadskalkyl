@@ -44,7 +44,11 @@ from orchestrator.idempotency import reserve as idempotency_reserve
 from orchestrator.mcp_progress import run_with_progress
 from orchestrator.paths import find_project_root
 from orchestrator.run_log import append_run
-from orchestrator.workflow import build_workflow, IncompatibleCheckpointError
+from orchestrator.workflow import (
+    build_workflow,
+    IncompatibleCheckpointError,
+    IncompatibleManifestError,
+)
 
 
 # AsyncSqliteSaver creates the .db file on demand but not its parent.
@@ -77,17 +81,42 @@ def _incompatible_checkpoint(
     }
 
 
+def _incompatible_manifest(
+    thread_id: str, exc: IncompatibleManifestError
+) -> dict:
+    """Shape an IncompatibleManifestError into a structured response (Phase 33).
+
+    The step manifest in orchestrator.toml changed since the run started.
+    Surface both hashes so the chat can explain why a resume was refused.
+    """
+    return {
+        "status": "incompatible_manifest",
+        "thread_id": thread_id,
+        "stored_hash": exc.stored_hash,
+        "current_hash": exc.current_hash,
+        "next": (
+            "The injected-step manifest in orchestrator.toml changed since "
+            "this run started, so it can't be resumed. Revert the [steps] "
+            "change to resume, or start a fresh implement_feature."
+        ),
+    }
+
+
 def _awaiting_approval(thread_id: str, result: dict, hint: str) -> dict:
     """Shape an interrupt result into the awaiting_approval response.
 
     The interrupt's value dict is set by orchestrator/workflow.py at the
-    interrupt() call site — it carries "kind", "plan", and "ask" keys.
+    interrupt() call site. Plan-approval interrupts carry "plan"; other
+    gates (branch/impl/pr approvals, Phase 33 human_gate steps) carry only
+    "kind" and "ask", so `plan` is read defensively.
     """
     interrupt_val = result["__interrupt__"][0].value
     return {
         "status": "awaiting_approval",
         "thread_id": thread_id,
-        "plan": interrupt_val["plan"],
+        "plan": interrupt_val.get("plan"),
+        "kind": interrupt_val.get("kind"),
+        "ask": interrupt_val.get("ask"),
         "next": hint,
     }
 
@@ -303,6 +332,8 @@ async def resume_run(
             result = await run_with_progress(workflow, None, config, ctx)
     except IncompatibleCheckpointError as exc:
         return _incompatible_checkpoint(thread_id, exc)
+    except IncompatibleManifestError as exc:
+        return _incompatible_manifest(thread_id, exc)
     if "__interrupt__" in result:
         return _awaiting_approval(
             thread_id,
@@ -397,6 +428,8 @@ async def approve_plan(
             )
     except IncompatibleCheckpointError as exc:
         return _incompatible_checkpoint(thread_id, exc)
+    except IncompatibleManifestError as exc:
+        return _incompatible_manifest(thread_id, exc)
     if "__interrupt__" in result:
         return _awaiting_approval(
             thread_id,

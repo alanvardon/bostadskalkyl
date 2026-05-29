@@ -66,3 +66,43 @@ disallowed_tools = []
 [tools.qa]
 allowed_tools    = ["Read", "Grep", "Bash"]
 disallowed_tools = []
+
+# ---------------------------------------------------------------------------
+# Pluggable steps (Phase 33)
+# Inject extra steps into the workflow at fixed "seams" — no edits to
+# workflow.py. The spine (verify_clean_tree → plan → branch → impl → qa →
+# commit → push → pr) stays fixed; your steps run at the seam you name.
+#
+# Seams (all run before the commit line, so cancel stays safe):
+#   before_plan · after_plan · after_impl · after_qa · before_commit
+# Note: after_impl and after_qa both fire once, after the impl/QA retry loop
+# passes (per-attempt injection is unsafe with @task caching).
+#
+# Step types:
+#   script      — run an executable; non-zero exit aborts the workflow
+#   human_gate  — pause for acknowledgement (resume to proceed)
+#   llm_agent   — run a markdown agent at .orchestrator/agents/<agent>.md
+#
+# `id` is the step's resume identity — don't rename it mid-run. The manifest
+# is validated at load time (unknown seam, duplicate id, missing script,
+# unknown agent) and snapshotted per run: editing it mid-run refuses resume.
+#
+# Examples (uncomment and provide the referenced files to enable):
+#
+# [[steps.before_plan]]
+# id      = "lint"
+# type    = "script"
+# path    = ".orchestrator/scripts/lint.sh"
+# timeout = 60
+#
+# [[steps.after_qa]]
+# id    = "docs"
+# type  = "llm_agent"
+# agent = "docs"                 # → .orchestrator/agents/docs.md
+# model = "claude-sonnet-4-6"
+#
+# [[steps.after_qa]]
+# id   = "security_gate"
+# type = "human_gate"
+# ask  = "QA passed. Approve security posture before commit?"
+# ---------------------------------------------------------------------------

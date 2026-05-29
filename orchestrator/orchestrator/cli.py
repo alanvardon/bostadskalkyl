@@ -315,9 +315,17 @@ async def run() -> None:
             # either approves ("yes") or triggers a re-plan with feedback.
             while "__interrupt__" in result:
                 interrupt_val = result["__interrupt__"][0].value
-                print(f"\n--- Plan for approval (thread_id: {thread_id}) ---")
-                print(interrupt_val["plan"]["plan_text"])
-                print("\n" + interrupt_val["ask"])
+                plan = interrupt_val.get("plan")
+                if plan is not None:
+                    # Plan-approval interrupt: show the full plan text.
+                    print(f"\n--- Plan for approval (thread_id: {thread_id}) ---")
+                    print(plan["plan_text"])
+                else:
+                    # A non-plan gate (branch/impl/pr approval, or a Phase 33
+                    # human_gate step): just show the prompt.
+                    kind = interrupt_val.get("kind", "approval")
+                    print(f"\n--- {kind} (thread_id: {thread_id}) ---")
+                print("\n" + interrupt_val.get("ask", "Proceed? Reply 'yes'."))
                 response = input("> ").strip()
                 result = await _run_with_progress(
                     workflow, Command(resume=response), config
