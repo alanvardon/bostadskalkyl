@@ -60,7 +60,7 @@ class _Stubs:
     def commit(self, branch: str, title: str, summary: str, base_branch: str = "main") -> str:
         return "abc123def456"
 
-    def push(self, branch: str) -> None:
+    def push(self, branch: str, base_branch: str = "main", auto_rebase: bool = True) -> None:
         pass
 
     def pr_create(
@@ -83,6 +83,9 @@ class _Stubs:
         # No-op: tests don't depend on the real working tree state.
         pass
 
+    def ensure_on_main(self, base_branch: str = "main") -> None:
+        pass
+
 
 async def _run(stubs: _Stubs, monkeypatch, tmp_path: Path) -> dict:
     monkeypatch.setattr("orchestrator.workflow.plan", stubs.plan)
@@ -97,6 +100,7 @@ async def _run(stubs: _Stubs, monkeypatch, tmp_path: Path) -> dict:
     monkeypatch.setattr(
         "orchestrator.workflow.verify_clean_tree", stubs.verify_clean_tree
     )
+    monkeypatch.setattr("orchestrator.workflow.ensure_on_main", stubs.ensure_on_main)
 
     from orchestrator.workflow import build_workflow
     from langgraph.types import Command

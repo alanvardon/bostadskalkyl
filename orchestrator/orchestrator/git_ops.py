@@ -19,6 +19,7 @@ import sys
 from pathlib import Path
 
 from orchestrator.agents.planning import PlanResult
+from orchestrator.config import load_config
 from orchestrator.errors import UserActionError
 from orchestrator.paths import find_project_root
 
@@ -140,12 +141,12 @@ def _strip_thread_prefix(thread_id: str) -> str:
 
 
 def create_branch(plan: PlanResult, max_slug_length: int = 50, thread_id: str = "") -> str:
-    """Create a feature branch from main based on the plan's title and type.
+    """Create a feature branch from the base branch based on the plan's title and type.
 
     Returns the branch name on success. Raises:
       - DirtyTreeError if the working tree is dirty (uncommitted changes)
-      - BranchCreationError if main can't be reached (offline, fetch
-        failure, ...) or the derived branch already exists
+      - BranchCreationError if the base branch can't be reached (offline,
+        fetch failure, ...) or the derived branch already exists
 
     Leaves HEAD on the new branch. Subsequent tasks (implementation,
     commit) assume that.
@@ -153,19 +154,21 @@ def create_branch(plan: PlanResult, max_slug_length: int = 50, thread_id: str = 
     Direct port of .claude/skills/create-feature-branch.md. Same five
     steps in the same order — review them side by side once.
     """
+    base_branch = _resolve_base(None)
+
     # 1. Working tree must be clean. We can't safely switch branches
     # otherwise — uncommitted work would either be lost or carried into
     # the new branch (both bad).
     verify_clean_tree()
 
-    # 2. Sync with origin/main first. Branching from a stale local main
-    # is how you end up with PRs that conflict from day one.
+    # 2. Sync with origin base branch first. Branching from a stale local
+    # base is how you end up with PRs that conflict from day one.
     try:
-        _run(["git", "checkout", "main"])
+        _run(["git", "checkout", base_branch])
         _run(["git", "pull"])
     except subprocess.CalledProcessError as e:
         raise BranchCreationError(
-            f"cannot reach main: {(e.stderr or e.stdout).strip()}"
+            f"cannot reach {base_branch}: {(e.stderr or e.stdout).strip()}"
         ) from e
 
     # 3. Derive the branch name. `<type>/<kebab-slug>` — same scheme as
@@ -229,7 +232,34 @@ class PreHookError(UserActionError):
         self.returncode = returncode
 
 
-_BASE_BRANCH = "main"  # kept for push/pr_create defaults; override via config.pr.base_branch
+def _resolve_base(base_branch: str | None) -> str:
+    """Return base_branch if given, else read config.pr.base_branch from orchestrator.toml."""
+    return base_branch if base_branch is not None else load_config().pr.base_branch
+
+
+def ensure_on_main(base_branch: str | None = None) -> None:
+    """Switch to base_branch and pull if we're not already there.
+
+    Called at the very start of the workflow (inside verify_clean_tree_task,
+    after the clean-tree check) so the repo is in a known state before any
+    LLM spend. If the user started the orchestrator from a feature branch
+    with a clean tree, this moves them back to base_branch and updates it —
+    the same checkout + pull that create_branch would do later, just earlier.
+
+    No-op when already on base_branch (create_branch will still pull before
+    branching). Raises BranchCreationError on checkout/pull failure.
+    """
+    base_branch = _resolve_base(base_branch)
+    current = _current_branch()
+    if current == base_branch:
+        return
+    try:
+        _run(["git", "checkout", base_branch])
+        _run(["git", "pull"])
+    except subprocess.CalledProcessError as e:
+        raise BranchCreationError(
+            f"cannot switch to {base_branch}: {(e.stderr or e.stdout).strip()}"
+        ) from e
 
 
 def _current_branch() -> str:
@@ -251,12 +281,13 @@ def _assert_on_branch(branch: str) -> None:
         )
 
 
-def commit(branch: str, title: str, summary: str, base_branch: str = "main") -> str:
+def commit(branch: str, title: str, summary: str, base_branch: str | None = None) -> str:
     """Stage and commit any uncommitted changes; return the HEAD SHA.
 
     **Idempotent.** If the working tree is already clean AND the branch
-    is ahead of `_BASE_BRANCH`, assume a previous attempt's commit is
-    already in place and return HEAD's SHA without re-committing. This
+    is ahead of base_branch (from config when not supplied), assume a
+    previous attempt's commit is already in place and return HEAD's SHA
+    without re-committing. This
     is the resume-after-failure path: if a previous workflow committed
     locally but failed before push/PR creation, the next attempt sees
     the commit already present and proceeds to push.
@@ -268,6 +299,7 @@ def commit(branch: str, title: str, summary: str, base_branch: str = "main") -> 
     Returns:
         The commit SHA (full 40-char hex).
     """
+    base_branch = _resolve_base(base_branch)
     _assert_on_branch(branch)
 
     dirty = bool(_run(["git", "status", "--porcelain"]).stdout.strip())
@@ -314,14 +346,61 @@ def commit(branch: str, title: str, summary: str, base_branch: str = "main") -> 
     return _run(["git", "rev-parse", "HEAD"]).stdout.strip()
 
 
-def push(branch: str) -> None:
+def push(branch: str, base_branch: str | None = None, auto_rebase: bool = True) -> None:
     """Push branch to origin with upstream tracking.
 
     **Idempotent.** `git push` is naturally a no-op when the remote is
     already up to date ("Everything up-to-date"), and `-u` re-asserting
     upstream tracking is a no-op if already set.
+
+    **Conflict handling (Phase 22).** Fetches origin first, then checks
+    whether `origin/<base_branch>` has advanced since branch creation.
+    If so:
+      - `auto_rebase=True` (default): runs `git rebase origin/<base_branch>`.
+        If rebase conflicts, aborts and raises `UserActionError`.
+      - `auto_rebase=False`: raises `UserActionError` immediately, asking the
+        user to rebase manually then call `resume_run`.
     """
+    base_branch = _resolve_base(base_branch)
     _assert_on_branch(branch)
+
+    try:
+        _run(["git", "fetch", "origin"])
+    except subprocess.CalledProcessError as e:
+        raise CommitAndPrError(
+            f"fetch failed: {(e.stderr or e.stdout).strip()}"
+        ) from e
+
+    remote_base = f"origin/{base_branch}"
+    behind = int(
+        _run(["git", "rev-list", f"HEAD..{remote_base}", "--count"]).stdout.strip()
+        or "0"
+    )
+
+    if behind > 0:
+        if not auto_rebase:
+            raise UserActionError(
+                f"{remote_base} has {behind} new commit(s); rebase manually then resume_run.",
+                action=(
+                    f"Run: git rebase {remote_base} on branch {branch!r}, "
+                    "resolve any conflicts, then call resume_run."
+                ),
+            )
+        try:
+            _run(["git", "rebase", remote_base])
+        except subprocess.CalledProcessError:
+            try:
+                _run(["git", "rebase", "--abort"])
+            except subprocess.CalledProcessError:
+                pass
+            raise UserActionError(
+                f"{remote_base} moved and rebase conflicted; resolve manually then resume_run.",
+                action=(
+                    f"Run: git rebase {remote_base} on branch {branch!r}, "
+                    "resolve conflicts, then call resume_run."
+                ),
+            )
+
     try:
         _run(["git", "push", "-u", "origin", branch])
     except subprocess.CalledProcessError as e:
@@ -335,7 +414,7 @@ def pr_create(
     title: str,
     summary: str,
     test_plan: str,
-    base_branch: str = "main",
+    base_branch: str | None = None,
     draft: bool = False,
     reviewers: list[str] | None = None,
     labels: list[str] | None = None,
@@ -350,6 +429,7 @@ def pr_create(
     on a prior invocation — the LangGraph cache should cover that, but
     the in-function check is defence in depth).
     """
+    base_branch = _resolve_base(base_branch)
     _assert_on_branch(branch)
 
     # Check for an existing open PR. `gh pr view <branch>` exits non-zero

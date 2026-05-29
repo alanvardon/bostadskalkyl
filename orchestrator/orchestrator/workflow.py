@@ -102,6 +102,7 @@ from orchestrator.usage import TaskUsage, aggregate_usage
 from orchestrator.git_ops import (
     commit,
     create_branch,
+    ensure_on_main,
     pr_create,
     push,
     verify_clean_tree,
@@ -310,6 +311,7 @@ async def planning_task(request: str, model: str = "claude-sonnet-4-6") -> PlanR
 async def verify_clean_tree_task() -> None:
     await asyncio.to_thread(verify_clean_tree)
     _cfg = load_config()
+    await asyncio.to_thread(ensure_on_main, _cfg.pr.base_branch)
     await asyncio.to_thread(run_pre_hooks, _cfg.pre_hooks_dir, _cfg.pre_hooks_timeout)
 
 
@@ -377,10 +379,16 @@ async def commit_task(
 
 
 @task
-async def push_task(branch: str, sha: str) -> None:
+async def push_task(branch: str, sha: str, base_branch: str = "main", auto_rebase: bool = True) -> None:
     """Push branch with upstream tracking. Idempotent (git push is a
-    no-op when the remote is already up to date)."""
-    return await asyncio.to_thread(push, branch)
+    no-op when the remote is already up to date).
+
+    Fetches origin first and rebases onto origin/<base_branch> if it
+    moved since branch creation (Phase 22). Rebase conflicts surface as
+    a UserActionError; set auto_rebase=False to skip and ask for manual
+    rebase instead.
+    """
+    return await asyncio.to_thread(push, branch, base_branch, auto_rebase)
 
 
 @task
@@ -671,7 +679,7 @@ async def build_workflow(
                     branch_name, plan_result.title, impl_result.summary,
                     config.pr.base_branch,
                 )
-                await push_task(branch_name, sha)
+                await push_task(branch_name, sha, config.pr.base_branch, config.git.auto_rebase)
                 pr_url = await pr_create_task(
                     branch_name,
                     plan_result.title,

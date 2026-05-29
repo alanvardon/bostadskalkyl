@@ -30,6 +30,9 @@ Sample orchestrator.toml (all fields optional, defaults shown):
     [branch]
     max_slug_length = 50
 
+    [git]
+    auto_rebase = true   # rebase onto origin/<base_branch> if it moved before push
+
     [pr]
     base_branch = "main"
     draft       = false
@@ -98,6 +101,10 @@ class BranchConfig(BaseModel):
     max_slug_length: int = 50
 
 
+class GitConfig(BaseModel):
+    auto_rebase: bool = True
+
+
 class PrConfig(BaseModel):
     base_branch: str = "main"
     draft: bool = False
@@ -115,6 +122,7 @@ class OrchestratorConfig(BaseModel):
     models: ModelsConfig = Field(default_factory=ModelsConfig)
     human_in_loop: HumanInLoopConfig = Field(default_factory=HumanInLoopConfig)
     branch: BranchConfig = Field(default_factory=BranchConfig)
+    git: GitConfig = Field(default_factory=GitConfig)
     pr: PrConfig = Field(default_factory=PrConfig)
 
 
