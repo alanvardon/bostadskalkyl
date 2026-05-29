@@ -370,7 +370,7 @@ async def qa_task(
 # fresh instead of returning stale cached results.
 @task
 async def commit_task(
-    branch: str, title: str, summary: str, base_branch: str = "main"
+    branch: str, title: str, summary: str, base_branch: str | None = None
 ) -> str:
     """Stage + commit any uncommitted changes; return HEAD SHA.
     Idempotent: a clean tree with an existing ahead-of-base commit
@@ -379,7 +379,7 @@ async def commit_task(
 
 
 @task
-async def push_task(branch: str, sha: str, base_branch: str = "main", auto_rebase: bool = True) -> None:
+async def push_task(branch: str, sha: str, base_branch: str | None = None, auto_rebase: bool = True) -> None:
     """Push branch with upstream tracking. Idempotent (git push is a
     no-op when the remote is already up to date).
 
@@ -398,7 +398,7 @@ async def pr_create_task(
     summary: str,
     test_plan: str,
     sha: str,
-    base_branch: str = "main",
+    base_branch: str | None = None,
     draft: bool = False,
     reviewers: list[str] | None = None,
     labels: list[str] | None = None,
