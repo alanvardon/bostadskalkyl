@@ -76,7 +76,21 @@ timeout = 30
 
 
 # ---------------------------------------------------------------------------
-# 2) script @ after_impl — run the test suite on EVERY attempt.
+# 2) human_gate @ after_plan — a sign-off on the approved plan, ONCE.
+#    Pauses the workflow right after the plan is approved, before any code is
+#    written. Resume it — via approve_plan(thread_id, "yes") over MCP, or by
+#    replying at the CLI prompt — to proceed. It's an acknowledgement gate:
+#    any resume value continues; it exists to make a human look. (No support
+#    file needed.)
+# ---------------------------------------------------------------------------
+[[steps.after_plan]]
+id   = "scope-signoff"
+type = "human_gate"
+ask  = "Plan approved. Confirm scope is right before we build?"
+
+
+# ---------------------------------------------------------------------------
+# 3) script @ after_impl — run the test suite on EVERY attempt.
 #    Because this is at after_impl, it fires after each implementation try,
 #    against that attempt's freshly changed code. A non-zero exit aborts the
 #    run (use it as a hard gate the agent's work must pass).
@@ -94,7 +108,7 @@ timeout = 300
 
 
 # ---------------------------------------------------------------------------
-# 3) llm_agent @ before_commit — generate a changelog entry, ONCE.
+# 4) llm_agent @ before_commit — generate a changelog entry, ONCE.
 #    llm_agent steps run a markdown-defined agent. Place costly LLM steps at
 #    before_commit so they run a single time on the final, passing code (not
 #    once per retry attempt). The agent is given the plan and runs `git diff`
@@ -120,16 +134,13 @@ model = "claude-sonnet-4-6"
 
 
 # ---------------------------------------------------------------------------
-# 4) human_gate @ before_commit — a final human sign-off.
-#    Pauses the workflow (like the plan-approval pause). Resume it — via
-#    approve_plan(thread_id, "yes") over MCP, or by replying at the CLI
-#    prompt — to proceed to commit. It's an acknowledgement gate: any resume
-#    value continues; it exists to make a human look before code ships.
+# The fifth seam, after_qa, isn't used above. It fires after EACH QA run
+# (pass or fail), per attempt — useful for reacting to the QA verdict, e.g.
+# a script that records pass/fail metrics on every attempt:
 #
-#    Steps at the same seam run in declared order, so this fires AFTER the
-#    changelog step above.
+#   [[steps.after_qa]]
+#   id      = "qa-metrics"
+#   type    = "script"
+#   path    = ".orchestrator/scripts/record-qa.sh"
+#   timeout = 30
 # ---------------------------------------------------------------------------
-[[steps.before_commit]]
-id   = "final-signoff"
-type = "human_gate"
-ask  = "Tests passed and changelog written. Approve commit + PR?"
