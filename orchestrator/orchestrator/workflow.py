@@ -377,10 +377,16 @@ async def commit_task(
 
 
 @task
-async def push_task(branch: str, sha: str) -> None:
+async def push_task(branch: str, sha: str, base_branch: str = "main", auto_rebase: bool = True) -> None:
     """Push branch with upstream tracking. Idempotent (git push is a
-    no-op when the remote is already up to date)."""
-    return await asyncio.to_thread(push, branch)
+    no-op when the remote is already up to date).
+
+    Fetches origin first and rebases onto origin/<base_branch> if it
+    moved since branch creation (Phase 22). Rebase conflicts surface as
+    a UserActionError; set auto_rebase=False to skip and ask for manual
+    rebase instead.
+    """
+    return await asyncio.to_thread(push, branch, base_branch, auto_rebase)
 
 
 @task
@@ -671,7 +677,7 @@ async def build_workflow(
                     branch_name, plan_result.title, impl_result.summary,
                     config.pr.base_branch,
                 )
-                await push_task(branch_name, sha)
+                await push_task(branch_name, sha, config.pr.base_branch, config.git.auto_rebase)
                 pr_url = await pr_create_task(
                     branch_name,
                     plan_result.title,

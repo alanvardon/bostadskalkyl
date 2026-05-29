@@ -314,14 +314,60 @@ def commit(branch: str, title: str, summary: str, base_branch: str = "main") -> 
     return _run(["git", "rev-parse", "HEAD"]).stdout.strip()
 
 
-def push(branch: str) -> None:
+def push(branch: str, base_branch: str = "main", auto_rebase: bool = True) -> None:
     """Push branch to origin with upstream tracking.
 
     **Idempotent.** `git push` is naturally a no-op when the remote is
     already up to date ("Everything up-to-date"), and `-u` re-asserting
     upstream tracking is a no-op if already set.
+
+    **Conflict handling (Phase 22).** Fetches origin first, then checks
+    whether `origin/<base_branch>` has advanced since branch creation.
+    If so:
+      - `auto_rebase=True` (default): runs `git rebase origin/<base_branch>`.
+        If rebase conflicts, aborts and raises `UserActionError`.
+      - `auto_rebase=False`: raises `UserActionError` immediately, asking the
+        user to rebase manually then call `resume_run`.
     """
     _assert_on_branch(branch)
+
+    try:
+        _run(["git", "fetch", "origin"])
+    except subprocess.CalledProcessError as e:
+        raise CommitAndPrError(
+            f"fetch failed: {(e.stderr or e.stdout).strip()}"
+        ) from e
+
+    remote_base = f"origin/{base_branch}"
+    behind = int(
+        _run(["git", "rev-list", f"HEAD..{remote_base}", "--count"]).stdout.strip()
+        or "0"
+    )
+
+    if behind > 0:
+        if not auto_rebase:
+            raise UserActionError(
+                f"{remote_base} has {behind} new commit(s); rebase manually then resume_run.",
+                action=(
+                    f"Run: git rebase {remote_base} on branch {branch!r}, "
+                    "resolve any conflicts, then call resume_run."
+                ),
+            )
+        try:
+            _run(["git", "rebase", remote_base])
+        except subprocess.CalledProcessError:
+            try:
+                _run(["git", "rebase", "--abort"])
+            except subprocess.CalledProcessError:
+                pass
+            raise UserActionError(
+                f"{remote_base} moved and rebase conflicted; resolve manually then resume_run.",
+                action=(
+                    f"Run: git rebase {remote_base} on branch {branch!r}, "
+                    "resolve conflicts, then call resume_run."
+                ),
+            )
+
     try:
         _run(["git", "push", "-u", "origin", branch])
     except subprocess.CalledProcessError as e:
