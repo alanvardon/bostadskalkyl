@@ -100,6 +100,9 @@ class _BaseStubs:
     def verify_clean_tree(self) -> None:
         pass
 
+    def ensure_on_main(self, base_branch: str = "main") -> None:
+        pass
+
     async def plan(self, request: str, model: str = "claude-sonnet-4-6") -> PlanResult:
         return PlanResult(title="title", type="feature", plan_text="plan text")
 
@@ -115,7 +118,7 @@ class _BaseStubs:
     def commit(self, branch, title, summary, base_branch="main") -> str:
         return "abc123"
 
-    def push(self, branch) -> None:
+    def push(self, branch, base_branch="main", auto_rebase=True) -> None:
         pass
 
     def pr_create(self, branch, title, summary, test_plan, base_branch="main", draft=False, reviewers=None, labels=None) -> str:
@@ -124,6 +127,7 @@ class _BaseStubs:
 
 def _patch(stubs, monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr("orchestrator.workflow.verify_clean_tree", stubs.verify_clean_tree)
+    monkeypatch.setattr("orchestrator.workflow.ensure_on_main", stubs.ensure_on_main)
     monkeypatch.setattr("orchestrator.workflow.plan", stubs.plan)
     monkeypatch.setattr("orchestrator.workflow.create_branch", stubs.create_branch)
     monkeypatch.setattr("orchestrator.workflow.implement", stubs.implement)
@@ -158,7 +162,7 @@ async def test_mcp_user_action_required_on_commit_pr_error(monkeypatch, tmp_path
     """CommitAndPrError → {"status": "user_action_required", "action": ...}"""
     stubs = _BaseStubs()
 
-    def _fail_push(branch):
+    def _fail_push(branch, base_branch="main", auto_rebase=True):
         raise CommitAndPrError("push failed: simulated")
 
     stubs.push = _fail_push

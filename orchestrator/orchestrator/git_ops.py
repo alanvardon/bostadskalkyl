@@ -232,6 +232,30 @@ class PreHookError(UserActionError):
 _BASE_BRANCH = "main"  # kept for push/pr_create defaults; override via config.pr.base_branch
 
 
+def ensure_on_main(base_branch: str = "main") -> None:
+    """Switch to base_branch and pull if we're not already there.
+
+    Called at the very start of the workflow (inside verify_clean_tree_task,
+    after the clean-tree check) so the repo is in a known state before any
+    LLM spend. If the user started the orchestrator from a feature branch
+    with a clean tree, this moves them back to base_branch and updates it —
+    the same checkout + pull that create_branch would do later, just earlier.
+
+    No-op when already on base_branch (create_branch will still pull before
+    branching). Raises BranchCreationError on checkout/pull failure.
+    """
+    current = _current_branch()
+    if current == base_branch:
+        return
+    try:
+        _run(["git", "checkout", base_branch])
+        _run(["git", "pull"])
+    except subprocess.CalledProcessError as e:
+        raise BranchCreationError(
+            f"cannot switch to {base_branch}: {(e.stderr or e.stdout).strip()}"
+        ) from e
+
+
 def _current_branch() -> str:
     return _run(["git", "rev-parse", "--abbrev-ref", "HEAD"]).stdout.strip()
 

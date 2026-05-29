@@ -102,6 +102,7 @@ from orchestrator.usage import TaskUsage, aggregate_usage
 from orchestrator.git_ops import (
     commit,
     create_branch,
+    ensure_on_main,
     pr_create,
     push,
     verify_clean_tree,
@@ -310,6 +311,7 @@ async def planning_task(request: str, model: str = "claude-sonnet-4-6") -> PlanR
 async def verify_clean_tree_task() -> None:
     await asyncio.to_thread(verify_clean_tree)
     _cfg = load_config()
+    await asyncio.to_thread(ensure_on_main, _cfg.pr.base_branch)
     await asyncio.to_thread(run_pre_hooks, _cfg.pre_hooks_dir, _cfg.pre_hooks_timeout)
 
 

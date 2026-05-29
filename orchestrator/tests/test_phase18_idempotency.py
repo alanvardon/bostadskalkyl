@@ -170,6 +170,9 @@ class _Stubs:
     def verify_clean_tree(self) -> None:
         pass
 
+    def ensure_on_main(self, base_branch: str = "main") -> None:
+        pass
+
     async def plan(self, request: str, model: str = "claude-sonnet-4-6") -> PlanResult:
         self.plan_calls.append(request)
         n = len(self.plan_calls)
@@ -188,7 +191,7 @@ class _Stubs:
         self.commit_called = True
         return "abc123def456"
 
-    def push(self, branch) -> None:
+    def push(self, branch, base_branch="main", auto_rebase=True) -> None:
         pass
 
     def pr_create(self, branch, title, summary, test_plan, base_branch="main", draft=False, reviewers=None, labels=None) -> str:
@@ -197,6 +200,7 @@ class _Stubs:
 
 def _patch(stubs: _Stubs, monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr("orchestrator.workflow.verify_clean_tree", stubs.verify_clean_tree)
+    monkeypatch.setattr("orchestrator.workflow.ensure_on_main", stubs.ensure_on_main)
     monkeypatch.setattr("orchestrator.workflow.plan", stubs.plan)
     monkeypatch.setattr("orchestrator.workflow.create_branch", stubs.create_branch)
     monkeypatch.setattr("orchestrator.workflow.implement", stubs.implement)

@@ -176,6 +176,10 @@ def test_push_passes_through_to_git(monkeypatch):
         joined = " ".join(args)
         if "rev-parse --abbrev-ref HEAD" in joined:
             return _completed(stdout="feature/test\n")
+        if "git fetch origin" in joined:
+            return _completed()
+        if "rev-list" in joined and "--count" in joined:
+            return _completed(stdout="0\n")  # main has not moved
         if "git push -u origin feature/test" in joined:
             return _completed()
         raise AssertionError(f"unexpected: {joined!r}")
@@ -202,6 +206,9 @@ class _ResumeStubs:
     def verify_clean_tree(self) -> None:
         pass
 
+    def ensure_on_main(self, base_branch: str = "main") -> None:
+        pass
+
     async def plan(self, request: str, model: str = "claude-sonnet-4-6") -> PlanResult:
         return PlanResult(title="t", type="feature", plan_text="p")
 
@@ -218,7 +225,7 @@ class _ResumeStubs:
         self.commit_call_count += 1
         return "abc123"
 
-    def push(self, branch) -> None:
+    def push(self, branch, base_branch="main", auto_rebase=True) -> None:
         self.push_call_count += 1
         if self.fail_push_once and self.push_call_count == 1:
             raise CommitAndPrError("push failed: simulated network blip")
@@ -230,6 +237,7 @@ class _ResumeStubs:
 
 def _patch(stubs, monkeypatch, tmp_path):
     monkeypatch.setattr("orchestrator.workflow.verify_clean_tree", stubs.verify_clean_tree)
+    monkeypatch.setattr("orchestrator.workflow.ensure_on_main", stubs.ensure_on_main)
     monkeypatch.setattr("orchestrator.workflow.plan", stubs.plan)
     monkeypatch.setattr("orchestrator.workflow.create_branch", stubs.create_branch)
     monkeypatch.setattr("orchestrator.workflow.implement", stubs.implement)
