@@ -87,6 +87,7 @@ from langgraph.config import get_config
 from orchestrator.agents.planning import plan, PlanResult
 from orchestrator.agents.implementation import implement, ImplementationResult
 from orchestrator.agents.qa import qa, QaResult
+from orchestrator.audit import AuditSink, NoopAuditSink, audited, build_sink, emit_event
 from orchestrator.cancellation import WorkflowCancelled, raise_if_cancelled
 from orchestrator.config import OrchestratorConfig, load_config
 from orchestrator.manifest import (
@@ -450,6 +451,15 @@ async def build_workflow(
             def _check_cancel() -> None:
                 raise_if_cancelled(thread_id)
 
+            # Phase 24: build the audit sink once per invocation.
+            # Each ainvoke() call (fresh start or resume after interrupt)
+            # emits a "resume" event so the log captures every interaction.
+            _audit_log = str(find_project_root() / config.audit.log_path)
+            _audit: AuditSink = (
+                build_sink(_audit_log) if config.audit.enabled else NoopAuditSink()
+            )
+            emit_event(_audit, thread_id, "resume")
+
             # Accumulate token usage across all agent calls for the run.
             # Keys map to lists so retries (multiple impl/qa calls) are
             # all summed in the final aggregate. Defined OUTSIDE the
@@ -488,7 +498,8 @@ async def build_workflow(
                     )
 
                 _check_cancel()
-                await verify_clean_tree_task()
+                async with audited(_audit, thread_id, "preflight"):
+                    await verify_clean_tree_task()
 
                 # Phase 33 seam: before_plan (no plan context yet).
                 await run_seam(
@@ -496,7 +507,8 @@ async def build_workflow(
                 )
 
                 _check_cancel()
-                plan_result = await planning_task(request, config.models.planning)
+                async with audited(_audit, thread_id, "planning"):
+                    plan_result = await planning_task(request, config.models.planning)
                 if plan_result.usage:
                     usage_by_task["planning"].append(plan_result.usage)
                 write_plan(thread_id, plan_result)
@@ -517,6 +529,7 @@ async def build_workflow(
                 # so planning_task(request) on re-execution is effectively free.
                 while True:
                     if config.human_in_loop.approve_plan:
+                        emit_event(_audit, thread_id, "interrupt", payload={"kind": "plan_approval"})
                         approval = interrupt({
                             "kind": "plan_approval",
                             "plan": plan_result.model_dump(),
@@ -527,10 +540,11 @@ async def build_workflow(
                     if approval == "yes":
                         break
                     _check_cancel()
-                    plan_result = await planning_task(
-                        f"{request}\n\nFeedback: {approval}",
-                        config.models.planning,
-                    )
+                    async with audited(_audit, thread_id, "planning"):
+                        plan_result = await planning_task(
+                            f"{request}\n\nFeedback: {approval}",
+                            config.models.planning,
+                        )
                     if plan_result.usage:
                         usage_by_task["planning"].append(plan_result.usage)
                     write_plan(thread_id, plan_result)
@@ -543,15 +557,17 @@ async def build_workflow(
 
                 # Phase 13: optional branch-creation approval gate.
                 if config.human_in_loop.approve_branch:
+                    emit_event(_audit, thread_id, "interrupt", payload={"kind": "branch_approval"})
                     interrupt({
                         "kind": "branch_approval",
                         "ask": "Proceed with branch creation?",
                     })
 
                 _check_cancel()
-                branch_name = await create_branch_task(
-                    plan_result, config.branch.max_slug_length, thread_id
-                )
+                async with audited(_audit, thread_id, "create_branch"):
+                    branch_name = await create_branch_task(
+                        plan_result, config.branch.max_slug_length, thread_id
+                    )
                 rename_with_branch(thread_id, branch_name)
 
                 # Phase 7: retry loop. Up to config.max_retries attempts: first
@@ -567,12 +583,13 @@ async def build_workflow(
                 for attempt in range(1, config.max_retries + 1):
                     _check_cancel()
                     mode = "implement" if attempt == 1 else "fix"
-                    impl_result = await implementation_task(
-                        plan_result,
-                        mode=mode,
-                        qa_failures=qa_failures,
-                        model=config.models.implementation,
-                    )
+                    async with audited(_audit, thread_id, "implementation"):
+                        impl_result = await implementation_task(
+                            plan_result,
+                            mode=mode,
+                            qa_failures=qa_failures,
+                            model=config.models.implementation,
+                        )
                     if impl_result.usage:
                         usage_by_task["implementation"].append(impl_result.usage)
                     write_implementation(thread_id, impl_result)
@@ -586,13 +603,15 @@ async def build_workflow(
                     )
 
                     if config.human_in_loop.approve_implementation:
+                        emit_event(_audit, thread_id, "interrupt", payload={"kind": "implementation_approval"})
                         interrupt({
                             "kind": "implementation_approval",
                             "ask": "Implementation complete. Proceed to QA?",
                         })
 
                     _check_cancel()
-                    qa_result = await qa_task(plan_result, config.models.qa)
+                    async with audited(_audit, thread_id, "qa"):
+                        qa_result = await qa_task(plan_result, config.models.qa)
                     if qa_result.usage:
                         usage_by_task["qa"].append(qa_result.usage)
                     write_qa(thread_id, qa_result)
@@ -619,6 +638,7 @@ async def build_workflow(
                     # Phase 13: optional gate on QA failure — user can abort
                     # rather than burning another retry attempt.
                     if config.human_in_loop.approve_qa_failure:
+                        emit_event(_audit, thread_id, "interrupt", payload={"kind": "qa_failure"})
                         decision = interrupt({
                             "kind": "qa_failure",
                             "failures": qa_result.failures,
@@ -652,6 +672,7 @@ async def build_workflow(
 
                 # Phase 13: optional gate before committing and opening PR.
                 if config.human_in_loop.approve_pr:
+                    emit_event(_audit, thread_id, "interrupt", payload={"kind": "pr_approval"})
                     interrupt({
                         "kind": "pr_approval",
                         "ask": "QA passed. Open a PR?",
@@ -675,22 +696,25 @@ async def build_workflow(
                 # in a confusing half-shipped state. If you need to abort
                 # after commit, do it with git, not the orchestrator.
                 _check_cancel()
-                sha = await commit_task(
-                    branch_name, plan_result.title, impl_result.summary,
-                    config.pr.base_branch,
-                )
-                await push_task(branch_name, sha, config.pr.base_branch, config.git.auto_rebase)
-                pr_url = await pr_create_task(
-                    branch_name,
-                    plan_result.title,
-                    impl_result.summary,
-                    impl_result.test_plan,
-                    sha,
-                    config.pr.base_branch,
-                    config.pr.draft,
-                    config.pr.reviewers,
-                    config.pr.labels,
-                )
+                async with audited(_audit, thread_id, "commit"):
+                    sha = await commit_task(
+                        branch_name, plan_result.title, impl_result.summary,
+                        config.pr.base_branch,
+                    )
+                async with audited(_audit, thread_id, "push"):
+                    await push_task(branch_name, sha, config.pr.base_branch, config.git.auto_rebase)
+                async with audited(_audit, thread_id, "pr_create"):
+                    pr_url = await pr_create_task(
+                        branch_name,
+                        plan_result.title,
+                        impl_result.summary,
+                        impl_result.test_plan,
+                        sha,
+                        config.pr.base_branch,
+                        config.pr.draft,
+                        config.pr.reviewers,
+                        config.pr.labels,
+                    )
                 _usage = aggregate_usage(usage_by_task)
                 write_usage(thread_id, _usage)
                 return {
@@ -723,6 +747,7 @@ async def build_workflow(
                 # Whatever was in progress has completed (the SDK doesn't
                 # interrupt mid-task); we still owe the caller a final
                 # status and the usage accumulated so far.
+                emit_event(_audit, thread_id, "cancel")
                 _usage = aggregate_usage(usage_by_task)
                 write_usage(thread_id, _usage)
                 return {

@@ -38,6 +38,11 @@ Sample orchestrator.toml (all fields optional, defaults shown):
     draft       = false
     reviewers   = []
     labels      = []
+
+    [audit]
+    enabled         = true
+    log_path        = ".orchestrator/audit.log"
+    include_content = false
 """
 
 import os
@@ -112,6 +117,12 @@ class PrConfig(BaseModel):
     labels: list[str] = Field(default_factory=list)
 
 
+class AuditConfig(BaseModel):
+    enabled: bool = True
+    log_path: str = ".orchestrator/audit.log"
+    include_content: bool = False
+
+
 class OrchestratorConfig(BaseModel):
     max_retries: int = 3
     db_path: str = ".orchestrator/checkpoints.db"
@@ -124,6 +135,7 @@ class OrchestratorConfig(BaseModel):
     branch: BranchConfig = Field(default_factory=BranchConfig)
     git: GitConfig = Field(default_factory=GitConfig)
     pr: PrConfig = Field(default_factory=PrConfig)
+    audit: AuditConfig = Field(default_factory=AuditConfig)
 
 
 def load_config(path: Path | None = None) -> OrchestratorConfig:
