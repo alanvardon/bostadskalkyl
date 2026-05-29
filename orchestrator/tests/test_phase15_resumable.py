@@ -135,7 +135,7 @@ def test_pr_create_returns_existing_url_when_pr_exists(monkeypatch):
         if "rev-parse --abbrev-ref HEAD" in joined:
             return _completed(stdout="feature/test\n")
         if "gh pr view" in joined:
-            return _completed(stdout=json.dumps({"url": "https://github.com/x/y/pull/42"}))
+            return _completed(stdout=json.dumps({"state": "OPEN", "url": "https://github.com/x/y/pull/42"}))
         raise AssertionError(f"unexpected: {joined!r}")
 
     monkeypatch.setattr("orchestrator.git_ops._run", fake_run)
@@ -261,9 +261,11 @@ async def test_resume_run_skips_commit_after_push_failure(monkeypatch, tmp_path)
     thread_id = pending["thread_id"]
     assert stubs.commit_call_count == 0  # commit not called yet — workflow paused at interrupt
 
-    # Approve. The workflow runs commit → push (FAILS) → bail.
-    with pytest.raises(CommitAndPrError, match="simulated network blip"):
-        await approve_plan(thread_id, "yes")
+    # Approve. The workflow runs commit → push (FAILS) → structured error.
+    failed = await approve_plan(thread_id, "yes")
+    assert failed["status"] == "commit_pr_failed"
+    assert "simulated network blip" in failed["error"]
+    assert failed["thread_id"] == thread_id
 
     assert stubs.commit_call_count == 1
     assert stubs.push_call_count == 1

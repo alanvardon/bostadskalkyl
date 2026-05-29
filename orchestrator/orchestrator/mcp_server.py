@@ -41,6 +41,7 @@ from orchestrator.cancellation import (
 )
 from orchestrator.config import apply_overrides, load_config
 from orchestrator.idempotency import reserve as idempotency_reserve
+from orchestrator.git_ops import CommitAndPrError
 from orchestrator.manifest import ManifestError
 from orchestrator.mcp_progress import run_with_progress
 from orchestrator.paths import find_project_root
@@ -99,6 +100,27 @@ def _incompatible_manifest(
             "The injected-step manifest in orchestrator.toml changed since "
             "this run started, so it can't be resumed. Revert the [steps] "
             "change to resume, or start a fresh implement_feature."
+        ),
+    }
+
+
+def _commit_pr_failed(thread_id: str, exc: CommitAndPrError) -> dict:
+    """Shape a CommitAndPrError into a structured response.
+
+    Raised when commit, push, or pr_create fails (auth, network, pre-commit
+    hook, …). The checkpoint already has planning/implementation/QA cached —
+    fix the underlying issue then call resume_run to retry only the failed
+    git step.
+    """
+    return {
+        "status": "commit_pr_failed",
+        "thread_id": thread_id,
+        "error": str(exc),
+        "next": (
+            f"A git operation failed: {exc}. Fix the underlying issue "
+            "(auth, network, pre-commit hook, etc.) then call "
+            "resume_run(thread_id) — planning, implementation, and QA "
+            "are cached and won't re-run."
         ),
     }
 
@@ -290,6 +312,8 @@ async def implement_feature(
     try:
         async with build_workflow(config=effective_config) as workflow:
             result = await run_with_progress(workflow, request, config, ctx)
+    except CommitAndPrError as exc:
+        return _commit_pr_failed(thread_id, exc)
     except ManifestError as exc:
         return _invalid_manifest(thread_id, exc)
     if "__interrupt__" in result:
@@ -364,6 +388,8 @@ async def resume_run(
     try:
         async with build_workflow() as workflow:
             result = await run_with_progress(workflow, None, config, ctx)
+    except CommitAndPrError as exc:
+        return _commit_pr_failed(thread_id, exc)
     except IncompatibleCheckpointError as exc:
         return _incompatible_checkpoint(thread_id, exc)
     except IncompatibleManifestError as exc:
@@ -462,6 +488,8 @@ async def approve_plan(
             result = await run_with_progress(
                 workflow, Command(resume=response), config, ctx
             )
+    except CommitAndPrError as exc:
+        return _commit_pr_failed(thread_id, exc)
     except IncompatibleCheckpointError as exc:
         return _incompatible_checkpoint(thread_id, exc)
     except IncompatibleManifestError as exc:
