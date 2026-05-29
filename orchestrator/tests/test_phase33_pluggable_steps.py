@@ -24,6 +24,7 @@ from orchestrator.manifest import (
     LlmAgentStep,
     ManifestError,
     ScriptStep,
+    StepResult,
     WorkflowManifest,
     load_manifest,
 )
@@ -237,6 +238,46 @@ async def test_human_gate_seam_fires_and_completes(monkeypatch, tmp_path):
         result = await workflow.ainvoke(Command(resume="yes"), config=config)
 
     assert result["status"] == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_after_impl_fires_on_every_attempt(monkeypatch, tmp_path):
+    # QA fails once then passes → 2 implement attempts → an after_impl step
+    # must fire on BOTH, against each attempt's changed code, with a distinct
+    # `attempt` key each time.
+    calls: list[tuple[str, int]] = []
+
+    async def fake_script_task(step_id, path, timeout, repo_root, attempt=0):
+        calls.append((step_id, attempt))
+        return StepResult(step_id=step_id, kind="script", ok=True)
+
+    monkeypatch.setattr("orchestrator.workflow.script_step_task", fake_script_task)
+
+    verdicts = iter([QaResult(result="FAIL", failures="x"), QaResult(result="PASS")])
+
+    stubs = _Stubs()
+
+    async def qa_seq(plan, model="claude-sonnet-4-6"):
+        return next(verdicts)
+
+    stubs.qa = qa_seq
+    _patch(stubs, monkeypatch)
+
+    manifest = WorkflowManifest(
+        steps={"after_impl": [ScriptStep(id="probe", path="x.sh")]}
+    )
+    monkeypatch.setattr("orchestrator.workflow.load_manifest", lambda: manifest)
+
+    from orchestrator.workflow import build_workflow
+
+    config = {"configurable": {"thread_id": f"test-{uuid.uuid4().hex[:8]}"}}
+    async with build_workflow(db_path=str(tmp_path / "ckpt.db")) as workflow:
+        result = await workflow.ainvoke("req", config=config)
+        result = await workflow.ainvoke(Command(resume="yes"), config=config)
+
+    assert result["status"] == "succeeded"
+    # Fired once per implement attempt, with the attempt number.
+    assert calls == [("probe", 1), ("probe", 2)]
 
 
 @pytest.mark.asyncio

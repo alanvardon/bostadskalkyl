@@ -75,8 +75,10 @@ disallowed_tools = []
 #
 # Seams (all run before the commit line, so cancel stays safe):
 #   before_plan · after_plan · after_impl · after_qa · before_commit
-# Note: after_impl and after_qa both fire once, after the impl/QA retry loop
-# passes (per-attempt injection is unsafe with @task caching).
+# before_plan / after_plan / before_commit run once. after_impl and after_qa
+# run on EVERY impl/QA retry attempt (the code changes each attempt), so a
+# step there fires once per attempt — keep that in mind for costly llm_agent
+# steps (put those at before_commit if you want them to run only once).
 #
 # Step types:
 #   script      — run an executable; non-zero exit aborts the workflow

@@ -165,12 +165,16 @@ async def record_manifest_hash_task(current_hash: str) -> str:
 # Phase 33: generic per-type step runners. @task-wrapped so injected steps
 # inherit checkpointing, tracing, and resume-skip exactly like the spine
 # tasks. Inputs are primitives (not Pydantic Step models) so the serde
-# allowlist needs only StepResult, not every step subtype. The step `id` is
-# part of the inputs, which makes it the @task cache key — its resume
-# identity (renaming an id mid-run re-runs the step).
+# allowlist needs only StepResult, not every step subtype.
+#
+# `attempt` is part of the inputs purely so seams INSIDE the impl/QA retry
+# loop (after_impl, after_qa) get a distinct checkpoint entry per attempt —
+# the step re-runs against each attempt's changed code and each run resumes
+# to its own result, rather than two attempts colliding on one cache key.
+# Seams outside the loop always pass attempt=0.
 @task
 async def script_step_task(
-    step_id: str, path: str, timeout: int, repo_root: str
+    step_id: str, path: str, timeout: int, repo_root: str, attempt: int = 0
 ) -> StepResult:
     return await execute_script(
         ScriptStep(id=step_id, path=path, timeout=timeout), Path(repo_root)
@@ -179,7 +183,12 @@ async def script_step_task(
 
 @task
 async def llm_agent_step_task(
-    step_id: str, agent: str, model: str, repo_root: str, plan_text: str
+    step_id: str,
+    agent: str,
+    model: str,
+    repo_root: str,
+    plan_text: str,
+    attempt: int = 0,
 ) -> StepResult:
     return await execute_llm_agent(
         LlmAgentStep(id=step_id, agent=agent, model=model),
@@ -194,6 +203,7 @@ async def run_seam(
     plan_text: str,
     check_cancel,
     usage_by_task: dict,
+    attempt: int = 0,
 ) -> None:
     """Run every injected step at `seam`, in declared order.
 
@@ -202,6 +212,10 @@ async def run_seam(
     steps dispatch to their @tasks (checkpointed). Cancel is checked before
     each step (between-step semantics, inherited from the spine). Each
     llm_agent step's usage is accumulated under its own `id`.
+
+    `attempt` distinguishes per-attempt checkpoint entries for seams that run
+    inside the impl/QA retry loop (after_impl, after_qa); it is 0 for seams
+    that run once outside the loop.
     """
     steps = manifest.for_seam(seam)
     if not steps:
@@ -216,13 +230,16 @@ async def run_seam(
                 "kind": "step_human_gate",
                 "step_id": step.id,
                 "ask": step.ask,
+                "attempt": attempt,
             })
             continue
         if isinstance(step, ScriptStep):
-            await script_step_task(step.id, step.path, step.timeout, repo_root)
+            await script_step_task(
+                step.id, step.path, step.timeout, repo_root, attempt
+            )
         elif isinstance(step, LlmAgentStep):
             result = await llm_agent_step_task(
-                step.id, step.agent, step.model, repo_root, plan_text
+                step.id, step.agent, step.model, repo_root, plan_text, attempt
             )
             if result.usage:
                 usage_by_task.setdefault(step.id, []).append(result.usage)
@@ -509,6 +526,14 @@ async def build_workflow(
                         usage_by_task["implementation"].append(impl_result.usage)
                     write_implementation(thread_id, impl_result)
 
+                    # Phase 33 seam: after_impl — fires on EVERY attempt, since
+                    # each attempt produces freshly changed code. `attempt`
+                    # keeps each run a distinct checkpoint entry.
+                    await run_seam(
+                        "after_impl", manifest, plan_result.plan_text,
+                        _check_cancel, usage_by_task, attempt,
+                    )
+
                     if config.human_in_loop.approve_implementation:
                         interrupt({
                             "kind": "implementation_approval",
@@ -520,6 +545,14 @@ async def build_workflow(
                     if qa_result.usage:
                         usage_by_task["qa"].append(qa_result.usage)
                     write_qa(thread_id, qa_result)
+
+                    # Phase 33 seam: after_qa — fires after each QA run (pass
+                    # or fail), per attempt.
+                    await run_seam(
+                        "after_qa", manifest, plan_result.plan_text,
+                        _check_cancel, usage_by_task, attempt,
+                    )
+
                     if qa_result.result == "PASS":
                         break
 
@@ -565,20 +598,6 @@ async def build_workflow(
                         "qa_failures": qa_failures,
                         "usage": _usage,
                     }
-
-                # Phase 33 seams: after_impl and after_qa. Both fire here,
-                # after the impl/QA retry loop has passed — running them
-                # per-attempt inside the loop is unsafe, since a step's @task
-                # cache key is its id and would replay a stale result on the
-                # second attempt. (Documented v1 limitation.)
-                await run_seam(
-                    "after_impl", manifest, plan_result.plan_text,
-                    _check_cancel, usage_by_task,
-                )
-                await run_seam(
-                    "after_qa", manifest, plan_result.plan_text,
-                    _check_cancel, usage_by_task,
-                )
 
                 # Phase 13: optional gate before committing and opening PR.
                 if config.human_in_loop.approve_pr:
