@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 
 from claude_agent_sdk import (
@@ -116,77 +117,128 @@ def _strip_frontmatter(text: str) -> str:
     return text
 
 
-async def execute_llm_agent(
-    step: LlmAgentStep, project_root: Path, plan_text: str
-) -> StepResult:
-    """Run a markdown-defined agent against the current working tree.
+def _extract_usage(result_msg: ResultMessage | None, model: str) -> TaskUsage | None:
+    """Build a TaskUsage from a ResultMessage, or None if no usage was reported.
 
-    Same closure-capture structured-output pattern as the other agents: the
-    agent calls emit_step_result once with a summary; we read it back after
-    query() returns. The agent gets the plan in the user message and runs
-    `git diff HEAD` itself to see the changes (like the qa agent).
+    Phase 39: shared by every agent that drives the Claude Agent SDK loop — the
+    mapping from the SDK's usage dict to our TaskUsage was previously copied
+    verbatim into implementation.py, qa.py, and execute_llm_agent.
     """
-    log = _logger(step.id)
-    system_prompt = _load_agent_prompt(project_root, step.agent)
-
-    captured: dict[str, str] = {}
-
-    @tool(
-        "emit_step_result",
-        "Emit the final result of this step. Call exactly once when done, "
-        "with a one-line `summary` of what you did. After calling, stop.",
-        {"summary": str},
+    if result_msg is None or not result_msg.usage:
+        return None
+    u = result_msg.usage
+    return TaskUsage(
+        model=model,
+        input_tokens=u.get("input_tokens", 0),
+        output_tokens=u.get("output_tokens", 0),
+        cache_read_tokens=u.get("cache_read_input_tokens", 0),
+        cache_creation_tokens=u.get("cache_creation_input_tokens", 0),
+        reported_cost_usd=result_msg.total_cost_usd,
     )
-    async def emit_step_result(args: dict) -> dict:
-        captured["summary"] = args.get("summary", "") or ""
-        return {"content": [{"type": "text", "text": "Captured. Stop now."}]}
+
+
+async def run_structured_agent(
+    *,
+    system_prompt: str,
+    user_message: str,
+    model: str,
+    allowed_tools: list[str],
+    disallowed_tools: list[str],
+    cwd: Path,
+    emit_tool_name: str,
+    emit_tool_description: str,
+    emit_tool_fields: dict[str, type],
+    result_factory: Callable[[dict, TaskUsage | None], object],
+    agent_label: str,
+    missing_exc: type[Exception] = StepError,
+    permission_mode: str = "acceptEdits",
+) -> object:
+    """Run one Claude Agent SDK loop with a closure-captured structured-output tool.
+
+    The single shared agent-loop runner (Phase 39). Implementation, QA, and
+    every pluggable llm_agent step funnel through it, so the loop plumbing — the
+    emit tool, the in-process MCP server, the ClaudeAgentOptions assembly, the
+    query() drain, the fail-closed guard, and usage extraction — lives in
+    exactly one place.
+
+    What stays per-agent is only the *contract*: the emit tool's fields and a
+    `result_factory(captured, usage)` that turns the captured tool args into the
+    agent's own typed result model. The result type is deliberately NOT unified —
+    the workflow branches on it (e.g. QaResult.result).
+
+    Fail-closed: if the agent never calls the emit tool, `captured` stays empty
+    and we raise `missing_exc` (so a gate like QA can never silently pass). The
+    caller supplies `agent_label` and `missing_exc` so the error message and type
+    match exactly what each agent raised before this refactor.
+    """
+    captured: dict = {}
+
+    @tool(emit_tool_name, emit_tool_description, emit_tool_fields)
+    async def _emit(args: dict) -> dict:
+        captured.update(args)
+        return {"content": [{"type": "text", "text": "Result captured. You may stop now."}]}
 
     orchestrator_mcp = create_sdk_mcp_server(
-        name="orchestrator", version="1.0.0", tools=[emit_step_result]
+        name="orchestrator", version="1.0.0", tools=[_emit]
     )
 
     options = ClaudeAgentOptions(
         system_prompt=system_prompt,
-        allowed_tools=[
-            "Read", "Edit", "Write", "Bash", "Grep",
-            "mcp__orchestrator__emit_step_result",
-        ],
+        allowed_tools=list(allowed_tools) + [f"mcp__orchestrator__{emit_tool_name}"],
+        disallowed_tools=list(disallowed_tools),
         mcp_servers={"orchestrator": orchestrator_mcp},
-        cwd=str(project_root),
-        permission_mode="acceptEdits",
-        model=step.model,
+        cwd=str(cwd),
+        permission_mode=permission_mode,
+        model=model,
         setting_sources=["project"],
     )
 
-    user_message = "\n".join(["## Plan", "", plan_text])
-
-    log.info("running llm_agent step %r (agent=%s)", step.id, step.agent)
     result_msg: ResultMessage | None = None
     async for msg in query(prompt=user_message, options=options):
         if isinstance(msg, ResultMessage):
             result_msg = msg
 
-    if "summary" not in captured:
-        raise StepError(
-            f"llm_agent step {step.id!r} did not call emit_step_result"
-        )
+    if not captured:
+        raise missing_exc(f"{agent_label} did not call {emit_tool_name}")
 
-    usage: TaskUsage | None = None
-    if result_msg is not None and result_msg.usage:
-        u = result_msg.usage
-        usage = TaskUsage(
-            model=step.model,
-            input_tokens=u.get("input_tokens", 0),
-            output_tokens=u.get("output_tokens", 0),
-            cache_read_tokens=u.get("cache_read_input_tokens", 0),
-            cache_creation_tokens=u.get("cache_creation_input_tokens", 0),
-            reported_cost_usd=result_msg.total_cost_usd,
-        )
+    usage = _extract_usage(result_msg, model)
+    return result_factory(captured, usage)
 
-    return StepResult(
-        step_id=step.id,
-        kind="llm_agent",
-        ok=True,
-        detail=captured["summary"],
-        usage=usage,
+
+async def execute_llm_agent(
+    step: LlmAgentStep, project_root: Path, plan_text: str
+) -> StepResult:
+    """Run a markdown-defined agent against the current working tree.
+
+    Phase 39: a thin wrapper over run_structured_agent. It loads the agent's
+    markdown prompt, names the emit tool, and builds a StepResult from the
+    captured summary. The agent gets the plan in the user message and runs
+    `git diff HEAD` itself to see the changes (like the qa agent).
+    """
+    log = _logger(step.id)
+    system_prompt = _load_agent_prompt(project_root, step.agent)
+
+    log.info("running llm_agent step %r (agent=%s)", step.id, step.agent)
+    return await run_structured_agent(
+        system_prompt=system_prompt,
+        user_message="\n".join(["## Plan", "", plan_text]),
+        model=step.model,
+        allowed_tools=["Read", "Edit", "Write", "Bash", "Grep"],
+        disallowed_tools=[],
+        cwd=project_root,
+        emit_tool_name="emit_step_result",
+        emit_tool_description=(
+            "Emit the final result of this step. Call exactly once when done, "
+            "with a one-line `summary` of what you did. After calling, stop."
+        ),
+        emit_tool_fields={"summary": str},
+        result_factory=lambda c, u: StepResult(
+            step_id=step.id,
+            kind="llm_agent",
+            ok=True,
+            detail=c.get("summary", "") or "",
+            usage=u,
+        ),
+        agent_label=f"llm_agent step {step.id!r}",
+        missing_exc=StepError,
     )

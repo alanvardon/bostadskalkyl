@@ -29,13 +29,6 @@ load_dotenv()
 import asyncio
 import sys
 
-from claude_agent_sdk import (
-    ClaudeAgentOptions,
-    ResultMessage,
-    create_sdk_mcp_server,
-    query,
-    tool,
-)
 from pydantic import BaseModel
 from typing import Literal
 
@@ -47,6 +40,7 @@ from orchestrator.agents.planning import PlanResult
 from orchestrator.config import load_config
 from orchestrator.git_ops import REPO_ROOT
 from orchestrator.qa_scripts import run_qa_scripts
+from orchestrator.steps import run_structured_agent
 from orchestrator.tool_profile import load_tool_profile
 
 
@@ -99,91 +93,45 @@ async def qa(plan: PlanResult, model: str = "claude-sonnet-4-6") -> QaResult:
         )
     # --- End scripted gate ----------------------------------------------
 
-    # Closure-captured holder for the agent's final structured output.
-    # Same pattern as implementation.py — the @tool below writes into
-    # it, we read it after query() returns.
-    captured: dict[str, str] = {}
-
-    # Structured-output tool. Schema uses plain `str` for `result`
-    # because the SDK's @tool decorator takes simple Python types;
-    # the Literal["PASS", "FAIL"] validation happens at QaResult
-    # construction. The agent sees the description as part of the
-    # prompt — keep it precise.
-    @tool(
-        "emit_qa_result",
-        "Emit the final QA verdict. Call this exactly once when review is "
-        "complete. `result` must be the exact string 'PASS' or 'FAIL'. "
-        "`failures` is an empty string on PASS, or a markdown failure report "
-        "on FAIL. After calling, stop — the orchestrator takes over.",
-        {"result": str, "failures": str},
-    )
-    async def emit_qa_result(args: dict) -> dict:
-        captured["result"] = args["result"]
-        captured["failures"] = args.get("failures", "") or ""
-        return {
-            "content": [
-                {"type": "text", "text": "QA verdict captured. You may stop now."}
-            ]
-        }
-
-    orchestrator_mcp = create_sdk_mcp_server(
-        name="orchestrator",
-        version="1.0.0",
-        tools=[emit_qa_result],
-    )
-
-    # Load tool profile from orchestrator.toml (falls back to defaults if
-    # absent). The pinned MCP tool for the QA verdict is injected here and
-    # does not need to be listed in orchestrator.toml.
+    # Phase 39: the agent-loop plumbing lives in steps.run_structured_agent.
+    # This wrapper owns only the QA-specific contract: read-only tools, the
+    # verdict emit tool, and the typed QaResult (whose Literal["PASS","FAIL"]
+    # is validated at construction in the factory below).
+    #
+    # Read-only: the profile gives Read/Grep/Bash — no Edit/Write. The project's
+    # .claude/settings.json deny rules (loaded via setting_sources=["project"]
+    # inside the runner) still apply, blocking destructive bash even if tried.
+    # The pinned MCP tool for the verdict is appended by the runner.
+    #
+    # Fail-closed is preserved: run_structured_agent raises FatalError("qa agent
+    # did not call emit_qa_result") if the agent never emits a verdict, so a
+    # missing verdict is a loud crash, never a silent pass.
     _profile = load_tool_profile("qa")
-    _allowed_tools = _profile.allowed_tools + ["mcp__orchestrator__emit_qa_result"]
-
-    options = ClaudeAgentOptions(
+    return await run_structured_agent(
         system_prompt=_QA_SYSTEM_PROMPT,
-        # Read-only tools from the operator-configurable profile, plus the
-        # pinned MCP tool for the structured verdict. The project's
-        # .claude/settings.json deny rules (loaded via
-        # setting_sources=["project"]) still apply, blocking destructive
-        # bash even if the agent tried.
-        allowed_tools=_allowed_tools,
-        disallowed_tools=_profile.disallowed_tools,
-        mcp_servers={"orchestrator": orchestrator_mcp},
-        # Same repo root as implementation — QA reviews changes in the
-        # target repo's tree, not the orchestrator/ subdirectory.
-        cwd=str(REPO_ROOT),
-        # acceptEdits is moot here (no Edit/Write in allowed_tools) but
-        # keep it set for consistency. The real safety floor is the
-        # tool allowlist plus project deny rules.
-        permission_mode="acceptEdits",
+        user_message=_build_user_message(plan),
         model=model,
-        setting_sources=["project"],
+        allowed_tools=_profile.allowed_tools,
+        disallowed_tools=_profile.disallowed_tools,
+        # Same repo root as implementation — QA reviews changes in the target
+        # repo's tree, not the orchestrator/ subdirectory.
+        cwd=REPO_ROOT,
+        emit_tool_name="emit_qa_result",
+        emit_tool_description=(
+            "Emit the final QA verdict. Call this exactly once when review is "
+            "complete. `result` must be the exact string 'PASS' or 'FAIL'. "
+            "`failures` is an empty string on PASS, or a markdown failure report "
+            "on FAIL. After calling, stop — the orchestrator takes over."
+        ),
+        emit_tool_fields={"result": str, "failures": str},
+        result_factory=lambda c, u: QaResult(
+            result=c["result"],
+            failures=(c.get("failures") or None),
+            usage=u,
+        ),
+        agent_label="qa agent",
+        missing_exc=FatalError,
     )
-
-    user_message = _build_user_message(plan)
-
-    result_msg: ResultMessage | None = None
-    async for msg in query(prompt=user_message, options=options):
-        if isinstance(msg, ResultMessage):
-            result_msg = msg
-
-    if "result" not in captured:
-        raise FatalError("qa agent did not call emit_qa_result")
-
-    failures = captured["failures"] or None
-
-    usage: TaskUsage | None = None
-    if result_msg is not None and result_msg.usage:
-        u = result_msg.usage
-        usage = TaskUsage(
-            model=model,
-            input_tokens=u.get("input_tokens", 0),
-            output_tokens=u.get("output_tokens", 0),
-            cache_read_tokens=u.get("cache_read_input_tokens", 0),
-            cache_creation_tokens=u.get("cache_creation_input_tokens", 0),
-            reported_cost_usd=result_msg.total_cost_usd,
-        )
-
-    return QaResult(result=captured["result"], failures=failures, usage=usage)
 
 
 # Standalone test:
