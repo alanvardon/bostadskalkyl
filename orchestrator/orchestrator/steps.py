@@ -21,6 +21,7 @@ import logging
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
+from typing import TypeVar
 
 from claude_agent_sdk import (
     ClaudeAgentOptions,
@@ -32,6 +33,11 @@ from claude_agent_sdk import (
 
 from orchestrator.manifest import LlmAgentStep, ScriptStep, StepResult
 from orchestrator.usage import TaskUsage
+
+# Generic over the agent's result type so run_structured_agent stays type-safe:
+# each caller's result_factory returns its own typed model (QaResult,
+# ImplementationResult, StepResult) and the runner returns exactly that type.
+R = TypeVar("R")
 
 
 class StepError(RuntimeError):
@@ -148,11 +154,11 @@ async def run_structured_agent(
     emit_tool_name: str,
     emit_tool_description: str,
     emit_tool_fields: dict[str, type],
-    result_factory: Callable[[dict, TaskUsage | None], object],
+    result_factory: Callable[[dict, TaskUsage | None], R],
     agent_label: str,
     missing_exc: type[Exception] = StepError,
     permission_mode: str = "acceptEdits",
-) -> object:
+) -> R:
     """Run one Claude Agent SDK loop with a closure-captured structured-output tool.
 
     The single shared agent-loop runner (Phase 39). Implementation, QA, and
