@@ -9,7 +9,7 @@ at the @task boundary — the user's step never touches that plumbing.
   <agent>.md as the system prompt) via the Claude Agent SDK, same loop shape
   as the planning/implementation/qa agents.
 
-human_gate steps have no runner here — they're a pause (interrupt()) handled
+approval_gate steps have no runner here — they're a pause (interrupt()) handled
 inline in workflow.run_seam, since interrupt() must run in the entrypoint
 body, not inside a @task.
 """

@@ -11,7 +11,7 @@ the same driver serves both the built-in spine (Part B) and user-declared
 blocks in orchestrator.toml (Part C).
 
 `run_retry_block` is a plain async function (not a @task) and is meant to run in
-the entrypoint body, because its optional human gates call interrupt(), which
+the entrypoint body, because its optional approval gates call interrupt(), which
 must run there — the same constraint as steps.run_seam.
 
 Invariant carried from Phase 39: **gates fail closed.** A gate must report
@@ -29,7 +29,7 @@ from orchestrator.errors import FatalError
 from orchestrator.manifest import StepResult
 
 
-# Resume/abort vocabulary, shared with run_seam's human gates.
+# Resume/abort vocabulary, shared with run_seam's approval gates.
 _ABORT_WORDS = frozenset({"abort", "no", "stop"})
 
 # Feedback injection (replaces the old mode="fix"). On attempt 1 a producer gets
@@ -40,7 +40,7 @@ _FEEDBACK_HEADING = "## Previous attempt feedback"
 
 class RetryConfigError(FatalError):
     """A retry block is mis-wired — e.g. a gate produced no verdict, or
-    on_exhausted='human_gate' was requested without an interrupt function."""
+    on_exhausted='approval_gate' was requested without an interrupt function."""
 
 
 class RetryBlock(BaseModel):
@@ -50,7 +50,7 @@ class RetryBlock(BaseModel):
     producers: list[str]
     gates: list[str]
     max_retries: int = Field(default=3, ge=1)
-    on_exhausted: Literal["abort", "human_gate", "proceed"] = "abort"
+    on_exhausted: Literal["abort", "approval_gate", "proceed"] = "abort"
 
 
 class RetryBlockResult(BaseModel):
@@ -83,13 +83,13 @@ async def run_retry_block(
     the first attempt and the failing gate's detail on retries. `run_gate(step_id)`
     runs one gate and returns a StepResult whose `passed` is True/False.
 
-    Optional per-attempt human gates (injected, so their interrupt() lives in the
+    Optional per-attempt approval gates (injected, so their interrupt() lives in the
     entrypoint):
       - on_producers_done(attempt): a pause after producers, before gates.
       - on_gate_failed(attempt, feedback) -> keep_going: a decision after a gate
         fails; return False to stop the block immediately.
 
-    `interrupt_fn` is used only for on_exhausted="human_gate".
+    `interrupt_fn` is used only for on_exhausted="approval_gate".
 
     Returns a RetryBlockResult; `proceed` tells the caller whether to continue
     past the block (e.g. commit) or treat it as a failure.
@@ -142,10 +142,10 @@ def _handle_exhausted(
             ok=False, proceed=True, attempts=attempts, last_feedback=feedback
         )
 
-    if block.on_exhausted == "human_gate":
+    if block.on_exhausted == "approval_gate":
         if interrupt_fn is None:
             raise RetryConfigError(
-                "on_exhausted='human_gate' requires an interrupt function"
+                "on_exhausted='approval_gate' requires an interrupt function"
             )
         decision = interrupt_fn({
             "kind": "retry_exhausted",

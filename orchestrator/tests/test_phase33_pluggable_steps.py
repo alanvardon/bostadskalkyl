@@ -3,7 +3,7 @@
 Three layers, all LLM-free:
 - manifest: load/validate/hash + frontmatter stripping (pure).
 - execute_script: real tiny scripts (success / non-zero / timeout).
-- workflow integration: a human_gate seam fires mid-run and the workflow
+- workflow integration: a approval_gate seam fires mid-run and the workflow
   completes; a mid-run manifest edit refuses the resume.
 
 The llm_agent runner's agent loop needs a live model and is not exercised
@@ -19,7 +19,7 @@ from langgraph.types import Command
 from orchestrator.agents.planning import PlanResult
 from orchestrator.agents.qa import QaResult
 from orchestrator.manifest import (
-    HumanGateStep,
+    ApprovalGateStep,
     LlmAgentStep,
     ManifestError,
     ScriptStep,
@@ -57,7 +57,7 @@ agent = "docs"
 
 [[steps.after_qa]]
 id = "gate"
-type = "human_gate"
+type = "approval_gate"
 ask = "ok?"
 """,
     )
@@ -65,7 +65,7 @@ ask = "ok?"
     assert isinstance(m.for_seam("before_plan")[0], ScriptStep)
     after = m.for_seam("after_qa")
     assert isinstance(after[0], LlmAgentStep)
-    assert isinstance(after[1], HumanGateStep)
+    assert isinstance(after[1], ApprovalGateStep)
     assert after[1].ask == "ok?"
 
 
@@ -78,7 +78,7 @@ def test_no_steps_table_is_empty(tmp_path):
 def test_unknown_seam_raises(tmp_path):
     _write(
         tmp_path / "orchestrator.toml",
-        '[[steps.after_everything]]\nid="x"\ntype="human_gate"\n',
+        '[[steps.after_everything]]\nid="x"\ntype="approval_gate"\n',
     )
     with pytest.raises(ManifestError, match="unknown seam"):
         load_manifest(project_root=tmp_path)
@@ -90,11 +90,11 @@ def test_duplicate_id_raises(tmp_path):
         """
 [[steps.before_plan]]
 id = "dup"
-type = "human_gate"
+type = "approval_gate"
 
 [[steps.after_qa]]
 id = "dup"
-type = "human_gate"
+type = "approval_gate"
 """,
     )
     with pytest.raises(ManifestError, match="duplicate step id"):
@@ -120,14 +120,14 @@ def test_unknown_agent_raises(tmp_path):
 
 
 def test_manifest_hash_changes_with_steps():
-    a = WorkflowManifest(steps={"after_qa": [HumanGateStep(id="g", ask="a")]})
-    b = WorkflowManifest(steps={"after_qa": [HumanGateStep(id="g", ask="b")]})
+    a = WorkflowManifest(steps={"after_qa": [ApprovalGateStep(id="g", ask="a")]})
+    b = WorkflowManifest(steps={"after_qa": [ApprovalGateStep(id="g", ask="b")]})
     empty = WorkflowManifest()
     assert a.manifest_hash() != b.manifest_hash()
     assert a.manifest_hash() != empty.manifest_hash()
     # Stable across instances.
     assert a.manifest_hash() == WorkflowManifest(
-        steps={"after_qa": [HumanGateStep(id="g", ask="a")]}
+        steps={"after_qa": [ApprovalGateStep(id="g", ask="a")]}
     ).manifest_hash()
 
 
@@ -217,10 +217,10 @@ def _patch(stubs, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_human_gate_seam_fires_and_completes(monkeypatch, tmp_path):
+async def test_approval_gate_seam_fires_and_completes(monkeypatch, tmp_path):
     _patch(_Stubs(), monkeypatch)
     manifest = WorkflowManifest(
-        steps={"after_qa": [HumanGateStep(id="security_gate", ask="approve?")]}
+        steps={"after_qa": [ApprovalGateStep(id="security_gate", ask="approve?")]}
     )
     monkeypatch.setattr("orchestrator.workflow.load_manifest", lambda: manifest)
 
@@ -231,10 +231,10 @@ async def test_human_gate_seam_fires_and_completes(monkeypatch, tmp_path):
         result = await workflow.ainvoke("req", config=config)
         assert "__interrupt__" in result  # plan approval
 
-        # Approve the plan → runs through QA, then hits the human_gate seam.
+        # Approve the plan → runs through QA, then hits the approval_gate seam.
         result = await workflow.ainvoke(Command(resume="yes"), config=config)
         assert "__interrupt__" in result
-        assert result["__interrupt__"][0].value["kind"] == "step_human_gate"
+        assert result["__interrupt__"][0].value["kind"] == "step_approval_gate"
         assert result["__interrupt__"][0].value["step_id"] == "security_gate"
 
         # Acknowledge the gate → workflow finishes.
@@ -332,8 +332,8 @@ async def test_after_qa_fires_once_only_on_pass(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_human_gate_abort_stops_run(monkeypatch, tmp_path):
-    # Resuming a human_gate with an abort word stops the run cleanly:
+async def test_approval_gate_abort_stops_run(monkeypatch, tmp_path):
+    # Resuming a approval_gate with an abort word stops the run cleanly:
     # status="aborted", the offending step named, and NO commit.
     committed: list[str] = []
     stubs = _Stubs()
@@ -346,7 +346,7 @@ async def test_human_gate_abort_stops_run(monkeypatch, tmp_path):
     _patch(stubs, monkeypatch)
 
     manifest = WorkflowManifest(
-        steps={"after_qa": [HumanGateStep(id="signoff", ask="proceed?")]}
+        steps={"after_qa": [ApprovalGateStep(id="signoff", ask="proceed?")]}
     )
     monkeypatch.setattr("orchestrator.workflow.load_manifest", lambda: manifest)
 
@@ -356,7 +356,7 @@ async def test_human_gate_abort_stops_run(monkeypatch, tmp_path):
     async with build_workflow(db_path=str(tmp_path / "ckpt.db")) as workflow:
         result = await workflow.ainvoke("req", config=config)  # plan approval
         result = await workflow.ainvoke(Command(resume="yes"), config=config)
-        assert result["__interrupt__"][0].value["kind"] == "step_human_gate"
+        assert result["__interrupt__"][0].value["kind"] == "step_approval_gate"
 
         # Abort at the gate.
         result = await workflow.ainvoke(Command(resume="abort"), config=config)
@@ -475,10 +475,10 @@ async def test_manifest_change_mid_run_refuses_resume(monkeypatch, tmp_path):
     _patch(_Stubs(), monkeypatch)
 
     manifest_a = WorkflowManifest(
-        steps={"after_qa": [HumanGateStep(id="g", ask="v1")]}
+        steps={"after_qa": [ApprovalGateStep(id="g", ask="v1")]}
     )
     manifest_b = WorkflowManifest(
-        steps={"after_qa": [HumanGateStep(id="g", ask="v2-changed")]}
+        steps={"after_qa": [ApprovalGateStep(id="g", ask="v2-changed")]}
     )
     state = {"current": manifest_a}
     monkeypatch.setattr(

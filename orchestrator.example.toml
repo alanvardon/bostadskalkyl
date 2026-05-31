@@ -78,7 +78,7 @@ timeout = 30
 
 
 # ---------------------------------------------------------------------------
-# 2) human_gate @ after_plan — a sign-off on the approved plan, ONCE.
+# 2) approval_gate @ after_plan — a sign-off on the approved plan, ONCE.
 #    Pauses the workflow right after the plan is approved, before any code is
 #    written. Resume it — via approve_plan(thread_id, "<reply>") over MCP, or
 #    by replying at the CLI prompt. Reply 'abort' (or 'no'/'stop') to stop the
@@ -87,7 +87,7 @@ timeout = 30
 # ---------------------------------------------------------------------------
 [[steps.after_plan]]
 id   = "scope-signoff"
-type = "human_gate"
+type = "approval_gate"
 ask  = "Plan approved. Confirm scope is right before we build?"
 
 
@@ -165,7 +165,7 @@ human_in_loop = false               # true = pause to review the agent's output
 #
 #    on_exhausted (when the budget runs out without a pass):
 #      "abort"      — fail the run (default; nothing is committed — pre-commit)
-#      "human_gate" — ask whether to proceed or abort
+#      "approval_gate" — ask whether to proceed or abort
 #      "proceed"    — continue anyway (use with care)
 #    max_retries must be >= 1.
 #
@@ -197,7 +197,7 @@ type         = "retry"
 produce      = ["lint-fix"]         # producer id(s), defined in [steps.defs.*]
 gate         = ["lint-check"]       # gate id(s); first to fail triggers a retry
 max_retries  = 3
-on_exhausted = "abort"              # abort | human_gate | proceed
+on_exhausted = "abort"              # abort | approval_gate | proceed
 
 # [steps.defs.*] — definitions referenced by retry blocks' produce/gate. These
 # are NOT seam steps themselves; they only run when a block references them.

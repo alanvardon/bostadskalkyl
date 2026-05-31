@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 # a body change, so the bump makes any checkpoint created before Phase 33
 # refuse to resume (clean version error) rather than resume into a changed
 # task graph. (Phase 33's later refinements — per-id step task names, after_qa
-# firing only on PASS, human_gate abort — all landed before 1.1.0 shipped, so
+# firing only on PASS, approval_gate abort — all landed before 1.1.0 shipped, so
 # they fold into this same version.)
 # 1.1.0 → 1.2.0 (Phase 41): docs_task is now a permanent spine task, inserted
 # after the before_commit seam and before commit_task. A new required task in
@@ -106,7 +106,7 @@ from orchestrator.audit import AuditSink, NoopAuditSink, audited, build_sink, em
 from orchestrator.cancellation import WorkflowCancelled, raise_if_cancelled
 from orchestrator.config import OrchestratorConfig, load_config
 from orchestrator.manifest import (
-    HumanGateStep,
+    ApprovalGateStep,
     LlmAgentStep,
     RetryBlockStep,
     ScriptStep,
@@ -210,7 +210,7 @@ async def record_manifest_hash_task() -> str:
 # models, so the serde allowlist needs only StepResult.
 #
 # `attempt` is carried purely for context (it tags the trace inputs and the
-# human_gate payload); per-attempt distinctness comes from call position, not
+# approval_gate payload); per-attempt distinctness comes from call position, not
 # from this value.
 def _make_script_task(step_id: str, *, as_gate: bool = False):
     async def run_script_step(
@@ -247,19 +247,20 @@ def _make_llm_agent_task(step_id: str, *, as_gate: bool = False):
 
 
 class StepGateAborted(RuntimeError):
-    """Phase 33: raised when a human_gate step is resumed with an abort
-    decision ('abort'/'no'/'stop'). Propagates out of run_seam to the
-    entrypoint body, which converts it into a clean status="aborted" return.
-    All seams run before the commit line, so an abort never leaves a
-    half-shipped state.
+    """Phase 33: raised when a human pause is resumed with an abort decision
+    ('abort'/'no'/'stop') — an approval_gate step, or a human_in_loop review
+    pause on an llm_agent step / retry-block producer (Phase 44). Propagates out
+    of run_seam to the entrypoint body, which converts it into a clean
+    status="aborted" return. All seams run before the commit line, so an abort
+    never leaves a half-shipped state.
     """
 
     def __init__(self, step_id: str) -> None:
         self.step_id = step_id
-        super().__init__(f"workflow aborted at human_gate step {step_id!r}")
+        super().__init__(f"workflow aborted at step {step_id!r}")
 
 
-# Resume values (case-insensitive) that mean "stop the run" at a human_gate.
+# Resume values (case-insensitive) that mean "stop the run" at an approval_gate.
 # Anything else proceeds — replying to a gate is how you resume past it.
 _GATE_ABORT_WORDS = frozenset({"abort", "no", "stop"})
 
@@ -274,7 +275,7 @@ async def run_seam(
 ) -> None:
     """Run every injected step at `seam`, in declared order.
 
-    A plain async helper (not a @task) so a pause — a human_gate step, or an
+    A plain async helper (not a @task) so a pause — an approval_gate step, or an
     llm_agent step with human_in_loop — can call interrupt(), which must run in
     the entrypoint body. Script and llm_agent steps dispatch to their @tasks
     (checkpointed); an llm_agent's review pause fires after its @task returns, so
@@ -293,13 +294,13 @@ async def run_seam(
     repo_root = str(find_project_root())
     for step in steps:
         check_cancel()
-        if isinstance(step, HumanGateStep):
+        if isinstance(step, ApprovalGateStep):
             # A human checkpoint. The resume value decides: an abort word
             # ('abort'/'no'/'stop') stops the run cleanly via StepGateAborted;
             # anything else (including 'yes' or empty) proceeds — replying is
             # how you resume past the gate.
             decision = interrupt({
-                "kind": "step_human_gate",
+                "kind": "step_approval_gate",
                 "step_id": step.id,
                 "ask": step.ask,
                 "attempt": attempt,
@@ -320,7 +321,7 @@ async def run_seam(
             if step.human_in_loop:
                 # Pause AFTER the agent ran (its @task output is checkpointed, so
                 # resume replays it instead of re-running) to let a human review
-                # the result. Same abort contract as a human_gate step.
+                # the result. Same abort contract as an approval_gate step.
                 decision = interrupt({
                     "kind": "step_llm_agent_review",
                     "step_id": step.id,
@@ -355,10 +356,10 @@ async def _run_declared_retry_block(
     feedback is injected into producer llm_agents.
 
     A non-proceed outcome (gate never passed under on_exhausted="abort", or a
-    human aborted under "human_gate") raises StepError, aborting the run — seams
+    human aborted under "approval_gate") raises StepError, aborting the run — seams
     are pre-commit, so nothing is half-shipped. Phase 44: if the block succeeds
     and a producer llm_agent set human_in_loop, pause once for review of its
-    final output. interrupt() (for on_exhausted="human_gate" and the success
+    final output. interrupt() (for on_exhausted="approval_gate" and the success
     review) is reachable because this helper, like run_seam, runs in the
     entrypoint body.
     """
@@ -407,7 +408,7 @@ async def _run_declared_retry_block(
         run_producer=run_producer,
         run_gate=run_gate,
         check_cancel=check_cancel,
-        interrupt_fn=interrupt,  # used only when on_exhausted="human_gate"
+        interrupt_fn=interrupt,  # used only when on_exhausted="approval_gate"
     )
     if not result.proceed:
         raise StepError(
@@ -840,7 +841,7 @@ async def build_workflow(
                 # HARD-BAKED — _run_gate calls the existing qa() and adapts its
                 # QaResult into the gate verdict, so QaResult / write_qa / the
                 # "qa" output key are untouched. The producer/gate callables and
-                # the per-attempt human gates are injected here (not baked into
+                # the per-attempt approval gates are injected here (not baked into
                 # the engine) because they call interrupt(), which must run in
                 # the entrypoint body.
                 #
@@ -924,7 +925,7 @@ async def build_workflow(
                 # committing code that FAILED QA must never be reachable from
                 # config (the engine's "proceed" policy is for user-declared
                 # blocks only). Exhausting the budget = a failed run, exactly as
-                # before Phase 42. The per-failure human gate is _on_gate_failed.
+                # before Phase 42. The per-failure approval gate is _on_gate_failed.
                 _block = RetryBlock(
                     producers=["implementation"],
                     gates=["qa"],
@@ -1053,7 +1054,7 @@ async def build_workflow(
                 }
 
             except StepGateAborted as exc:
-                # Phase 33: a human_gate step was resumed with an abort
+                # Phase 33: an approval_gate step was resumed with an abort
                 # decision. Every seam runs before the commit line, so there's
                 # nothing half-shipped to unwind — return a clean status and
                 # whatever usage was spent up to the gate. branch_name may not

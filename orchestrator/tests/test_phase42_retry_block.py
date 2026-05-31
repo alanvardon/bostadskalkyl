@@ -82,7 +82,7 @@ async def test_ordered_gates_short_circuit():
     assert not result.ok and not result.proceed
 
 
-# --------------------------- per-attempt human gates ---------------------------
+# --------------------------- per-attempt approval gates ---------------------------
 
 
 @pytest.mark.asyncio
@@ -169,9 +169,9 @@ async def test_exhausted_proceed():
 
 
 @pytest.mark.asyncio
-async def test_exhausted_human_gate_abort_and_proceed():
+async def test_exhausted_approval_gate_abort_and_proceed():
     block = RetryBlock(
-        producers=["impl"], gates=["qa"], max_retries=1, on_exhausted="human_gate"
+        producers=["impl"], gates=["qa"], max_retries=1, on_exhausted="approval_gate"
     )
     aborted = await run_retry_block(
         block=block, run_producer=_producer([]), run_gate=_gate([(False, "f1")], []),
@@ -187,9 +187,9 @@ async def test_exhausted_human_gate_abort_and_proceed():
 
 
 @pytest.mark.asyncio
-async def test_human_gate_requires_interrupt_fn():
+async def test_approval_gate_requires_interrupt_fn():
     block = RetryBlock(
-        producers=["impl"], gates=["qa"], max_retries=1, on_exhausted="human_gate"
+        producers=["impl"], gates=["qa"], max_retries=1, on_exhausted="approval_gate"
     )
     with pytest.raises(RetryConfigError, match="interrupt"):
         await run_retry_block(

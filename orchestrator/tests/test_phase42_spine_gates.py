@@ -1,7 +1,7 @@
-"""Phase 42 Part B — the built-in retry block's human gates.
+"""Phase 42 Part B — the built-in retry block's approval gates.
 
 After the impl→QA loop moved onto the generic retry engine, the two optional
-human gates that used to be inline in the loop are now *injected closures*:
+approval gates that used to be inline in the loop are now *injected closures*:
 
 - ``on_producers_done`` → the ``implementation_approval`` interrupt (fires after
   the producer, before QA), gated by ``workflow.implementation.human_in_loop``.

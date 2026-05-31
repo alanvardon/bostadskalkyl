@@ -4,7 +4,7 @@ Three slices:
 1. Parsing — a `[[steps.*]] type="retry"` block + `[steps.defs.*]` round-trips
    through load_manifest into a RetryBlockStep and a defs table.
 2. Validation — references, producer/gate overlap, empty lists, gate-capability
-   (human_gate can't be a def), budget/policy bounds, id uniqueness, and missing
+   (approval_gate can't be a def), budget/policy bounds, id uniqueness, and missing
    support files are all caught at load time (before any LLM spend).
 3. Resume safety — manifest_hash folds a block's referenced defs in, so editing
    a def *body* (not just the block) refuses the resume; an unreferenced def
@@ -154,8 +154,8 @@ agent = "lint-fixer"
         _load(tmp_path, toml, agents=["lint-fixer"])
 
 
-def test_human_gate_def_rejected(tmp_path):
-    # A human_gate is a pause, not a producer/gate — it can't be a def.
+def test_approval_gate_def_rejected(tmp_path):
+    # A approval_gate is a pause, not a producer/gate — it can't be a def.
     toml = """
 [[steps.after_impl]]
 id      = "loop"
@@ -168,7 +168,7 @@ type = "script"
 path = ".orchestrator/scripts/lint.sh"
 
 [steps.defs.y]
-type = "human_gate"
+type = "approval_gate"
 ask  = "ok?"
 """
     with pytest.raises(ManifestError, match="invalid step def 'y'"):
