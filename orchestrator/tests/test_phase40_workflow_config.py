@@ -1,9 +1,9 @@
 """Phase 40 — [workflow.*] config schema consolidation tests.
 
 Covers the new schema (per-step [workflow.<step>] tables, default_model
-inheritance), the fail-loud extra="forbid" guard, the max_retries relocation,
-the auto-derived PR label, the runner's wall-clock timeout, and the removal of
-tool_profile.py. All LLM-free.
+inheritance, agents_dir), the fail-loud extra="forbid" guard, the max_retries
+relocation, the auto-derived PR label, the runner's wall-clock timeout, and the
+removal of tool_profile.py. All LLM-free.
 """
 
 import asyncio
@@ -61,13 +61,10 @@ def test_default_model_inheritance(tmp_path):
     assert cfg.resolved_model(cfg.workflow.qa) == "claude-haiku-4-5"
 
 
-def test_agents_dir_key_rejected(tmp_path):
-    # The global agents_dir was removed — each ai_agent step now carries its own
-    # `dir`. A stray top-level agents_dir must fail loud (extra="forbid").
+def test_agents_dir_roundtrip(tmp_path):
     p = tmp_path / "orchestrator.toml"
     p.write_text('agents_dir = ".custom/agents"\n')
-    with pytest.raises(ValidationError):
-        load_config(p)
+    assert load_config(p).agents_dir == ".custom/agents"
 
 
 def test_workflow_docs_defaults_and_roundtrip(tmp_path):

@@ -5,9 +5,9 @@ in a @task so they inherit checkpointing, tracing, and cancel/usage handling
 at the @task boundary — the user's step never touches that plumbing.
 
 - execute_script: run an executable; non-zero exit raises StepError.
-- execute_ai_agent: run a markdown-defined agent (<step.dir>/<agent>.md as the
-  system prompt) via the Claude Agent SDK, same loop shape as the
-  planning/implementation/qa agents.
+- execute_ai_agent: run a markdown-defined agent (.orchestrator/agents/
+  <agent>.md as the system prompt) via the Claude Agent SDK, same loop shape
+  as the planning/implementation/qa agents.
 
 approval_gate steps have no runner here — they're a pause (interrupt()) handled
 inline in workflow.run_seam, since interrupt() must run in the entrypoint
@@ -22,6 +22,7 @@ import subprocess
 from pathlib import Path
 
 from orchestrator.agents.runner import run_structured_agent
+from orchestrator.config import load_config
 from orchestrator.errors import FatalError
 from orchestrator.manifest import AiAgentStep, ScriptStep, StepResult
 from orchestrator.retry_block import feedback_section
@@ -106,7 +107,9 @@ async def execute_script(
     return await asyncio.to_thread(_run_script_sync, step, repo_root, as_gate=as_gate)
 
 
-def _load_agent_prompt(project_root: Path, agent: str, dir: str) -> str:
+def _load_agent_prompt(
+    project_root: Path, agent: str, agents_dir: str = ".orchestrator/agents"
+) -> str:
     """Read the agent's markdown file, stripping any YAML frontmatter.
 
     The body is the system prompt. Frontmatter (a leading `---` block) is
@@ -114,13 +117,12 @@ def _load_agent_prompt(project_root: Path, agent: str, dir: str) -> str:
     and the agent reads the diff itself via Bash, so reads/writes injection
     isn't needed yet.
 
-    `dir` is the per-step directory (AiAgentStep.dir), relative to the project
-    root; the prompt file is <dir>/<agent>.md. Mirrors manifest._agent_file so
-    load-time validation and runtime loading resolve the same path.
+    `agents_dir` (Phase 40: `config.agents_dir`) is the directory, relative to
+    the project root, where pluggable-step agent prompts live.
     """
-    path = project_root / dir / f"{agent}.md"
+    path = project_root / agents_dir / f"{agent}.md"
     if not path.exists():
-        raise StepError(f"agent file not found at {dir}/{agent}.md")
+        raise StepError(f"agent file not found at {agents_dir}/{agent}.md")
     text = path.read_text(encoding="utf-8")
     return _strip_frontmatter(text)
 
@@ -170,7 +172,9 @@ async def execute_ai_agent(
       bool (the verdict) plus `detail` (the feedback), and it runs read-only.
     """
     log = _logger(step.id)
-    system_prompt = _load_agent_prompt(project_root, step.agent, step.dir)
+    system_prompt = _load_agent_prompt(
+        project_root, step.agent, load_config().agents_dir
+    )
 
     parts = ["## Plan", "", plan_text]
     if feedback:
