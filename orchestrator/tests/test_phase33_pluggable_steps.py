@@ -53,7 +53,7 @@ path = ".orchestrator/scripts/lint.sh"
 [[steps.after_qa]]
 id = "docs"
 type = "ai_agent"
-agent = "docs"
+agent = "docs.md"
 dir = ".orchestrator/agents"
 
 [[steps.after_qa]]
@@ -114,7 +114,7 @@ def test_missing_script_raises(tmp_path):
 def test_unknown_agent_raises(tmp_path):
     _write(
         tmp_path / "orchestrator.toml",
-        '[[steps.after_qa]]\nid="docs"\ntype="ai_agent"\nagent="ghost"\ndir=".orchestrator/agents"\n',
+        '[[steps.after_qa]]\nid="docs"\ntype="ai_agent"\nagent="ghost.md"\ndir=".orchestrator/agents"\n',
     )
     with pytest.raises(ManifestError, match="agent file not found"):
         load_manifest(project_root=tmp_path)
@@ -402,7 +402,7 @@ async def test_ai_agent_human_in_loop_pauses_then_proceeds(monkeypatch, tmp_path
     manifest = WorkflowManifest(
         steps={
             "after_qa": [
-                AiAgentStep(id="review", agent="reviewer", dir=".orchestrator/agents", human_in_loop=True)
+                AiAgentStep(id="review", agent="reviewer.md", dir=".orchestrator/agents", human_in_loop=True)
             ]
         }
     )
@@ -450,7 +450,7 @@ async def test_ai_agent_human_in_loop_abort_stops_run(monkeypatch, tmp_path):
     manifest = WorkflowManifest(
         steps={
             "after_qa": [
-                AiAgentStep(id="review", agent="reviewer", dir=".orchestrator/agents", human_in_loop=True)
+                AiAgentStep(id="review", agent="reviewer.md", dir=".orchestrator/agents", human_in_loop=True)
             ]
         }
     )

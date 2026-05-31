@@ -20,7 +20,7 @@ TOML shape (everything optional; no [steps] table = no injected steps):
     [[steps.after_qa]]
     id    = "docs"
     type  = "ai_agent"
-    agent = "docs"            # file stem
+    agent = "docs.md"         # full filename (with extension)
     dir   = "team/agents"     # → team/agents/docs.md (per-step, required)
     model = "claude-sonnet-4-6"
 
@@ -43,7 +43,7 @@ producer attempt. produce/gate reference definitions under [steps.defs.*]:
 
     [steps.defs.lint-fix]
     type  = "ai_agent"
-    agent = "lint-fixer"
+    agent = "lint-fixer.md"
     dir   = "team/agents"
 
     [steps.defs.lint-check]
@@ -109,10 +109,11 @@ class ApprovalGateStep(_BaseStep):
 
 class AiAgentStep(_BaseStep):
     type: Literal["ai_agent"] = "ai_agent"
-    # The system prompt is <dir>/<agent>.md, relative to the project root.
-    # `dir` is required and per-step — each ai_agent points at wherever its
-    # prompt lives, so agents can be stored anywhere (there is no global
-    # agents_dir). `agent` is the file stem (also used in logs / errors).
+    # The system prompt is <dir>/<agent>, relative to the project root. `agent`
+    # is the full filename INCLUDING the extension (e.g. "docs.md") — no .md is
+    # appended for you. `dir` is required and per-step — each ai_agent points at
+    # wherever its prompt lives, so agents can be stored anywhere (there is no
+    # global agents_dir).
     agent: str
     dir: str
     model: str = "claude-sonnet-4-6"
@@ -227,7 +228,7 @@ class WorkflowManifest(BaseModel):
 
 
 def _agent_file(project_root: Path, step: AiAgentStep) -> Path:
-    return project_root / step.dir / f"{step.agent}.md"
+    return project_root / step.dir / step.agent
 
 
 def _validate_retry_block(step: RetryBlockStep, defs: dict[str, StepDef]) -> None:
@@ -335,7 +336,7 @@ def load_manifest(
                 if not _agent_file(project_root, definition).exists():
                     raise ManifestError(
                         f"step def {def_id!r}: agent file not found at "
-                        f"{definition.dir}/{definition.agent}.md."
+                        f"{definition.dir}/{definition.agent}."
                     )
             defs[def_id] = definition
 
@@ -376,7 +377,7 @@ def load_manifest(
                 if not _agent_file(project_root, step).exists():
                     raise ManifestError(
                         f"step {step.id!r}: agent file not found at "
-                        f"{step.dir}/{step.agent}.md."
+                        f"{step.dir}/{step.agent}."
                     )
             elif isinstance(step, RetryBlockStep):
                 _validate_retry_block(step, defs)

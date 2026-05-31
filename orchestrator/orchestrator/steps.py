@@ -5,9 +5,9 @@ in a @task so they inherit checkpointing, tracing, and cancel/usage handling
 at the @task boundary — the user's step never touches that plumbing.
 
 - execute_script: run an executable; non-zero exit raises StepError.
-- execute_ai_agent: run a markdown-defined agent (<step.dir>/<agent>.md as the
-  system prompt) via the Claude Agent SDK, same loop shape as the
-  planning/implementation/qa agents.
+- execute_ai_agent: run a markdown-defined agent (<step.dir>/<agent>, where
+  agent is the full filename, as the system prompt) via the Claude Agent SDK,
+  same loop shape as the planning/implementation/qa agents.
 
 approval_gate steps have no runner here — they're a pause (interrupt()) handled
 inline in workflow.run_seam, since interrupt() must run in the entrypoint
@@ -115,12 +115,13 @@ def _load_agent_prompt(project_root: Path, agent: str, dir: str) -> str:
     isn't needed yet.
 
     `dir` is the per-step directory (AiAgentStep.dir), relative to the project
-    root; the prompt file is <dir>/<agent>.md. Mirrors manifest._agent_file so
-    load-time validation and runtime loading resolve the same path.
+    root; `agent` is the full filename (with extension), so the prompt file is
+    <dir>/<agent>. Mirrors manifest._agent_file so load-time validation and
+    runtime loading resolve the same path.
     """
-    path = project_root / dir / f"{agent}.md"
+    path = project_root / dir / agent
     if not path.exists():
-        raise StepError(f"agent file not found at {dir}/{agent}.md")
+        raise StepError(f"agent file not found at {dir}/{agent}")
     text = path.read_text(encoding="utf-8")
     return _strip_frontmatter(text)
 
