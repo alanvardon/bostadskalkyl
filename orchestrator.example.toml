@@ -116,6 +116,12 @@ timeout = 300
 #    once per retry attempt). The agent is given the plan and runs `git diff`
 #    itself; it edits files in the working tree, which the spine then commits.
 #
+#    Set human_in_loop = true on any seam-placed llm_agent to pause for review
+#    AFTER it runs (the agent's output is surfaced; reply with an abort word —
+#    'abort'/'no'/'stop' — to stop, anything else to proceed). Omitted = false.
+#    (A retry block drives its own [steps.defs.*] agents via the gate loop, so
+#    the flag has no effect on a def referenced by a retry block.)
+#
 #    Create .orchestrator/agents/changelog.md:
 #
 #      ---
@@ -129,10 +135,11 @@ timeout = 300
 #      one-line summary.
 # ---------------------------------------------------------------------------
 [[steps.before_commit]]
-id    = "changelog"
-type  = "llm_agent"
-agent = "changelog"                 # → .orchestrator/agents/changelog.md
-model = "claude-sonnet-4-6"
+id            = "changelog"
+type          = "llm_agent"
+agent         = "changelog"         # → .orchestrator/agents/changelog.md
+model         = "claude-sonnet-4-6"
+human_in_loop = false               # true = pause to review the agent's output
 
 
 # ---------------------------------------------------------------------------

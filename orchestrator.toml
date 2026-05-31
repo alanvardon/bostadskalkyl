@@ -115,7 +115,9 @@ include_content = false   # if true, also log prompt/result content (verbose)
 #                 (must be chmod +x with a shebang — see NOTES.md)
 #   human_gate  — pause for a decision: reply 'abort' (or 'no'/'stop') to stop
 #                 the run, any other reply to proceed
-#   llm_agent   — run a markdown agent at <agents_dir>/<agent>.md
+#   llm_agent   — run a markdown agent at <agents_dir>/<agent>.md. Set
+#                 human_in_loop = true to pause for review AFTER it runs
+#                 (same abort/proceed reply as human_gate).
 #   retry       — re-run producer step(s) until gate step(s) pass, injecting the
 #                 failing gate's feedback into the next attempt (Phase 42). The
 #                 producer/gate steps are defined in a [steps.defs.*] table and
@@ -136,10 +138,11 @@ include_content = false   # if true, also log prompt/result content (verbose)
 # timeout = 60
 #
 # [[steps.after_qa]]
-# id    = "docs"
-# type  = "llm_agent"
-# agent = "docs"                 # → .orchestrator/agents/docs.md
-# model = "claude-sonnet-4-6"
+# id            = "docs"
+# type          = "llm_agent"
+# agent         = "docs"             # → .orchestrator/agents/docs.md
+# model         = "claude-sonnet-4-6"
+# human_in_loop = false              # true = pause to review the agent's output
 #
 # [[steps.after_qa]]
 # id   = "security_gate"

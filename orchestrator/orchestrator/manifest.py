@@ -110,6 +110,12 @@ class LlmAgentStep(_BaseStep):
     # Resolves to .orchestrator/agents/<agent>.md (the system prompt).
     agent: str
     model: str = "claude-sonnet-4-6"
+    # When true, pause AFTER the agent runs (before the workflow continues) so a
+    # human can inspect what it produced. Same reply contract as human_gate: an
+    # abort word ('abort'/'no'/'stop') stops the run; anything else proceeds.
+    # Only honoured for an agent placed directly at a seam — a retry block drives
+    # its own [steps.defs.*] agents through the gate loop, not this pause.
+    human_in_loop: bool = False
 
 
 class RetryBlockStep(_BaseStep):

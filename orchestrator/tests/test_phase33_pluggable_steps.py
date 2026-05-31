@@ -366,6 +366,110 @@ async def test_human_gate_abort_stops_run(monkeypatch, tmp_path):
     assert committed == []  # gate runs before the commit line
 
 
+def _fake_llm_agent_task(calls: list[tuple[str, int]]):
+    """Stub _make_llm_agent_task: record (step_id, attempt), no live model.
+
+    Wraps the runner in task() exactly like the real factory, so the result is
+    checkpointed and REPLAYS on resume (rather than re-running) — letting the
+    test assert the agent runs once across an interrupt/resume.
+    """
+    from langgraph.func import task
+
+    def make(step_id, *, as_gate=False):
+        async def run(step_id, agent, model, repo_root, plan_text, attempt=0, feedback=None):
+            calls.append((step_id, attempt))
+            return StepResult(
+                step_id=step_id, kind="llm_agent", ok=True, detail="ran agent"
+            )
+
+        return task(run, name=f"step:{step_id}")
+
+    return make
+
+
+@pytest.mark.asyncio
+async def test_llm_agent_human_in_loop_pauses_then_proceeds(monkeypatch, tmp_path):
+    # An llm_agent step with human_in_loop pauses AFTER it runs, surfacing the
+    # agent's detail for review; resuming with a non-abort reply proceeds. The
+    # agent runs exactly once — resume replays the checkpointed @task, not re-run.
+    calls: list[tuple[str, int]] = []
+    _patch(_Stubs(), monkeypatch)
+    monkeypatch.setattr(
+        "orchestrator.workflow._make_llm_agent_task", _fake_llm_agent_task(calls)
+    )
+
+    manifest = WorkflowManifest(
+        steps={
+            "after_qa": [
+                LlmAgentStep(id="review", agent="reviewer", human_in_loop=True)
+            ]
+        }
+    )
+    monkeypatch.setattr("orchestrator.workflow.load_manifest", lambda: manifest)
+
+    from orchestrator.workflow import build_workflow
+
+    config = {"configurable": {"thread_id": f"test-{uuid.uuid4().hex[:8]}"}}
+    async with build_workflow(db_path=str(tmp_path / "ckpt.db")) as workflow:
+        result = await workflow.ainvoke("req", config=config)  # plan approval
+        result = await workflow.ainvoke(Command(resume="yes"), config=config)
+        # After QA → the agent ran, then paused for review with its detail.
+        intr = result["__interrupt__"][0].value
+        assert intr["kind"] == "step_llm_agent_review"
+        assert intr["step_id"] == "review"
+        assert intr["detail"] == "ran agent"
+        # after_qa fires once, tagged with the attempt QA passed on (1-indexed).
+        assert calls == [("review", 1)]  # ran once, before the pause
+
+        # Proceed → workflow finishes; the agent is NOT re-run on resume.
+        result = await workflow.ainvoke(Command(resume="yes"), config=config)
+
+    assert result["status"] == "succeeded"
+    assert calls == [("review", 1)]
+
+
+@pytest.mark.asyncio
+async def test_llm_agent_human_in_loop_abort_stops_run(monkeypatch, tmp_path):
+    # Resuming the llm_agent review pause with an abort word stops the run
+    # cleanly (status="aborted", step named) with no commit.
+    calls: list[tuple[str, int]] = []
+    committed: list[str] = []
+    stubs = _Stubs()
+
+    def track_commit(branch, title, summary, base_branch="main"):
+        committed.append(branch)
+        return "abc123"
+
+    stubs.commit = track_commit
+    _patch(stubs, monkeypatch)
+    monkeypatch.setattr(
+        "orchestrator.workflow._make_llm_agent_task", _fake_llm_agent_task(calls)
+    )
+
+    manifest = WorkflowManifest(
+        steps={
+            "after_qa": [
+                LlmAgentStep(id="review", agent="reviewer", human_in_loop=True)
+            ]
+        }
+    )
+    monkeypatch.setattr("orchestrator.workflow.load_manifest", lambda: manifest)
+
+    from orchestrator.workflow import build_workflow
+
+    config = {"configurable": {"thread_id": f"test-{uuid.uuid4().hex[:8]}"}}
+    async with build_workflow(db_path=str(tmp_path / "ckpt.db")) as workflow:
+        result = await workflow.ainvoke("req", config=config)  # plan approval
+        result = await workflow.ainvoke(Command(resume="yes"), config=config)
+        assert result["__interrupt__"][0].value["kind"] == "step_llm_agent_review"
+
+        result = await workflow.ainvoke(Command(resume="no"), config=config)
+
+    assert result["status"] == "aborted"
+    assert result["aborted_at"] == "review"
+    assert committed == []  # review pause runs before the commit line
+
+
 @pytest.mark.asyncio
 async def test_manifest_change_mid_run_refuses_resume(monkeypatch, tmp_path):
     _patch(_Stubs(), monkeypatch)

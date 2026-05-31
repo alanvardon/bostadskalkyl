@@ -274,9 +274,12 @@ async def run_seam(
 ) -> None:
     """Run every injected step at `seam`, in declared order.
 
-    A plain async helper (not a @task) so human_gate steps can call
-    interrupt(), which must run in the entrypoint body. Script and llm_agent
-    steps dispatch to their @tasks (checkpointed). Cancel is checked before
+    A plain async helper (not a @task) so a pause — a human_gate step, or an
+    llm_agent step with human_in_loop — can call interrupt(), which must run in
+    the entrypoint body. Script and llm_agent steps dispatch to their @tasks
+    (checkpointed); an llm_agent's review pause fires after its @task returns, so
+    resume replays the cached result rather than re-running the agent. Cancel is
+    checked before
     each step (between-step semantics, inherited from the spine). Each
     llm_agent step's usage is accumulated under its own `id`.
 
@@ -314,6 +317,18 @@ async def run_seam(
             )
             if result.usage:
                 usage_by_task.setdefault(step.id, []).append(result.usage)
+            if step.human_in_loop:
+                # Pause AFTER the agent ran (its @task output is checkpointed, so
+                # resume replays it instead of re-running) to let a human review
+                # the result. Same abort contract as a human_gate step.
+                decision = interrupt({
+                    "kind": "step_llm_agent_review",
+                    "step_id": step.id,
+                    "detail": result.detail,
+                    "attempt": attempt,
+                })
+                if isinstance(decision, str) and decision.strip().lower() in _GATE_ABORT_WORDS:
+                    raise StepGateAborted(step.id)
         elif isinstance(step, RetryBlockStep):
             # Phase 42 Part C: a declarative retry block. Runs on the SAME
             # generic engine the built-in spine uses (Part B), with producers
