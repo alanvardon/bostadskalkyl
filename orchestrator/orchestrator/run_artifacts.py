@@ -12,7 +12,7 @@ these files are for human debugging only.
 
 Usage in workflow.py:
     from orchestrator.run_artifacts import (
-        write_plan, write_implementation, write_qa, write_usage,
+        write_plan, write_summary, write_qa, write_usage,
         rename_with_branch,
     )
 """
@@ -20,9 +20,9 @@ Usage in workflow.py:
 import json
 from pathlib import Path
 
-from orchestrator.agents.implementation import ImplementationResult
 from orchestrator.agents.planning import PlanResult
 from orchestrator.agents.qa import QaResult
+from orchestrator.agents.summarize import SummaryResult
 from orchestrator.paths import find_project_root
 
 def _runs_dir() -> Path:
@@ -60,13 +60,17 @@ def write_plan(thread_id: str, plan: PlanResult) -> None:
         pass
 
 
-def write_implementation(thread_id: str, impl: ImplementationResult) -> None:
-    """Write summary.md and test-plan.md — latest attempt wins."""
+def write_summary(thread_id: str, summary: SummaryResult) -> None:
+    """Write summary.md and test-plan.md.
+
+    Phase 42: these come from the summarizer (post-retry-block), not the
+    implementation producer — which is now generic and reports no summary.
+    """
     try:
         d = _run_dir(thread_id)
         d.mkdir(parents=True, exist_ok=True)
-        (d / "summary.md").write_text(impl.summary, encoding="utf-8")
-        (d / "test-plan.md").write_text(impl.test_plan, encoding="utf-8")
+        (d / "summary.md").write_text(summary.summary, encoding="utf-8")
+        (d / "test-plan.md").write_text(summary.test_plan, encoding="utf-8")
     except OSError:
         pass
 

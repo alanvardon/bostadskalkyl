@@ -21,15 +21,16 @@ from pathlib import Path
 import pytest
 from langgraph.types import Command, Interrupt
 
-from orchestrator.agents.implementation import ImplementationResult
 from orchestrator.agents.planning import PlanResult
 from orchestrator.agents.qa import QaResult
+from orchestrator.manifest import StepResult
 
 
 class _Stubs:
     def __init__(self) -> None:
         self.plan_calls: list[str] = []
-        self.impl_calls: list[tuple[str, str | None]] = []
+        # Phase 42: each entry is the `feedback` the producer received.
+        self.impl_calls: list[str | None] = []
         self.commit_called = False
 
     async def plan(self, request: str, model: str = "claude-sonnet-4-6") -> PlanResult:
@@ -42,10 +43,9 @@ class _Stubs:
     def create_branch(self, plan: PlanResult, max_slug_length: int = 50, thread_id: str = "") -> str:
         return "feature/test"
 
-    async def implement(self, plan, mode="implement", qa_failures=None, model="claude-sonnet-4-6"):
-        self.impl_calls.append((mode, qa_failures))
-        n = len(self.impl_calls)
-        return ImplementationResult(summary=f"s{n}", test_plan=f"tp{n}")
+    async def implementation_task(self, plan_text, feedback=None, model="claude-sonnet-4-6"):
+        self.impl_calls.append(feedback)
+        return StepResult(step_id="implementation", kind="llm_agent", ok=True)
 
     async def qa(self, plan: PlanResult, model: str = "claude-sonnet-4-6") -> QaResult:
         return QaResult(result="PASS")
@@ -70,7 +70,7 @@ class _Stubs:
 def _patch(stubs: _Stubs, monkeypatch) -> None:
     monkeypatch.setattr("orchestrator.workflow.plan", stubs.plan)
     monkeypatch.setattr("orchestrator.workflow.create_branch", stubs.create_branch)
-    monkeypatch.setattr("orchestrator.workflow.implement", stubs.implement)
+    monkeypatch.setattr("orchestrator.workflow.implementation_task", stubs.implementation_task)
     monkeypatch.setattr("orchestrator.workflow.qa", stubs.qa)
     monkeypatch.setattr("orchestrator.workflow.commit", stubs.commit)
     monkeypatch.setattr("orchestrator.workflow.push", stubs.push)
@@ -113,7 +113,7 @@ async def test_immediate_approval(monkeypatch, tmp_path):
     assert result["status"] == "succeeded"
     assert result["pr_url"] == "https://github.com/test/pr/1"
     assert stubs.plan_calls == ["add a tooltip"]
-    assert stubs.impl_calls == [("implement", None)]
+    assert stubs.impl_calls == [None]
     assert stubs.commit_called is True
 
 

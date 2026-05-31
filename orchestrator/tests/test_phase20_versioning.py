@@ -19,9 +19,10 @@ import uuid
 import pytest
 from langgraph.types import Command
 
-from orchestrator.agents.implementation import ImplementationResult
 from orchestrator.agents.planning import PlanResult
 from orchestrator.agents.qa import QaResult
+from orchestrator.agents.summarize import SummaryResult
+from orchestrator.manifest import StepResult
 from orchestrator.workflow import IncompatibleCheckpointError
 
 
@@ -32,8 +33,8 @@ class _Stubs:
     def create_branch(self, plan, max_slug_length=50, thread_id="") -> str:
         return "feature/test"
 
-    async def implement(self, plan, mode="implement", qa_failures=None, model="claude-sonnet-4-6"):
-        return ImplementationResult(summary="s", test_plan="tp")
+    async def implementation_task(self, plan_text, feedback=None, model="claude-sonnet-4-6"):
+        return StepResult(step_id="implementation", kind="llm_agent", ok=True)
 
     async def qa(self, plan, model="claude-sonnet-4-6") -> QaResult:
         return QaResult(result="PASS")
@@ -59,7 +60,7 @@ def _patch(stubs: _Stubs, monkeypatch) -> None:
     monkeypatch.setattr("orchestrator.workflow.ensure_on_main", stubs.ensure_on_main)
     monkeypatch.setattr("orchestrator.workflow.plan", stubs.plan)
     monkeypatch.setattr("orchestrator.workflow.create_branch", stubs.create_branch)
-    monkeypatch.setattr("orchestrator.workflow.implement", stubs.implement)
+    monkeypatch.setattr("orchestrator.workflow.implementation_task", stubs.implementation_task)
     monkeypatch.setattr("orchestrator.workflow.qa", stubs.qa)
     monkeypatch.setattr("orchestrator.workflow.commit", stubs.commit)
     monkeypatch.setattr("orchestrator.workflow.push", stubs.push)
@@ -68,7 +69,9 @@ def _patch(stubs: _Stubs, monkeypatch) -> None:
 
 def test_schema_version_defaults():
     assert PlanResult(title="t", type="feature", plan_text="p").schema_version == 1
-    assert ImplementationResult(summary="s", test_plan="tp").schema_version == 1
+    # Phase 42: ImplementationResult is gone; SummaryResult carries the
+    # commit/PR summary + test_plan and keeps the same versioned shape.
+    assert SummaryResult(summary="s", test_plan="tp").schema_version == 1
     assert QaResult(result="PASS").schema_version == 1
 
 

@@ -1,9 +1,17 @@
 """Phase 7 retry-loop control-flow tests.
 
-Stub the 5 agent/git functions so the workflow runs against scripted
-outcomes — no LLM calls, no git operations, no token cost. Asserts
-the for/else flow, mode switching ("implement" -> "fix"), qa_failures
-threading on retries, and the final status branch (succeeded vs failed).
+Stub the agent/git functions so the workflow runs against scripted
+outcomes — no LLM calls, no git operations, no token cost. Asserts the
+retry flow, feedback injection on retries (Phase 42: the failing gate's
+detail is threaded into the next producer call, replacing the old
+implement/"fix" mode switch), and the final status branch (succeeded vs
+failed).
+
+Phase 42: the impl→QA loop runs on the generic retry engine
+(retry_block.run_retry_block). The implementation step is now a generic
+producer (a StepResult-returning @task, `implementation_task`); QA stays
+hard-baked (`qa()` → QaResult, adapted to a gate verdict). So we patch
+`implementation_task` directly and record the feedback each call received.
 
 Run with:
     pytest tests/test_phase7_retry_loop.py -v
@@ -15,23 +23,25 @@ from pathlib import Path
 import pytest
 
 from orchestrator.agents.planning import PlanResult
-from orchestrator.agents.implementation import ImplementationResult
 from orchestrator.agents.qa import QaResult
+from orchestrator.manifest import StepResult
 
 
 class _Stubs:
     """Recorder + scripted-response object for the patched functions.
 
-    The workflow's @task wrappers resolve `plan`, `implement`, `qa`,
+    The workflow resolves `plan`, `implementation_task`, `qa`,
     `create_branch`, `commit`, `push`, `pr_create` from
-    orchestrator.workflow's module globals at call time, so
-    monkey-patching those names on that module is sufficient — no need
-    to touch the agent modules.
+    orchestrator.workflow's module globals at call time, so monkey-patching
+    those names on that module is sufficient — no need to touch the agent
+    modules.
     """
 
     def __init__(self, qa_verdicts: list[QaResult]) -> None:
         self.qa_verdicts = qa_verdicts
-        self.impl_calls: list[tuple[str, str | None]] = []
+        # Phase 42: each entry is the `feedback` the producer received on that
+        # attempt — None on attempt 1, the prior failing gate's detail after.
+        self.impl_calls: list[str | None] = []
         self.qa_call_count = 0
         self.commit_called = False
 
@@ -41,16 +51,14 @@ class _Stubs:
     def create_branch(self, plan: PlanResult, max_slug_length: int = 50, thread_id: str = "") -> str:
         return "feature/test"
 
-    async def implement(
+    async def implementation_task(
         self,
-        plan: PlanResult,
-        mode: str = "implement",
-        qa_failures: str | None = None,
+        plan_text: str,
+        feedback: str | None = None,
         model: str = "claude-sonnet-4-6",
-    ) -> ImplementationResult:
-        self.impl_calls.append((mode, qa_failures))
-        n = len(self.impl_calls)
-        return ImplementationResult(summary=f"s{n}", test_plan=f"tp{n}")
+    ) -> StepResult:
+        self.impl_calls.append(feedback)
+        return StepResult(step_id="implementation", kind="llm_agent", ok=True)
 
     async def qa(self, plan: PlanResult, model: str = "claude-sonnet-4-6") -> QaResult:
         verdict = self.qa_verdicts[self.qa_call_count]
@@ -92,7 +100,9 @@ async def _run(stubs: _Stubs, monkeypatch, tmp_path: Path) -> dict:
     monkeypatch.setattr(
         "orchestrator.workflow.create_branch", stubs.create_branch
     )
-    monkeypatch.setattr("orchestrator.workflow.implement", stubs.implement)
+    monkeypatch.setattr(
+        "orchestrator.workflow.implementation_task", stubs.implementation_task
+    )
     monkeypatch.setattr("orchestrator.workflow.qa", stubs.qa)
     monkeypatch.setattr("orchestrator.workflow.commit", stubs.commit)
     monkeypatch.setattr("orchestrator.workflow.push", stubs.push)
@@ -125,7 +135,7 @@ async def test_pass_on_first_attempt(monkeypatch, tmp_path):
     assert result["status"] == "succeeded"
     assert result["pr_url"] == "https://github.com/test/pr/1"
     assert result["branch"] == "feature/test"
-    assert stubs.impl_calls == [("implement", None)]
+    assert stubs.impl_calls == [None]  # ran once, no feedback on attempt 1
     assert stubs.qa_call_count == 1
     assert stubs.commit_called is True
 
@@ -141,10 +151,8 @@ async def test_fail_then_pass_on_second_attempt(monkeypatch, tmp_path):
     result = await _run(stubs, monkeypatch, tmp_path)
 
     assert result["status"] == "succeeded"
-    assert stubs.impl_calls == [
-        ("implement", None),
-        ("fix", "missing reset wiring"),
-    ]
+    # Attempt 1: no feedback. Retry carries the prior failing gate's detail.
+    assert stubs.impl_calls == [None, "missing reset wiring"]
     assert stubs.qa_call_count == 2
     assert stubs.commit_called is True
 
@@ -161,11 +169,7 @@ async def test_fail_fail_then_pass_on_third_attempt(monkeypatch, tmp_path):
     result = await _run(stubs, monkeypatch, tmp_path)
 
     assert result["status"] == "succeeded"
-    assert stubs.impl_calls == [
-        ("implement", None),
-        ("fix", "fail 1"),
-        ("fix", "fail 2"),
-    ]
+    assert stubs.impl_calls == [None, "fail 1", "fail 2"]
     assert stubs.qa_call_count == 3
     assert stubs.commit_called is True
 
@@ -181,17 +185,13 @@ async def test_all_three_attempts_fail(monkeypatch, tmp_path):
     )
     result = await _run(stubs, monkeypatch, tmp_path)
 
-    # for/else: loop exhausted without break -> failed branch returns
-    # without ever calling commit/push/pr_create. A broken PR is worse
-    # than no PR.
+    # Budget exhausted without a pass → on_exhausted="abort" → failed branch
+    # returns without ever calling commit/push/pr_create. A broken PR is worse
+    # than no PR. qa_failures carries the last failing gate's detail.
     assert result["status"] == "failed"
     assert result["qa_failures"] == "fail 3"
     assert result["branch"] == "feature/test"
     assert "pr_url" not in result
-    assert stubs.impl_calls == [
-        ("implement", None),
-        ("fix", "fail 1"),
-        ("fix", "fail 2"),
-    ]
+    assert stubs.impl_calls == [None, "fail 1", "fail 2"]
     assert stubs.qa_call_count == 3
     assert stubs.commit_called is False

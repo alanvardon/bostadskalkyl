@@ -30,17 +30,12 @@ _IMPLEMENTATION_FOOTER = """\
 
 2. If `.claude/skills/static-checks/SKILL.md` exists, run the static checks per that skill. If any check fails, fix the violation and re-run until the script exits 0. Do not proceed until all checks pass.
 
-3. Call the `emit_implementation_result` tool with:
-   - `summary`: one-line description of what changed
-   - `test_plan`: markdown checklist bullets covering the key flows to verify manually and any regression checks for related code
-
-   Example:
-   ```
-   - [ ] Verify the new feature works end-to-end
-   - [ ] Confirm existing related functionality is unaffected
-   ```
+3. Call the `emit_step_result` tool with:
+   - `summary`: a one-line description of what you changed
 
 This call is how the orchestrator captures your output. If you don't call it, the workflow has nothing to record and will fail.
+
+You do NOT produce the PR summary or test plan — those are generated separately, after QA passes, from your diff. Your only structured output is the one-line `summary` above.
 """
 
 _QA_FOOTER = """\

@@ -40,6 +40,9 @@ Sample orchestrator.toml (all fields optional, defaults shown):
     [workflow.docs]
     model = "claude-haiku-4-5-20251001"    # baked-in docs agent (Phase 41)
 
+    [workflow.summarize]
+    model = "claude-haiku-4-5-20251001"    # baked-in summarizer agent (Phase 42)
+
     [git]
     auto_rebase = true   # rebase onto origin/<base_branch> if it moved before push
 
@@ -102,6 +105,9 @@ _DEFAULT_MODEL = "claude-sonnet-4-6"
 # The docs spine task (Phase 41) defaults to haiku — a read-diff / edit-md task,
 # not a reasoning task. Provisioned here so Phase 41 lands straight into it.
 _DEFAULT_DOCS_MODEL = "claude-haiku-4-5-20251001"
+# The summarizer (Phase 42) reads the plan + `git diff HEAD` and emits the
+# commit/PR summary + test_plan. Like docs it's a cheap, read-only agent → haiku.
+_DEFAULT_SUMMARIZE_MODEL = "claude-haiku-4-5-20251001"
 
 
 class WorkflowStepConfig(BaseModel):
@@ -148,6 +154,15 @@ class WorkflowConfig(BaseModel):
     docs: WorkflowStepConfig = Field(
         default_factory=lambda: WorkflowStepConfig(
             model=_DEFAULT_DOCS_MODEL, timeout=120
+        )
+    )
+    # Phase 42: derives the commit/PR summary + test_plan from the plan + diff,
+    # after the impl→QA retry block passes. Read-only tools (Bash for git diff).
+    summarize: WorkflowStepConfig = Field(
+        default_factory=lambda: WorkflowStepConfig(
+            model=_DEFAULT_SUMMARIZE_MODEL,
+            allowed_tools=["Read", "Bash", "Grep"],
+            timeout=120,
         )
     )
     commit: WorkflowStepConfig = Field(default_factory=WorkflowStepConfig)
