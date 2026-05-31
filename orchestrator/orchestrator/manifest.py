@@ -113,8 +113,11 @@ class LlmAgentStep(_BaseStep):
     # When true, pause AFTER the agent runs (before the workflow continues) so a
     # human can inspect what it produced. Same reply contract as human_gate: an
     # abort word ('abort'/'no'/'stop') stops the run; anything else proceeds.
-    # Only honoured for an agent placed directly at a seam — a retry block drives
-    # its own [steps.defs.*] agents through the gate loop, not this pause.
+    # For an agent placed directly at a seam the pause fires right after it runs.
+    # For a [steps.defs.*] agent used as a retry-block PRODUCER it fires once,
+    # after the block succeeds (the gate passed) — not on intermediate failed
+    # attempts, and not if the block exhausts its budget. Ignored on a retry-block
+    # gate (a read-only judge run every attempt).
     human_in_loop: bool = False
 
 

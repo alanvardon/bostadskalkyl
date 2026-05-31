@@ -423,3 +423,171 @@ async def test_declared_block_proceed_when_gate_never_passes(monkeypatch, tmp_pa
     )
     assert result["status"] == "succeeded"
     assert sum(1 for c in calls if c == ("check", True)) == 2
+
+
+# ------------------ Phase 44: producer human_in_loop review ------------------
+
+
+def _hil_block_manifest(on_exhausted="abort", max_retries=3) -> WorkflowManifest:
+    """A retry block whose PRODUCER is an llm_agent with human_in_loop=true,
+    gated by a script. After the block succeeds, the producer's output is
+    reviewed once."""
+    return WorkflowManifest(
+        steps={
+            "after_plan": [
+                RetryBlockStep(
+                    id="loop",
+                    produce=["fix"],
+                    gate=["check"],
+                    max_retries=max_retries,
+                    on_exhausted=on_exhausted,
+                )
+            ]
+        },
+        defs={
+            "fix": LlmAgentStep(id="fix", agent="fixer", human_in_loop=True),
+            "check": ScriptStep(id="check", path="check.sh"),
+        },
+    )
+
+
+def _fake_agent_producer():
+    """A fake workflow.execute_llm_agent recording (step_id, feedback) calls."""
+    from orchestrator.manifest import StepResult
+
+    agent_calls: list[tuple[str, str | None]] = []
+
+    async def fake(step, project_root, plan_text, *, feedback=None, as_gate=False):
+        agent_calls.append((step.id, feedback))
+        return StepResult(
+            step_id=step.id, kind="llm_agent", ok=True, detail="rewrote foo.js"
+        )
+
+    return fake, agent_calls
+
+
+@pytest.mark.asyncio
+async def test_producer_human_in_loop_reviews_after_block_succeeds(monkeypatch, tmp_path):
+    # gate passes on attempt 2 → producer runs twice (fail → retry → pass). The
+    # block then pauses ONCE for review of the producer's final output; a
+    # non-abort reply proceeds. The producer is NOT re-run on resume.
+    fake_script, script_calls = _fake_execute_script_factory(gate_passes_on_attempt=2)
+    fake_agent, agent_calls = _fake_agent_producer()
+
+    stubs = _Stubs()
+    _patch_spine(stubs, monkeypatch)
+    monkeypatch.setattr("orchestrator.workflow.load_manifest", lambda *a, **k: _hil_block_manifest())
+    monkeypatch.setattr("orchestrator.workflow.execute_script", fake_script)
+    monkeypatch.setattr("orchestrator.workflow.execute_llm_agent", fake_agent)
+
+    from orchestrator.workflow import build_workflow
+
+    config = {"configurable": {"thread_id": f"test-{uuid.uuid4().hex[:8]}"}}
+    async with build_workflow(db_path=str(tmp_path / "ckpt.db")) as workflow:
+        result = await workflow.ainvoke("req", config=config)  # plan approval
+        result = await workflow.ainvoke(Command(resume="yes"), config=config)
+        # Block succeeded (gate passed on attempt 2) → review pause with detail.
+        intr = result["__interrupt__"][0].value
+        assert intr["kind"] == "step_retry_review"
+        assert intr["step_id"] == "loop"
+        assert intr["producers"] == ["fix"]
+        assert "rewrote foo.js" in intr["detail"]
+        assert intr["attempts"] == 2
+        # Producer ran exactly once per attempt (twice); gate ran twice.
+        assert len(agent_calls) == 2
+        assert sum(1 for c in script_calls if c == ("check", True)) == 2
+
+        # Proceed → run finishes; producer NOT re-run on resume.
+        result = await workflow.ainvoke(Command(resume="yes"), config=config)
+
+    assert result["status"] == "succeeded"
+    assert len(agent_calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_producer_human_in_loop_no_pause_on_first_try(monkeypatch, tmp_path):
+    # gate passes on attempt 1 → no retries. The review still fires once (the
+    # block succeeded "without requiring retries").
+    fake_script, _ = _fake_execute_script_factory(gate_passes_on_attempt=1)
+    fake_agent, agent_calls = _fake_agent_producer()
+
+    stubs = _Stubs()
+    _patch_spine(stubs, monkeypatch)
+    monkeypatch.setattr("orchestrator.workflow.load_manifest", lambda *a, **k: _hil_block_manifest())
+    monkeypatch.setattr("orchestrator.workflow.execute_script", fake_script)
+    monkeypatch.setattr("orchestrator.workflow.execute_llm_agent", fake_agent)
+
+    from orchestrator.workflow import build_workflow
+
+    config = {"configurable": {"thread_id": f"test-{uuid.uuid4().hex[:8]}"}}
+    async with build_workflow(db_path=str(tmp_path / "ckpt.db")) as workflow:
+        result = await workflow.ainvoke("req", config=config)  # plan approval
+        result = await workflow.ainvoke(Command(resume="yes"), config=config)
+        assert result["__interrupt__"][0].value["kind"] == "step_retry_review"
+        assert result["__interrupt__"][0].value["attempts"] == 1
+        assert len(agent_calls) == 1  # ran once, no retry
+        result = await workflow.ainvoke(Command(resume="yes"), config=config)
+
+    assert result["status"] == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_producer_human_in_loop_abort_stops_run(monkeypatch, tmp_path):
+    # Aborting the post-success review stops the run cleanly, with no commit.
+    fake_script, _ = _fake_execute_script_factory(gate_passes_on_attempt=1)
+    fake_agent, _ = _fake_agent_producer()
+
+    committed: list[str] = []
+    stubs = _Stubs()
+
+    def track_commit(branch, title, summary, base_branch="main"):
+        committed.append(branch)
+        return "abc123"
+
+    stubs.commit = track_commit
+    _patch_spine(stubs, monkeypatch)
+    monkeypatch.setattr("orchestrator.workflow.load_manifest", lambda *a, **k: _hil_block_manifest())
+    monkeypatch.setattr("orchestrator.workflow.execute_script", fake_script)
+    monkeypatch.setattr("orchestrator.workflow.execute_llm_agent", fake_agent)
+
+    from orchestrator.workflow import build_workflow
+
+    config = {"configurable": {"thread_id": f"test-{uuid.uuid4().hex[:8]}"}}
+    async with build_workflow(db_path=str(tmp_path / "ckpt.db")) as workflow:
+        result = await workflow.ainvoke("req", config=config)  # plan approval
+        result = await workflow.ainvoke(Command(resume="yes"), config=config)
+        assert result["__interrupt__"][0].value["kind"] == "step_retry_review"
+        result = await workflow.ainvoke(Command(resume="abort"), config=config)
+
+    assert result["status"] == "aborted"
+    assert result["aborted_at"] == "loop"
+    assert committed == []
+
+
+@pytest.mark.asyncio
+async def test_producer_human_in_loop_no_review_when_exhausted_proceed(monkeypatch, tmp_path):
+    # on_exhausted="proceed" with a gate that never passes → the block proceeds
+    # but did NOT succeed (result.ok is False), so the human_in_loop review must
+    # NOT fire. The run finishes straight through after the single plan resume.
+    fake_script, _ = _fake_execute_script_factory(gate_passes_on_attempt=None)
+    fake_agent, agent_calls = _fake_agent_producer()
+
+    stubs = _Stubs()
+    _patch_spine(stubs, monkeypatch)
+    monkeypatch.setattr(
+        "orchestrator.workflow.load_manifest",
+        lambda *a, **k: _hil_block_manifest(on_exhausted="proceed", max_retries=2),
+    )
+    monkeypatch.setattr("orchestrator.workflow.execute_script", fake_script)
+    monkeypatch.setattr("orchestrator.workflow.execute_llm_agent", fake_agent)
+
+    from orchestrator.workflow import build_workflow
+
+    config = {"configurable": {"thread_id": f"test-{uuid.uuid4().hex[:8]}"}}
+    async with build_workflow(db_path=str(tmp_path / "ckpt.db")) as workflow:
+        result = await workflow.ainvoke("req", config=config)  # plan approval
+        result = await workflow.ainvoke(Command(resume="yes"), config=config)
+
+    # No second interrupt — the run completed without a review pause.
+    assert result["status"] == "succeeded"
+    assert len(agent_calls) == 2  # ran the full budget, never reviewed

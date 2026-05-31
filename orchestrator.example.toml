@@ -119,8 +119,8 @@ timeout = 300
 #    Set human_in_loop = true on any seam-placed llm_agent to pause for review
 #    AFTER it runs (the agent's output is surfaced; reply with an abort word —
 #    'abort'/'no'/'stop' — to stop, anything else to proceed). Omitted = false.
-#    (A retry block drives its own [steps.defs.*] agents via the gate loop, so
-#    the flag has no effect on a def referenced by a retry block.)
+#    (On a retry-block PRODUCER the same flag pauses once after the block
+#    succeeds — see section 5.)
 #
 #    Create .orchestrator/agents/changelog.md:
 #
@@ -169,6 +169,12 @@ human_in_loop = false               # true = pause to review the agent's output
 #      "proceed"    — continue anyway (use with care)
 #    max_retries must be >= 1.
 #
+#    A producer llm_agent may set human_in_loop = true: when the block SUCCEEDS
+#    (the gate passes — first try or after retries), the workflow pauses once to
+#    review that producer's final output (abort word stops, anything else
+#    proceeds). It never pauses on a failed attempt, and an exhausted block is
+#    governed by on_exhausted, not this flag. Ignored on a gate def.
+#
 #    Here: lint-fix (an agent) tries to satisfy lint-check (a script), up to 3×.
 #
 #    Create .orchestrator/scripts/lint.sh (chmod +x):
@@ -196,9 +202,10 @@ on_exhausted = "abort"              # abort | human_gate | proceed
 # [steps.defs.*] — definitions referenced by retry blocks' produce/gate. These
 # are NOT seam steps themselves; they only run when a block references them.
 [steps.defs.lint-fix]
-type  = "llm_agent"
-agent = "lint-fixer"                # → .orchestrator/agents/lint-fixer.md
-model = "claude-haiku-4-5-20251001"
+type          = "llm_agent"
+agent         = "lint-fixer"        # → .orchestrator/agents/lint-fixer.md
+model         = "claude-haiku-4-5-20251001"
+human_in_loop = false               # true = review the fix once lint-check passes
 
 [steps.defs.lint-check]
 type    = "script"

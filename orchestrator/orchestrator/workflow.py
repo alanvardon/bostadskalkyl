@@ -351,17 +351,23 @@ async def _run_declared_retry_block(
     are resolved from manifest.defs and run via the SAME @task factories
     run_seam uses, so they inherit checkpoint/replay and per-attempt distinctness
     by call position. A gate's verdict is its StepResult.passed (script: exit
-    code; llm_agent: the emitted `passed`); a producer's detail is ignored and,
-    on a retry, the failing gate's feedback is injected into producer llm_agents.
+    code; llm_agent: the emitted `passed`); on a retry, the failing gate's
+    feedback is injected into producer llm_agents.
 
     A non-proceed outcome (gate never passed under on_exhausted="abort", or a
     human aborted under "human_gate") raises StepError, aborting the run — seams
-    are pre-commit, so nothing is half-shipped. interrupt() (used only by
-    on_exhausted="human_gate") is reachable because this helper, like run_seam,
-    runs in the entrypoint body.
+    are pre-commit, so nothing is half-shipped. Phase 44: if the block succeeds
+    and a producer llm_agent set human_in_loop, pause once for review of its
+    final output. interrupt() (for on_exhausted="human_gate" and the success
+    review) is reachable because this helper, like run_seam, runs in the
+    entrypoint body.
     """
     repo_root = str(find_project_root())
     defs = manifest.defs
+    # Final result of each producer, so a human_in_loop producer's gate-passing
+    # output can be surfaced for review once the block succeeds (Phase 44). On
+    # resume the producer @tasks replay from checkpoint and repopulate this.
+    last_producer_result: dict[str, StepResult] = {}
 
     async def run_producer(pid: str, feedback: str | None) -> StepResult:
         d = defs[pid]
@@ -375,6 +381,7 @@ async def _run_declared_retry_block(
             )
         if result.usage:
             usage_by_task.setdefault(d.id, []).append(result.usage)
+        last_producer_result[pid] = result
         return result
 
     async def run_gate(gid: str) -> StepResult:
@@ -409,6 +416,35 @@ async def _run_declared_retry_block(
             f"(on_exhausted={block_step.on_exhausted!r}); last feedback:\n"
             f"{result.last_feedback or '(none)'}"
         )
+
+    # Phase 44: pause ONCE after the block SUCCEEDS (result.ok — a real gate
+    # pass, whether first try or after retries) if any producer llm_agent opted
+    # into human_in_loop, so a human can review the final, gate-passing output.
+    # Intermediate failed attempts never pause; nor does an exhausted-but-proceed
+    # block (result.ok is False there — on_exhausted governs that path). The flag
+    # is honoured on producers only; a gate is a read-only judge run every
+    # attempt, so its human_in_loop is ignored.
+    if result.ok:
+        reviewed = [
+            pid
+            for pid in block_step.produce
+            if isinstance(defs[pid], LlmAgentStep) and defs[pid].human_in_loop
+        ]
+        if reviewed:
+            detail = "\n\n".join(
+                f"[{pid}] {last_producer_result[pid].detail}".rstrip()
+                for pid in reviewed
+                if pid in last_producer_result
+            )
+            decision = interrupt({
+                "kind": "step_retry_review",
+                "step_id": block_step.id,
+                "producers": reviewed,
+                "detail": detail,
+                "attempts": result.attempts,
+            })
+            if isinstance(decision, str) and decision.strip().lower() in _GATE_ABORT_WORDS:
+                raise StepGateAborted(block_step.id)
 
 
 @task
