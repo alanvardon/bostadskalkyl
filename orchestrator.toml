@@ -107,7 +107,7 @@ include_content = false   # if true, also log prompt/result content (verbose)
 #   before_plan · after_plan · after_impl · after_qa · before_commit
 # before_plan / after_plan / before_commit run once. after_impl fires on
 # EVERY impl attempt (the code changes each attempt). after_qa fires ONCE,
-# only after QA has PASSED (never on a failed attempt). Put costly llm_agent
+# only after QA has PASSED (never on a failed attempt). Put costly ai_agent
 # steps at before_commit (or after_qa) so they run on the final, passing code.
 #
 # Step types:
@@ -115,7 +115,7 @@ include_content = false   # if true, also log prompt/result content (verbose)
 #                 (must be chmod +x with a shebang — see NOTES.md)
 #   approval_gate  — pause for a decision: reply 'abort' (or 'no'/'stop') to stop
 #                 the run, any other reply to proceed
-#   llm_agent   — run a markdown agent at <agents_dir>/<agent>.md. Set
+#   ai_agent   — run a markdown agent at <agents_dir>/<agent>.md. Set
 #                 human_in_loop = true to pause for review AFTER it runs
 #                 (same abort/proceed reply as approval_gate).
 #   retry       — re-run producer step(s) until gate step(s) pass, injecting the
@@ -139,7 +139,7 @@ include_content = false   # if true, also log prompt/result content (verbose)
 #
 # [[steps.after_qa]]
 # id            = "docs"
-# type          = "llm_agent"
+# type          = "ai_agent"
 # agent         = "docs"             # → .orchestrator/agents/docs.md
 # model         = "claude-sonnet-4-6"
 # human_in_loop = false              # true = pause to review the agent's output

@@ -19,7 +19,7 @@ TOML shape (everything optional; no [steps] table = no injected steps):
 
     [[steps.after_qa]]
     id    = "docs"
-    type  = "llm_agent"
+    type  = "ai_agent"
     agent = "docs"            # → .orchestrator/agents/docs.md
     model = "claude-sonnet-4-6"
 
@@ -41,7 +41,7 @@ producer attempt. produce/gate reference definitions under [steps.defs.*]:
     on_exhausted = "abort"           # abort | approval_gate | proceed
 
     [steps.defs.lint-fix]
-    type  = "llm_agent"
+    type  = "ai_agent"
     agent = "lint-fixer"
 
     [steps.defs.lint-check]
@@ -105,8 +105,8 @@ class ApprovalGateStep(_BaseStep):
     ask: str = "Proceed?"
 
 
-class LlmAgentStep(_BaseStep):
-    type: Literal["llm_agent"] = "llm_agent"
+class AiAgentStep(_BaseStep):
+    type: Literal["ai_agent"] = "ai_agent"
     # Resolves to .orchestrator/agents/<agent>.md (the system prompt).
     agent: str
     model: str = "claude-sonnet-4-6"
@@ -141,7 +141,7 @@ class RetryBlockStep(_BaseStep):
 
 # Steps that can be INJECTED at a seam (a retry block is one of them).
 Step = Annotated[
-    Union[ScriptStep, ApprovalGateStep, LlmAgentStep, RetryBlockStep],
+    Union[ScriptStep, ApprovalGateStep, AiAgentStep, RetryBlockStep],
     Field(discriminator="type"),
 ]
 _STEP_ADAPTER: TypeAdapter = TypeAdapter(Step)
@@ -150,10 +150,10 @@ _STEP_ADAPTER: TypeAdapter = TypeAdapter(Step)
 # as a producer or gate. Only executable mutator/checker steps qualify — a
 # approval_gate is a pause, not a producer or gate, so it's excluded; and a retry
 # block can't reference another block. Both variants are gate-capable: a script
-# gate's verdict is its exit code, and an llm_agent gate is run with a
-# `passed`-emitting tool at execution time (see steps.execute_llm_agent).
+# gate's verdict is its exit code, and an ai_agent gate is run with a
+# `passed`-emitting tool at execution time (see steps.execute_ai_agent).
 StepDef = Annotated[
-    Union[ScriptStep, LlmAgentStep],
+    Union[ScriptStep, AiAgentStep],
     Field(discriminator="type"),
 ]
 _STEPDEF_ADAPTER: TypeAdapter = TypeAdapter(StepDef)
@@ -254,9 +254,9 @@ def _validate_retry_block(step: RetryBlockStep, defs: dict[str, StepDef]) -> Non
                 f"retry block {step.id!r}: references unknown step def {rid!r}. "
                 f"Define it under [steps.defs.{rid}]."
             )
-    # Gate-capability: defs are restricted to script | llm_agent (StepDef
+    # Gate-capability: defs are restricted to script | ai_agent (StepDef
     # excludes approval_gate), and both are gate-capable — a script gate's verdict
-    # is its exit code; an llm_agent gate is run with a `passed`-emitting tool.
+    # is its exit code; an ai_agent gate is run with a `passed`-emitting tool.
     # So a referenced gate id is always gate-capable; no further check needed.
 
 
@@ -332,7 +332,7 @@ def load_manifest(
                         f"step def {def_id!r}: script not found at "
                         f"{definition.path!r}."
                     )
-            elif isinstance(definition, LlmAgentStep):
+            elif isinstance(definition, AiAgentStep):
                 if not _agent_file(project_root, definition.agent, agents_dir).exists():
                     raise ManifestError(
                         f"step def {def_id!r}: agent file not found at "
@@ -373,7 +373,7 @@ def load_manifest(
                     raise ManifestError(
                         f"step {step.id!r}: script not found at {step.path!r}."
                     )
-            elif isinstance(step, LlmAgentStep):
+            elif isinstance(step, AiAgentStep):
                 if not _agent_file(project_root, step.agent, agents_dir).exists():
                     raise ManifestError(
                         f"step {step.id!r}: agent file not found at "

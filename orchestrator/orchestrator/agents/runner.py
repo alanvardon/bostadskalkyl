@@ -1,6 +1,6 @@
 """Shared agent-loop runner (Phase 39).
 
-`implementation.py`, `qa.py`, and `steps.execute_llm_agent` all ran the SAME
+`implementation.py`, `qa.py`, and `steps.execute_ai_agent` all ran the SAME
 agent-loop body and differed only in their result schema:
 
   1. a closure-captured `@tool` for structured output
@@ -16,7 +16,7 @@ stays typed in each caller, supplied via `result_factory`. Each agent shrinks to
 a thin wrapper that passes its prompt, tools, emit-tool schema, and factory.
 
 Fail-closed is centralised: if the agent never calls its emit tool, the runner
-raises `FatalError`. (`steps.execute_llm_agent` catches and re-wraps this as its
+raises `FatalError`. (`steps.execute_ai_agent` catches and re-wraps this as its
 own `StepError` to preserve that module's contract.)
 """
 

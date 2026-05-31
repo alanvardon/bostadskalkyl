@@ -22,7 +22,7 @@ def _producer(calls):
     """A fake producer that records (step_id, feedback) and succeeds."""
     async def run_producer(step_id, feedback):
         calls.append((step_id, feedback))
-        return StepResult(step_id=step_id, kind="llm_agent", ok=True)
+        return StepResult(step_id=step_id, kind="ai_agent", ok=True)
     return run_producer
 
 

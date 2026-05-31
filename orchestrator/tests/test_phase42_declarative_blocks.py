@@ -22,7 +22,7 @@ from langgraph.types import Command
 from orchestrator.agents.planning import PlanResult
 from orchestrator.agents.qa import QaResult
 from orchestrator.manifest import (
-    LlmAgentStep,
+    AiAgentStep,
     ManifestError,
     RetryBlockStep,
     ScriptStep,
@@ -66,7 +66,7 @@ max_retries  = 2
 on_exhausted = "abort"
 
 [steps.defs.lint-fix]
-type  = "llm_agent"
+type  = "ai_agent"
 agent = "lint-fixer"
 
 [steps.defs.lint-check]
@@ -86,7 +86,7 @@ def test_valid_retry_block_round_trips(tmp_path):
     assert block.on_exhausted == "abort"
     # defs parsed into their own table, keyed by id.
     assert set(m.defs) == {"lint-fix", "lint-check"}
-    assert isinstance(m.defs["lint-fix"], LlmAgentStep)
+    assert isinstance(m.defs["lint-fix"], AiAgentStep)
     assert isinstance(m.defs["lint-check"], ScriptStep)
 
 
@@ -99,7 +99,7 @@ produce = ["lint-fix"]
 gate    = ["does-not-exist"]
 
 [steps.defs.lint-fix]
-type  = "llm_agent"
+type  = "ai_agent"
 agent = "lint-fixer"
 """
     with pytest.raises(ManifestError, match="unknown step def 'does-not-exist'"):
@@ -147,7 +147,7 @@ produce = ["lint-fix"]
 gate    = []
 
 [steps.defs.lint-fix]
-type  = "llm_agent"
+type  = "ai_agent"
 agent = "lint-fixer"
 """
     with pytest.raises(ManifestError, match="`gate` must list at least one"):
@@ -257,7 +257,7 @@ def test_missing_def_agent_raises(tmp_path):
 
 def test_hash_changes_when_referenced_def_changes():
     defs = {
-        "fix": LlmAgentStep(id="fix", agent="a"),
+        "fix": AiAgentStep(id="fix", agent="a"),
         "check": ScriptStep(id="check", path="x.sh"),
     }
     block = RetryBlockStep(id="b", produce=["fix"], gate=["check"])
@@ -273,7 +273,7 @@ def test_hash_changes_when_referenced_def_changes():
 
 def test_hash_ignores_unreferenced_def():
     defs = {
-        "fix": LlmAgentStep(id="fix", agent="a"),
+        "fix": AiAgentStep(id="fix", agent="a"),
         "check": ScriptStep(id="check", path="x.sh"),
     }
     block = RetryBlockStep(id="b", produce=["fix"], gate=["check"])
@@ -300,7 +300,7 @@ class _Stubs:
 
     async def implementation_task(self, plan_text, feedback=None, model="claude-sonnet-4-6"):
         from orchestrator.manifest import StepResult
-        return StepResult(step_id="implementation", kind="llm_agent", ok=True)
+        return StepResult(step_id="implementation", kind="ai_agent", ok=True)
 
     async def qa(self, plan, model="claude-sonnet-4-6") -> QaResult:
         return QaResult(result="PASS")
@@ -429,7 +429,7 @@ async def test_declared_block_proceed_when_gate_never_passes(monkeypatch, tmp_pa
 
 
 def _hil_block_manifest(on_exhausted="abort", max_retries=3) -> WorkflowManifest:
-    """A retry block whose PRODUCER is an llm_agent with human_in_loop=true,
+    """A retry block whose PRODUCER is an ai_agent with human_in_loop=true,
     gated by a script. After the block succeeds, the producer's output is
     reviewed once."""
     return WorkflowManifest(
@@ -445,14 +445,14 @@ def _hil_block_manifest(on_exhausted="abort", max_retries=3) -> WorkflowManifest
             ]
         },
         defs={
-            "fix": LlmAgentStep(id="fix", agent="fixer", human_in_loop=True),
+            "fix": AiAgentStep(id="fix", agent="fixer", human_in_loop=True),
             "check": ScriptStep(id="check", path="check.sh"),
         },
     )
 
 
 def _fake_agent_producer():
-    """A fake workflow.execute_llm_agent recording (step_id, feedback) calls."""
+    """A fake workflow.execute_ai_agent recording (step_id, feedback) calls."""
     from orchestrator.manifest import StepResult
 
     agent_calls: list[tuple[str, str | None]] = []
@@ -460,7 +460,7 @@ def _fake_agent_producer():
     async def fake(step, project_root, plan_text, *, feedback=None, as_gate=False):
         agent_calls.append((step.id, feedback))
         return StepResult(
-            step_id=step.id, kind="llm_agent", ok=True, detail="rewrote foo.js"
+            step_id=step.id, kind="ai_agent", ok=True, detail="rewrote foo.js"
         )
 
     return fake, agent_calls
@@ -478,7 +478,7 @@ async def test_producer_human_in_loop_reviews_after_block_succeeds(monkeypatch, 
     _patch_spine(stubs, monkeypatch)
     monkeypatch.setattr("orchestrator.workflow.load_manifest", lambda *a, **k: _hil_block_manifest())
     monkeypatch.setattr("orchestrator.workflow.execute_script", fake_script)
-    monkeypatch.setattr("orchestrator.workflow.execute_llm_agent", fake_agent)
+    monkeypatch.setattr("orchestrator.workflow.execute_ai_agent", fake_agent)
 
     from orchestrator.workflow import build_workflow
 
@@ -515,7 +515,7 @@ async def test_producer_human_in_loop_no_pause_on_first_try(monkeypatch, tmp_pat
     _patch_spine(stubs, monkeypatch)
     monkeypatch.setattr("orchestrator.workflow.load_manifest", lambda *a, **k: _hil_block_manifest())
     monkeypatch.setattr("orchestrator.workflow.execute_script", fake_script)
-    monkeypatch.setattr("orchestrator.workflow.execute_llm_agent", fake_agent)
+    monkeypatch.setattr("orchestrator.workflow.execute_ai_agent", fake_agent)
 
     from orchestrator.workflow import build_workflow
 
@@ -548,7 +548,7 @@ async def test_producer_human_in_loop_abort_stops_run(monkeypatch, tmp_path):
     _patch_spine(stubs, monkeypatch)
     monkeypatch.setattr("orchestrator.workflow.load_manifest", lambda *a, **k: _hil_block_manifest())
     monkeypatch.setattr("orchestrator.workflow.execute_script", fake_script)
-    monkeypatch.setattr("orchestrator.workflow.execute_llm_agent", fake_agent)
+    monkeypatch.setattr("orchestrator.workflow.execute_ai_agent", fake_agent)
 
     from orchestrator.workflow import build_workflow
 
@@ -579,7 +579,7 @@ async def test_producer_human_in_loop_no_review_when_exhausted_proceed(monkeypat
         lambda *a, **k: _hil_block_manifest(on_exhausted="proceed", max_retries=2),
     )
     monkeypatch.setattr("orchestrator.workflow.execute_script", fake_script)
-    monkeypatch.setattr("orchestrator.workflow.execute_llm_agent", fake_agent)
+    monkeypatch.setattr("orchestrator.workflow.execute_ai_agent", fake_agent)
 
     from orchestrator.workflow import build_workflow
 

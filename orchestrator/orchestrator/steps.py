@@ -5,7 +5,7 @@ in a @task so they inherit checkpointing, tracing, and cancel/usage handling
 at the @task boundary — the user's step never touches that plumbing.
 
 - execute_script: run an executable; non-zero exit raises StepError.
-- execute_llm_agent: run a markdown-defined agent (.orchestrator/agents/
+- execute_ai_agent: run a markdown-defined agent (.orchestrator/agents/
   <agent>.md as the system prompt) via the Claude Agent SDK, same loop shape
   as the planning/implementation/qa agents.
 
@@ -24,7 +24,7 @@ from pathlib import Path
 from orchestrator.agents.runner import run_structured_agent
 from orchestrator.config import load_config
 from orchestrator.errors import FatalError
-from orchestrator.manifest import LlmAgentStep, ScriptStep, StepResult
+from orchestrator.manifest import AiAgentStep, ScriptStep, StepResult
 from orchestrator.retry_block import feedback_section
 
 
@@ -148,8 +148,8 @@ def _coerce_passed(raw: object) -> bool:
     return str(raw).strip().lower() in ("true", "1", "yes")
 
 
-async def execute_llm_agent(
-    step: LlmAgentStep,
+async def execute_ai_agent(
+    step: AiAgentStep,
     project_root: Path,
     plan_text: str,
     *,
@@ -193,7 +193,7 @@ async def execute_llm_agent(
         emit_tool_fields = {"passed": bool, "detail": str}
         result_factory = lambda captured, usage: StepResult(
             step_id=step.id,
-            kind="llm_agent",
+            kind="ai_agent",
             ok=True,
             passed=_coerce_passed(captured.get("passed")),
             detail=captured.get("detail", "") or "",
@@ -209,14 +209,14 @@ async def execute_llm_agent(
         emit_tool_fields = {"summary": str}
         result_factory = lambda captured, usage: StepResult(
             step_id=step.id,
-            kind="llm_agent",
+            kind="ai_agent",
             ok=True,
             detail=captured.get("summary", "") or "",
             usage=usage,
         )
 
     log.info(
-        "running llm_agent step %r (agent=%s, as_gate=%s)", step.id, step.agent, as_gate
+        "running ai_agent step %r (agent=%s, as_gate=%s)", step.id, step.agent, as_gate
     )
     # The shared runner raises FatalError on a missing emit; re-wrap it as
     # StepError so this module keeps its single failure type. (Either error
@@ -238,5 +238,5 @@ async def execute_llm_agent(
         )
     except FatalError as exc:
         raise StepError(
-            f"llm_agent step {step.id!r} did not call emit_step_result"
+            f"ai_agent step {step.id!r} did not call emit_step_result"
         ) from exc

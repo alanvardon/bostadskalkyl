@@ -188,7 +188,7 @@ class _BaseStubs:
         return "feature/test"
 
     async def implementation_task(self, plan_text, feedback=None, model="claude-sonnet-4-6"):
-        return StepResult(step_id="implementation", kind="llm_agent", ok=True)
+        return StepResult(step_id="implementation", kind="ai_agent", ok=True)
 
     async def qa(self, plan, model="claude-sonnet-4-6") -> QaResult:
         return QaResult(result="PASS")

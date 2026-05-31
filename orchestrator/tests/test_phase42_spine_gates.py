@@ -46,7 +46,7 @@ class _Stubs:
 
     async def implementation_task(self, plan_text, feedback=None, model="claude-sonnet-4-6") -> StepResult:
         self.impl_calls.append(feedback)
-        return StepResult(step_id="implementation", kind="llm_agent", ok=True)
+        return StepResult(step_id="implementation", kind="ai_agent", ok=True)
 
     async def qa(self, plan, model="claude-sonnet-4-6") -> QaResult:
         verdict = self.qa_verdicts[self.qa_call_count]

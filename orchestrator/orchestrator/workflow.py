@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 # of risking a confusing deserialization failure mid-run.
 # 1.0.0 → 1.1.0 (Phase 33): the body gained the manifest-hash gate and five
 # run_seam() insertion points, plus new tasks (record_manifest_hash_task and
-# the per-step tasks built by _make_script_task / _make_llm_agent_task). That's
+# the per-step tasks built by _make_script_task / _make_ai_agent_task). That's
 # a body change, so the bump makes any checkpoint created before Phase 33
 # refuse to resume (clean version error) rather than resume into a changed
 # task graph. (Phase 33's later refinements — per-id step task names, after_qa
@@ -107,14 +107,14 @@ from orchestrator.cancellation import WorkflowCancelled, raise_if_cancelled
 from orchestrator.config import OrchestratorConfig, load_config
 from orchestrator.manifest import (
     ApprovalGateStep,
-    LlmAgentStep,
+    AiAgentStep,
     RetryBlockStep,
     ScriptStep,
     StepResult,
     WorkflowManifest,
     load_manifest,
 )
-from orchestrator.steps import StepError, execute_llm_agent, execute_script
+from orchestrator.steps import StepError, execute_ai_agent, execute_script
 from orchestrator.usage import TaskUsage, aggregate_usage
 from orchestrator.git_ops import (
     commit,
@@ -199,7 +199,7 @@ async def record_manifest_hash_task() -> str:
 # Phase 33: per-step task factories. Each injected step is wrapped in a @task
 # NAMED for its step id (`step:<id>`) — so it appears under its own id in the
 # LangSmith trace tree and gets its own checkpoint identity, instead of every
-# script (or every llm_agent) step collapsing onto one shared task name.
+# script (or every ai_agent) step collapsing onto one shared task name.
 #
 # A fresh wrapper is built per call on purpose. LangGraph derives a task's
 # identity from its NAME plus its call position in the entrypoint body — not
@@ -225,8 +225,8 @@ def _make_script_task(step_id: str, *, as_gate: bool = False):
     return task(run_script_step, name=f"step:{step_id}")
 
 
-def _make_llm_agent_task(step_id: str, *, as_gate: bool = False):
-    async def run_llm_agent_step(
+def _make_ai_agent_task(step_id: str, *, as_gate: bool = False):
+    async def run_ai_agent_step(
         step_id: str,
         agent: str,
         model: str,
@@ -235,21 +235,21 @@ def _make_llm_agent_task(step_id: str, *, as_gate: bool = False):
         attempt: int = 0,
         feedback: str | None = None,
     ) -> StepResult:
-        return await execute_llm_agent(
-            LlmAgentStep(id=step_id, agent=agent, model=model),
+        return await execute_ai_agent(
+            AiAgentStep(id=step_id, agent=agent, model=model),
             Path(repo_root),
             plan_text,
             feedback=feedback,
             as_gate=as_gate,
         )
 
-    return task(run_llm_agent_step, name=f"step:{step_id}")
+    return task(run_ai_agent_step, name=f"step:{step_id}")
 
 
 class StepGateAborted(RuntimeError):
     """Phase 33: raised when a human pause is resumed with an abort decision
     ('abort'/'no'/'stop') — an approval_gate step, or a human_in_loop review
-    pause on an llm_agent step / retry-block producer (Phase 44). Propagates out
+    pause on an ai_agent step / retry-block producer (Phase 44). Propagates out
     of run_seam to the entrypoint body, which converts it into a clean
     status="aborted" return. All seams run before the commit line, so an abort
     never leaves a half-shipped state.
@@ -276,13 +276,13 @@ async def run_seam(
     """Run every injected step at `seam`, in declared order.
 
     A plain async helper (not a @task) so a pause — an approval_gate step, or an
-    llm_agent step with human_in_loop — can call interrupt(), which must run in
-    the entrypoint body. Script and llm_agent steps dispatch to their @tasks
-    (checkpointed); an llm_agent's review pause fires after its @task returns, so
+    ai_agent step with human_in_loop — can call interrupt(), which must run in
+    the entrypoint body. Script and ai_agent steps dispatch to their @tasks
+    (checkpointed); an ai_agent's review pause fires after its @task returns, so
     resume replays the cached result rather than re-running the agent. Cancel is
     checked before
     each step (between-step semantics, inherited from the spine). Each
-    llm_agent step's usage is accumulated under its own `id`.
+    ai_agent step's usage is accumulated under its own `id`.
 
     `attempt` distinguishes per-attempt checkpoint entries for seams that run
     inside the impl/QA retry loop (after_impl, after_qa); it is 0 for seams
@@ -311,8 +311,8 @@ async def run_seam(
         if isinstance(step, ScriptStep):
             step_task = _make_script_task(step.id)
             await step_task(step.id, step.path, step.timeout, repo_root, attempt)
-        elif isinstance(step, LlmAgentStep):
-            step_task = _make_llm_agent_task(step.id)
+        elif isinstance(step, AiAgentStep):
+            step_task = _make_ai_agent_task(step.id)
             result = await step_task(
                 step.id, step.agent, step.model, repo_root, plan_text, attempt
             )
@@ -323,7 +323,7 @@ async def run_seam(
                 # resume replays it instead of re-running) to let a human review
                 # the result. Same abort contract as an approval_gate step.
                 decision = interrupt({
-                    "kind": "step_llm_agent_review",
+                    "kind": "step_ai_agent_review",
                     "step_id": step.id,
                     "detail": result.detail,
                     "attempt": attempt,
@@ -352,13 +352,13 @@ async def _run_declared_retry_block(
     are resolved from manifest.defs and run via the SAME @task factories
     run_seam uses, so they inherit checkpoint/replay and per-attempt distinctness
     by call position. A gate's verdict is its StepResult.passed (script: exit
-    code; llm_agent: the emitted `passed`); on a retry, the failing gate's
-    feedback is injected into producer llm_agents.
+    code; ai_agent: the emitted `passed`); on a retry, the failing gate's
+    feedback is injected into producer ai_agents.
 
     A non-proceed outcome (gate never passed under on_exhausted="abort", or a
     human aborted under "approval_gate") raises StepError, aborting the run — seams
     are pre-commit, so nothing is half-shipped. Phase 44: if the block succeeds
-    and a producer llm_agent set human_in_loop, pause once for review of its
+    and a producer ai_agent set human_in_loop, pause once for review of its
     final output. interrupt() (for on_exhausted="approval_gate" and the success
     review) is reachable because this helper, like run_seam, runs in the
     entrypoint body.
@@ -375,8 +375,8 @@ async def _run_declared_retry_block(
         if isinstance(d, ScriptStep):
             step_task = _make_script_task(d.id)
             result = await step_task(d.id, d.path, d.timeout, repo_root)
-        else:  # LlmAgentStep — feedback is injected into its user message
-            step_task = _make_llm_agent_task(d.id)
+        else:  # AiAgentStep — feedback is injected into its user message
+            step_task = _make_ai_agent_task(d.id)
             result = await step_task(
                 d.id, d.agent, d.model, repo_root, plan_text, 0, feedback
             )
@@ -390,8 +390,8 @@ async def _run_declared_retry_block(
         if isinstance(d, ScriptStep):
             step_task = _make_script_task(d.id, as_gate=True)
             result = await step_task(d.id, d.path, d.timeout, repo_root)
-        else:  # LlmAgentStep gate — emits a `passed` verdict, runs read-only
-            step_task = _make_llm_agent_task(d.id, as_gate=True)
+        else:  # AiAgentStep gate — emits a `passed` verdict, runs read-only
+            step_task = _make_ai_agent_task(d.id, as_gate=True)
             result = await step_task(d.id, d.agent, d.model, repo_root, plan_text)
         if result.usage:
             usage_by_task.setdefault(d.id, []).append(result.usage)
@@ -419,7 +419,7 @@ async def _run_declared_retry_block(
         )
 
     # Phase 44: pause ONCE after the block SUCCEEDS (result.ok — a real gate
-    # pass, whether first try or after retries) if any producer llm_agent opted
+    # pass, whether first try or after retries) if any producer ai_agent opted
     # into human_in_loop, so a human can review the final, gate-passing output.
     # Intermediate failed attempts never pause; nor does an exhausted-but-proceed
     # block (result.ok is False there — on_exhausted governs that path). The flag
@@ -429,7 +429,7 @@ async def _run_declared_retry_block(
         reviewed = [
             pid
             for pid in block_step.produce
-            if isinstance(defs[pid], LlmAgentStep) and defs[pid].human_in_loop
+            if isinstance(defs[pid], AiAgentStep) and defs[pid].human_in_loop
         ]
         if reviewed:
             detail = "\n\n".join(
@@ -532,7 +532,7 @@ async def _run_implementation_producer(
         emit_tool_fields={"summary": str},
         result_factory=lambda c, u: StepResult(
             step_id="implementation",
-            kind="llm_agent",
+            kind="ai_agent",
             ok=True,
             detail=c.get("summary", "") or "",
             usage=u,
@@ -611,7 +611,7 @@ async def docs_task(
         emit_tool_fields={"summary": str},
         result_factory=lambda c, u: StepResult(
             step_id="docs",
-            kind="llm_agent",
+            kind="ai_agent",
             ok=True,
             detail=c.get("summary", "") or "",
             usage=u,
@@ -875,7 +875,7 @@ async def build_workflow(
                     # failure report becomes the feedback the engine injects.
                     return StepResult(
                         step_id="qa",
-                        kind="llm_agent",
+                        kind="ai_agent",
                         ok=True,
                         passed=(qa_result.result == "PASS"),
                         detail=qa_result.failures or "",

@@ -10,7 +10,7 @@ Two autouse fixtures keep the workflow tests hermetic:
 - _isolate_manifest makes load_manifest() return an EMPTY manifest by
   default, so the suite never depends on whatever pluggable steps happen
   to be configured in the real orchestrator.toml. Without it, enabling a
-  live llm_agent step in orchestrator.toml would make full-workflow tests
+  live ai_agent step in orchestrator.toml would make full-workflow tests
   spawn a real Claude agent at the before_commit seam (slow, flaky, and a
   network dependency). Tests that exercise specific steps (Phase 20/33)
   override this with their own monkeypatch inside the test, which runs
@@ -50,7 +50,7 @@ def _stub_docs_task(monkeypatch):
 
     async def _fake_docs_task(plan_text, model="claude-haiku-4-5-20251001"):
         return StepResult(
-            step_id="docs", kind="llm_agent", ok=True,
+            step_id="docs", kind="ai_agent", ok=True,
             detail="(docs stubbed in tests)", usage=None,
         )
 

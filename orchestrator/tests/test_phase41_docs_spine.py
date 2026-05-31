@@ -60,7 +60,7 @@ class _Stubs:
         return "feature/test"
 
     async def implementation_task(self, plan_text, feedback=None, model="claude-sonnet-4-6"):
-        return StepResult(step_id="implementation", kind="llm_agent", ok=True)
+        return StepResult(step_id="implementation", kind="ai_agent", ok=True)
 
     async def qa(self, plan, model="claude-sonnet-4-6") -> QaResult:
         return QaResult(result="PASS")
@@ -103,7 +103,7 @@ async def test_docs_task_runs_once_and_usage_recorded(monkeypatch, tmp_path):
     async def recording_docs(plan_text, model="claude-haiku-4-5-20251001"):
         calls.append((plan_text, model))
         return StepResult(
-            step_id="docs", kind="llm_agent", ok=True, detail="updated README.md",
+            step_id="docs", kind="ai_agent", ok=True, detail="updated README.md",
             usage=TaskUsage(model=model, input_tokens=10, output_tokens=5),
         )
 
