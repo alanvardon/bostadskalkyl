@@ -157,17 +157,17 @@ def _awaiting_approval(thread_id: str, result: dict, hint: str) -> dict:
 
     The interrupt's value dict is set by orchestrator/workflow.py at the
     interrupt() call site. Plan-approval interrupts carry "plan"; other
-    gates (branch/impl/pr approvals, Phase 33 human_gate steps) carry only
+    gates (branch/impl/pr approvals, Phase 33 approval_gate steps) carry only
     "kind" and "ask", so `plan` is read defensively.
     """
     interrupt_val = result["__interrupt__"][0].value
     kind = interrupt_val.get("kind")
-    # Phase 33 human_gate steps have their own resume contract: any reply
+    # Phase 33 approval_gate steps have their own resume contract: any reply
     # proceeds, the abort words stop the run. Override the (plan-centric)
     # caller hint so the chat surfaces that instead.
-    if kind == "step_human_gate":
+    if kind == "step_approval_gate":
         hint = (
-            "A pluggable human_gate step is asking for a decision (see `ask`). "
+            "A pluggable approval_gate step is asking for a decision (see `ask`). "
             "Call approve_plan with this thread_id and the user's reply: "
             "'abort' (or 'no'/'stop') stops the run cleanly; any other reply "
             "proceeds past the gate."

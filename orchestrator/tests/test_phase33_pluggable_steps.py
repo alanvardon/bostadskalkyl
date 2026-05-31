@@ -3,10 +3,10 @@
 Three layers, all LLM-free:
 - manifest: load/validate/hash + frontmatter stripping (pure).
 - execute_script: real tiny scripts (success / non-zero / timeout).
-- workflow integration: a human_gate seam fires mid-run and the workflow
+- workflow integration: a approval_gate seam fires mid-run and the workflow
   completes; a mid-run manifest edit refuses the resume.
 
-The llm_agent runner's agent loop needs a live model and is not exercised
+The ai_agent runner's agent loop needs a live model and is not exercised
 here; its non-LLM parts (agent-file resolution, frontmatter strip) are.
 """
 
@@ -19,8 +19,8 @@ from langgraph.types import Command
 from orchestrator.agents.planning import PlanResult
 from orchestrator.agents.qa import QaResult
 from orchestrator.manifest import (
-    HumanGateStep,
-    LlmAgentStep,
+    ApprovalGateStep,
+    AiAgentStep,
     ManifestError,
     ScriptStep,
     StepResult,
@@ -52,20 +52,20 @@ path = ".orchestrator/scripts/lint.sh"
 
 [[steps.after_qa]]
 id = "docs"
-type = "llm_agent"
+type = "ai_agent"
 agent = "docs"
 
 [[steps.after_qa]]
 id = "gate"
-type = "human_gate"
+type = "approval_gate"
 ask = "ok?"
 """,
     )
     m = load_manifest(project_root=tmp_path)
     assert isinstance(m.for_seam("before_plan")[0], ScriptStep)
     after = m.for_seam("after_qa")
-    assert isinstance(after[0], LlmAgentStep)
-    assert isinstance(after[1], HumanGateStep)
+    assert isinstance(after[0], AiAgentStep)
+    assert isinstance(after[1], ApprovalGateStep)
     assert after[1].ask == "ok?"
 
 
@@ -78,7 +78,7 @@ def test_no_steps_table_is_empty(tmp_path):
 def test_unknown_seam_raises(tmp_path):
     _write(
         tmp_path / "orchestrator.toml",
-        '[[steps.after_everything]]\nid="x"\ntype="human_gate"\n',
+        '[[steps.after_everything]]\nid="x"\ntype="approval_gate"\n',
     )
     with pytest.raises(ManifestError, match="unknown seam"):
         load_manifest(project_root=tmp_path)
@@ -90,11 +90,11 @@ def test_duplicate_id_raises(tmp_path):
         """
 [[steps.before_plan]]
 id = "dup"
-type = "human_gate"
+type = "approval_gate"
 
 [[steps.after_qa]]
 id = "dup"
-type = "human_gate"
+type = "approval_gate"
 """,
     )
     with pytest.raises(ManifestError, match="duplicate step id"):
@@ -113,21 +113,21 @@ def test_missing_script_raises(tmp_path):
 def test_unknown_agent_raises(tmp_path):
     _write(
         tmp_path / "orchestrator.toml",
-        '[[steps.after_qa]]\nid="docs"\ntype="llm_agent"\nagent="ghost"\n',
+        '[[steps.after_qa]]\nid="docs"\ntype="ai_agent"\nagent="ghost"\n',
     )
     with pytest.raises(ManifestError, match="agent file not found"):
         load_manifest(project_root=tmp_path)
 
 
 def test_manifest_hash_changes_with_steps():
-    a = WorkflowManifest(steps={"after_qa": [HumanGateStep(id="g", ask="a")]})
-    b = WorkflowManifest(steps={"after_qa": [HumanGateStep(id="g", ask="b")]})
+    a = WorkflowManifest(steps={"after_qa": [ApprovalGateStep(id="g", ask="a")]})
+    b = WorkflowManifest(steps={"after_qa": [ApprovalGateStep(id="g", ask="b")]})
     empty = WorkflowManifest()
     assert a.manifest_hash() != b.manifest_hash()
     assert a.manifest_hash() != empty.manifest_hash()
     # Stable across instances.
     assert a.manifest_hash() == WorkflowManifest(
-        steps={"after_qa": [HumanGateStep(id="g", ask="a")]}
+        steps={"after_qa": [ApprovalGateStep(id="g", ask="a")]}
     ).manifest_hash()
 
 
@@ -183,7 +183,7 @@ class _Stubs:
         return "feature/test"
 
     async def implementation_task(self, plan_text, feedback=None, model="claude-sonnet-4-6"):
-        return StepResult(step_id="implementation", kind="llm_agent", ok=True)
+        return StepResult(step_id="implementation", kind="ai_agent", ok=True)
 
     async def qa(self, plan, model="claude-sonnet-4-6") -> QaResult:
         return QaResult(result="PASS")
@@ -217,10 +217,10 @@ def _patch(stubs, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_human_gate_seam_fires_and_completes(monkeypatch, tmp_path):
+async def test_approval_gate_seam_fires_and_completes(monkeypatch, tmp_path):
     _patch(_Stubs(), monkeypatch)
     manifest = WorkflowManifest(
-        steps={"after_qa": [HumanGateStep(id="security_gate", ask="approve?")]}
+        steps={"after_qa": [ApprovalGateStep(id="security_gate", ask="approve?")]}
     )
     monkeypatch.setattr("orchestrator.workflow.load_manifest", lambda: manifest)
 
@@ -231,10 +231,10 @@ async def test_human_gate_seam_fires_and_completes(monkeypatch, tmp_path):
         result = await workflow.ainvoke("req", config=config)
         assert "__interrupt__" in result  # plan approval
 
-        # Approve the plan → runs through QA, then hits the human_gate seam.
+        # Approve the plan → runs through QA, then hits the approval_gate seam.
         result = await workflow.ainvoke(Command(resume="yes"), config=config)
         assert "__interrupt__" in result
-        assert result["__interrupt__"][0].value["kind"] == "step_human_gate"
+        assert result["__interrupt__"][0].value["kind"] == "step_approval_gate"
         assert result["__interrupt__"][0].value["step_id"] == "security_gate"
 
         # Acknowledge the gate → workflow finishes.
@@ -332,8 +332,8 @@ async def test_after_qa_fires_once_only_on_pass(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_human_gate_abort_stops_run(monkeypatch, tmp_path):
-    # Resuming a human_gate with an abort word stops the run cleanly:
+async def test_approval_gate_abort_stops_run(monkeypatch, tmp_path):
+    # Resuming a approval_gate with an abort word stops the run cleanly:
     # status="aborted", the offending step named, and NO commit.
     committed: list[str] = []
     stubs = _Stubs()
@@ -346,7 +346,7 @@ async def test_human_gate_abort_stops_run(monkeypatch, tmp_path):
     _patch(stubs, monkeypatch)
 
     manifest = WorkflowManifest(
-        steps={"after_qa": [HumanGateStep(id="signoff", ask="proceed?")]}
+        steps={"after_qa": [ApprovalGateStep(id="signoff", ask="proceed?")]}
     )
     monkeypatch.setattr("orchestrator.workflow.load_manifest", lambda: manifest)
 
@@ -356,7 +356,7 @@ async def test_human_gate_abort_stops_run(monkeypatch, tmp_path):
     async with build_workflow(db_path=str(tmp_path / "ckpt.db")) as workflow:
         result = await workflow.ainvoke("req", config=config)  # plan approval
         result = await workflow.ainvoke(Command(resume="yes"), config=config)
-        assert result["__interrupt__"][0].value["kind"] == "step_human_gate"
+        assert result["__interrupt__"][0].value["kind"] == "step_approval_gate"
 
         # Abort at the gate.
         result = await workflow.ainvoke(Command(resume="abort"), config=config)
@@ -366,15 +366,119 @@ async def test_human_gate_abort_stops_run(monkeypatch, tmp_path):
     assert committed == []  # gate runs before the commit line
 
 
+def _fake_ai_agent_task(calls: list[tuple[str, int]]):
+    """Stub _make_ai_agent_task: record (step_id, attempt), no live model.
+
+    Wraps the runner in task() exactly like the real factory, so the result is
+    checkpointed and REPLAYS on resume (rather than re-running) — letting the
+    test assert the agent runs once across an interrupt/resume.
+    """
+    from langgraph.func import task
+
+    def make(step_id, *, as_gate=False):
+        async def run(step_id, agent, model, repo_root, plan_text, attempt=0, feedback=None):
+            calls.append((step_id, attempt))
+            return StepResult(
+                step_id=step_id, kind="ai_agent", ok=True, detail="ran agent"
+            )
+
+        return task(run, name=f"step:{step_id}")
+
+    return make
+
+
+@pytest.mark.asyncio
+async def test_ai_agent_human_in_loop_pauses_then_proceeds(monkeypatch, tmp_path):
+    # An ai_agent step with human_in_loop pauses AFTER it runs, surfacing the
+    # agent's detail for review; resuming with a non-abort reply proceeds. The
+    # agent runs exactly once — resume replays the checkpointed @task, not re-run.
+    calls: list[tuple[str, int]] = []
+    _patch(_Stubs(), monkeypatch)
+    monkeypatch.setattr(
+        "orchestrator.workflow._make_ai_agent_task", _fake_ai_agent_task(calls)
+    )
+
+    manifest = WorkflowManifest(
+        steps={
+            "after_qa": [
+                AiAgentStep(id="review", agent="reviewer", human_in_loop=True)
+            ]
+        }
+    )
+    monkeypatch.setattr("orchestrator.workflow.load_manifest", lambda: manifest)
+
+    from orchestrator.workflow import build_workflow
+
+    config = {"configurable": {"thread_id": f"test-{uuid.uuid4().hex[:8]}"}}
+    async with build_workflow(db_path=str(tmp_path / "ckpt.db")) as workflow:
+        result = await workflow.ainvoke("req", config=config)  # plan approval
+        result = await workflow.ainvoke(Command(resume="yes"), config=config)
+        # After QA → the agent ran, then paused for review with its detail.
+        intr = result["__interrupt__"][0].value
+        assert intr["kind"] == "step_ai_agent_review"
+        assert intr["step_id"] == "review"
+        assert intr["detail"] == "ran agent"
+        # after_qa fires once, tagged with the attempt QA passed on (1-indexed).
+        assert calls == [("review", 1)]  # ran once, before the pause
+
+        # Proceed → workflow finishes; the agent is NOT re-run on resume.
+        result = await workflow.ainvoke(Command(resume="yes"), config=config)
+
+    assert result["status"] == "succeeded"
+    assert calls == [("review", 1)]
+
+
+@pytest.mark.asyncio
+async def test_ai_agent_human_in_loop_abort_stops_run(monkeypatch, tmp_path):
+    # Resuming the ai_agent review pause with an abort word stops the run
+    # cleanly (status="aborted", step named) with no commit.
+    calls: list[tuple[str, int]] = []
+    committed: list[str] = []
+    stubs = _Stubs()
+
+    def track_commit(branch, title, summary, base_branch="main"):
+        committed.append(branch)
+        return "abc123"
+
+    stubs.commit = track_commit
+    _patch(stubs, monkeypatch)
+    monkeypatch.setattr(
+        "orchestrator.workflow._make_ai_agent_task", _fake_ai_agent_task(calls)
+    )
+
+    manifest = WorkflowManifest(
+        steps={
+            "after_qa": [
+                AiAgentStep(id="review", agent="reviewer", human_in_loop=True)
+            ]
+        }
+    )
+    monkeypatch.setattr("orchestrator.workflow.load_manifest", lambda: manifest)
+
+    from orchestrator.workflow import build_workflow
+
+    config = {"configurable": {"thread_id": f"test-{uuid.uuid4().hex[:8]}"}}
+    async with build_workflow(db_path=str(tmp_path / "ckpt.db")) as workflow:
+        result = await workflow.ainvoke("req", config=config)  # plan approval
+        result = await workflow.ainvoke(Command(resume="yes"), config=config)
+        assert result["__interrupt__"][0].value["kind"] == "step_ai_agent_review"
+
+        result = await workflow.ainvoke(Command(resume="no"), config=config)
+
+    assert result["status"] == "aborted"
+    assert result["aborted_at"] == "review"
+    assert committed == []  # review pause runs before the commit line
+
+
 @pytest.mark.asyncio
 async def test_manifest_change_mid_run_refuses_resume(monkeypatch, tmp_path):
     _patch(_Stubs(), monkeypatch)
 
     manifest_a = WorkflowManifest(
-        steps={"after_qa": [HumanGateStep(id="g", ask="v1")]}
+        steps={"after_qa": [ApprovalGateStep(id="g", ask="v1")]}
     )
     manifest_b = WorkflowManifest(
-        steps={"after_qa": [HumanGateStep(id="g", ask="v2-changed")]}
+        steps={"after_qa": [ApprovalGateStep(id="g", ask="v2-changed")]}
     )
     state = {"current": manifest_a}
     monkeypatch.setattr(

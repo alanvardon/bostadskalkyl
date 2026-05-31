@@ -124,7 +124,7 @@ class _Stubs:
 
     async def implementation_task(self, plan_text, feedback=None, model="claude-sonnet-4-6"):
         self.implement_called = True
-        return StepResult(step_id="implementation", kind="llm_agent", ok=True)
+        return StepResult(step_id="implementation", kind="ai_agent", ok=True)
 
     async def qa(self, plan, model="claude-sonnet-4-6") -> QaResult:
         self.qa_called = True

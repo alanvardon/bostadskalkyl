@@ -104,7 +104,7 @@ def test_steps_table_does_not_break_config(tmp_path):
         'default_model = "claude-sonnet-4-6"\n'
         "[[steps.before_plan]]\n"
         'id = "x"\n'
-        'type = "human_gate"\n'
+        'type = "approval_gate"\n'
     )
     cfg = load_config(p)
     assert cfg.default_model == "claude-sonnet-4-6"

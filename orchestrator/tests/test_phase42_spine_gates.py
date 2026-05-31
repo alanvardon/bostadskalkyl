@@ -1,7 +1,7 @@
-"""Phase 42 Part B — the built-in retry block's human gates.
+"""Phase 42 Part B — the built-in retry block's approval gates.
 
 After the impl→QA loop moved onto the generic retry engine, the two optional
-human gates that used to be inline in the loop are now *injected closures*:
+approval gates that used to be inline in the loop are now *injected closures*:
 
 - ``on_producers_done`` → the ``implementation_approval`` interrupt (fires after
   the producer, before QA), gated by ``workflow.implementation.human_in_loop``.
@@ -46,7 +46,7 @@ class _Stubs:
 
     async def implementation_task(self, plan_text, feedback=None, model="claude-sonnet-4-6") -> StepResult:
         self.impl_calls.append(feedback)
-        return StepResult(step_id="implementation", kind="llm_agent", ok=True)
+        return StepResult(step_id="implementation", kind="ai_agent", ok=True)
 
     async def qa(self, plan, model="claude-sonnet-4-6") -> QaResult:
         verdict = self.qa_verdicts[self.qa_call_count]

@@ -19,13 +19,13 @@ TOML shape (everything optional; no [steps] table = no injected steps):
 
     [[steps.after_qa]]
     id    = "docs"
-    type  = "llm_agent"
+    type  = "ai_agent"
     agent = "docs"            # → .orchestrator/agents/docs.md
     model = "claude-sonnet-4-6"
 
     [[steps.after_qa]]
     id   = "security_gate"
-    type = "human_gate"
+    type = "approval_gate"
     ask  = "QA passed. Approve security posture before commit?"
 
 Phase 42 — a `retry` block: re-run producer(s) until gate(s) pass (or the
@@ -38,10 +38,10 @@ producer attempt. produce/gate reference definitions under [steps.defs.*]:
     produce      = ["lint-fix"]      # ids defined in [steps.defs.*]
     gate         = ["lint-check"]    # gate verdict = script exit / agent `passed`
     max_retries  = 3
-    on_exhausted = "abort"           # abort | human_gate | proceed
+    on_exhausted = "abort"           # abort | approval_gate | proceed
 
     [steps.defs.lint-fix]
-    type  = "llm_agent"
+    type  = "ai_agent"
     agent = "lint-fixer"
 
     [steps.defs.lint-check]
@@ -100,16 +100,25 @@ class ScriptStep(_BaseStep):
     timeout: int = 60
 
 
-class HumanGateStep(_BaseStep):
-    type: Literal["human_gate"] = "human_gate"
+class ApprovalGateStep(_BaseStep):
+    type: Literal["approval_gate"] = "approval_gate"
     ask: str = "Proceed?"
 
 
-class LlmAgentStep(_BaseStep):
-    type: Literal["llm_agent"] = "llm_agent"
+class AiAgentStep(_BaseStep):
+    type: Literal["ai_agent"] = "ai_agent"
     # Resolves to .orchestrator/agents/<agent>.md (the system prompt).
     agent: str
     model: str = "claude-sonnet-4-6"
+    # When true, pause AFTER the agent runs (before the workflow continues) so a
+    # human can inspect what it produced. Same reply contract as approval_gate: an
+    # abort word ('abort'/'no'/'stop') stops the run; anything else proceeds.
+    # For an agent placed directly at a seam the pause fires right after it runs.
+    # For a [steps.defs.*] agent used as a retry-block PRODUCER it fires once,
+    # after the block succeeds (the gate passed) — not on intermediate failed
+    # attempts, and not if the block exhausts its budget. Ignored on a retry-block
+    # gate (a read-only judge run every attempt).
+    human_in_loop: bool = False
 
 
 class RetryBlockStep(_BaseStep):
@@ -127,24 +136,24 @@ class RetryBlockStep(_BaseStep):
     produce: list[str]
     gate: list[str]
     max_retries: int = Field(default=3, ge=1)
-    on_exhausted: Literal["abort", "human_gate", "proceed"] = "abort"
+    on_exhausted: Literal["abort", "approval_gate", "proceed"] = "abort"
 
 
 # Steps that can be INJECTED at a seam (a retry block is one of them).
 Step = Annotated[
-    Union[ScriptStep, HumanGateStep, LlmAgentStep, RetryBlockStep],
+    Union[ScriptStep, ApprovalGateStep, AiAgentStep, RetryBlockStep],
     Field(discriminator="type"),
 ]
 _STEP_ADAPTER: TypeAdapter = TypeAdapter(Step)
 
 # Steps that can be DEFINED under [steps.defs.*] and referenced by a retry block
 # as a producer or gate. Only executable mutator/checker steps qualify — a
-# human_gate is a pause, not a producer or gate, so it's excluded; and a retry
+# approval_gate is a pause, not a producer or gate, so it's excluded; and a retry
 # block can't reference another block. Both variants are gate-capable: a script
-# gate's verdict is its exit code, and an llm_agent gate is run with a
-# `passed`-emitting tool at execution time (see steps.execute_llm_agent).
+# gate's verdict is its exit code, and an ai_agent gate is run with a
+# `passed`-emitting tool at execution time (see steps.execute_ai_agent).
 StepDef = Annotated[
-    Union[ScriptStep, LlmAgentStep],
+    Union[ScriptStep, AiAgentStep],
     Field(discriminator="type"),
 ]
 _STEPDEF_ADAPTER: TypeAdapter = TypeAdapter(StepDef)
@@ -220,7 +229,7 @@ def _agent_file(
 def _validate_retry_block(step: RetryBlockStep, defs: dict[str, StepDef]) -> None:
     """Validate a retry block's references against [steps.defs.*] (Phase 42).
 
-    max_retries (>= 1) and on_exhausted (the abort/human_gate/proceed enum) are
+    max_retries (>= 1) and on_exhausted (the abort/approval_gate/proceed enum) are
     already enforced by the Pydantic model; this covers the cross-references.
     """
     if not step.produce:
@@ -245,9 +254,9 @@ def _validate_retry_block(step: RetryBlockStep, defs: dict[str, StepDef]) -> Non
                 f"retry block {step.id!r}: references unknown step def {rid!r}. "
                 f"Define it under [steps.defs.{rid}]."
             )
-    # Gate-capability: defs are restricted to script | llm_agent (StepDef
-    # excludes human_gate), and both are gate-capable — a script gate's verdict
-    # is its exit code; an llm_agent gate is run with a `passed`-emitting tool.
+    # Gate-capability: defs are restricted to script | ai_agent (StepDef
+    # excludes approval_gate), and both are gate-capable — a script gate's verdict
+    # is its exit code; an ai_agent gate is run with a `passed`-emitting tool.
     # So a referenced gate id is always gate-capable; no further check needed.
 
 
@@ -323,7 +332,7 @@ def load_manifest(
                         f"step def {def_id!r}: script not found at "
                         f"{definition.path!r}."
                     )
-            elif isinstance(definition, LlmAgentStep):
+            elif isinstance(definition, AiAgentStep):
                 if not _agent_file(project_root, definition.agent, agents_dir).exists():
                     raise ManifestError(
                         f"step def {def_id!r}: agent file not found at "
@@ -364,7 +373,7 @@ def load_manifest(
                     raise ManifestError(
                         f"step {step.id!r}: script not found at {step.path!r}."
                     )
-            elif isinstance(step, LlmAgentStep):
+            elif isinstance(step, AiAgentStep):
                 if not _agent_file(project_root, step.agent, agents_dir).exists():
                     raise ManifestError(
                         f"step {step.id!r}: agent file not found at "

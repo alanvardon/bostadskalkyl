@@ -348,7 +348,7 @@ async def run() -> None:
                     print(plan["plan_text"])
                 else:
                     # A non-plan gate (branch/impl/pr approval, or a Phase 33
-                    # human_gate step): just show the prompt.
+                    # approval_gate step): just show the prompt.
                     kind = interrupt_val.get("kind", "approval")
                     print(f"\n--- {kind} (thread_id: {thread_id}) ---")
                 print("\n" + interrupt_val.get("ask", "Proceed? Reply 'yes'."))
@@ -365,10 +365,10 @@ async def run() -> None:
                 _print_qa_failure(result, thread_id)
                 sys.exit(1)
             elif status == "aborted":
-                # Phase 33: a human_gate step was resumed with an abort.
+                # Phase 33: an approval_gate step was resumed with an abort.
                 print()
                 print(_RULE)
-                print(f"Workflow aborted at human gate: {result.get('aborted_at')}")
+                print(f"Workflow aborted at approval gate: {result.get('aborted_at')}")
                 print(_RULE)
                 print(f"  thread_id: {thread_id}")
                 print("Nothing was committed (gates run before the commit line).")
