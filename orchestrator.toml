@@ -73,6 +73,12 @@ timeout       = 120
 [workflow.commit]
 human_in_loop = false    # pause after QA PASS, before commit + PR is opened
 
+[git]
+# Before pushing, rebase the feature branch onto origin/<base_branch> if it
+# moved since the branch was created (Phase 22). false = push without rebasing
+# (a rebase conflict otherwise surfaces as a user-action-required error).
+auto_rebase = true
+
 [pr]
 # Base branch the PR targets.
 base_branch = "main"
@@ -82,6 +88,13 @@ draft = false
 reviewers = []
 # Note: the PR label is auto-applied from the plan type (feature → "feature",
 # fix → "bug", refactor → "refactor", chore → "chore"). There is no `labels` key.
+
+[audit]
+# Append a JSONL audit event (stage start/end, interrupt, resume, cancel) to
+# log_path for each run. Set enabled = false to disable the audit log entirely.
+enabled         = true
+log_path        = ".orchestrator/audit.log"
+include_content = false   # if true, also log prompt/result content (verbose)
 
 # ---------------------------------------------------------------------------
 # Pluggable steps (Phase 33)
@@ -102,10 +115,16 @@ reviewers = []
 #   human_gate  — pause for a decision: reply 'abort' (or 'no'/'stop') to stop
 #                 the run, any other reply to proceed
 #   llm_agent   — run a markdown agent at <agents_dir>/<agent>.md
+#   retry       — re-run producer step(s) until gate step(s) pass, injecting the
+#                 failing gate's feedback into the next attempt (Phase 42). The
+#                 producer/gate steps are defined in a [steps.defs.*] table and
+#                 referenced by id. See orchestrator.example.toml for the fully
+#                 commented `lint-loop` worked example and the gate contract.
 #
 # `id` is the step's resume identity — don't rename it mid-run. The manifest
 # is validated at load time (unknown seam, duplicate id, missing script,
-# unknown agent) and snapshotted per run: editing it mid-run refuses resume.
+# unknown agent, and — for retry blocks — unresolved produce/gate references)
+# and snapshotted per run: editing it mid-run refuses resume.
 #
 # Examples (uncomment and provide the referenced files to enable):
 #
@@ -127,10 +146,17 @@ reviewers = []
 # ask  = "QA passed. Approve security posture before commit?"
 # ---------------------------------------------------------------------------
 
-# --- Documentation agent: now a built-in spine task (Phase 41) ----------------
+# --- Built-in spine agents: docs (Phase 41) + summarizer (Phase 42) -----------
 # The docs agent used to be a live [[steps.before_commit]] step here. It is now
-# a permanent part of the workflow spine — its prompt ships in the package at
-# orchestrator/orchestrator/agents/docs.md (tracked) and it runs automatically
-# on every run, no [steps.*] entry required. Configure it under [workflow.docs]
-# above (model defaults to haiku; switch to sonnet for richer doc generation).
+# a permanent part of the workflow spine, and Phase 42 added a sibling
+# summarizer (it derives the commit/PR summary + test plan from the diff after
+# QA passes). Both run automatically on every run — no [steps.*] entry required
+# — and their prompts ship in the package at orchestrator/orchestrator/prompts/
+# docs.md and summarize.md (tracked), loaded via the same loader as
+# planning/implementation/qa. Configure them under [workflow.docs] and
+# [workflow.summarize] above.
+#
+# To customise either prompt, drop your own .orchestrator/prompts/docs.md or
+# .orchestrator/prompts/summarize.md in the repo — load_prompt prefers that
+# override over the packaged default (same mechanism as the other agents).
 # The before_commit seam remains open for your own pluggable steps.
