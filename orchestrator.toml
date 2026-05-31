@@ -62,6 +62,14 @@ max_retries      = 3      # implementation+QA loop attempts before giving up
 model   = "claude-haiku-4-5-20251001"
 timeout = 120
 
+[workflow.summarize]
+# Baked-in summarizer (Phase 42). After QA passes, it reads the plan + `git diff
+# HEAD` and produces the commit/PR summary + test plan. Read-only (Bash for the
+# diff, no Edit/Write). Haiku by default — a cheap read-the-diff task.
+model         = "claude-haiku-4-5-20251001"
+allowed_tools = ["Read", "Bash", "Grep"]
+timeout       = 120
+
 [workflow.commit]
 human_in_loop = false    # pause after QA PASS, before commit + PR is opened
 

@@ -28,7 +28,14 @@ logger = logging.getLogger(__name__)
 # the body is a control-flow change, so the bump refuses resume of any run
 # created before Phase 41 (clean version error) rather than resuming into a
 # task graph that lacks the docs step.
-WORKFLOW_VERSION = "1.2.0"
+# 1.2.0 → 1.3.0 (Phase 42): the hand-written impl↔QA retry loop is replaced by
+# the generic retry engine (retry_block.run_retry_block), implementation is now
+# a generic producer @task (no ImplementationResult), and a new summarize_task
+# runs after the block to derive the commit/PR summary + test_plan from the diff.
+# New/removed task names and changed control flow = a body change, so the bump
+# refuses resume of any run created before Phase 42 rather than resuming into a
+# shifted task graph.
+WORKFLOW_VERSION = "1.3.0"
 
 
 from orchestrator.errors import FatalError
@@ -90,9 +97,11 @@ from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.config import get_config
 
 from orchestrator.agents.planning import plan, PlanResult
-from orchestrator.agents.implementation import implement, ImplementationResult
 from orchestrator.agents.qa import qa, QaResult
+from orchestrator.agents.summarize import summarize, SummaryResult
 from orchestrator.agents.runner import run_structured_agent
+from orchestrator.prompt_loader import load_prompt
+from orchestrator.retry_block import RetryBlock, feedback_section, run_retry_block
 from orchestrator.audit import AuditSink, NoopAuditSink, audited, build_sink, emit_event
 from orchestrator.cancellation import WorkflowCancelled, raise_if_cancelled
 from orchestrator.config import OrchestratorConfig, load_config
@@ -119,9 +128,9 @@ from orchestrator.paths import find_project_root
 from orchestrator.pre_hooks import run_pre_hooks
 from orchestrator.run_artifacts import (
     rename_with_branch,
-    write_implementation,
     write_plan,
     write_qa,
+    write_summary,
     write_usage,
 )
 
@@ -132,7 +141,10 @@ from orchestrator.run_artifacts import (
 # across upgrades. Each entry is (module_path, class_name).
 _ALLOWED_MSGPACK_MODULES = [
     ("orchestrator.agents.planning", "PlanResult"),
-    ("orchestrator.agents.implementation", "ImplementationResult"),
+    # Phase 42: ImplementationResult is gone — implementation is now a generic
+    # producer returning StepResult; SummaryResult (the relocated commit/PR
+    # summary + test_plan) takes its slot. QaResult stays (QA is hard-baked).
+    ("orchestrator.agents.summarize", "SummaryResult"),
     ("orchestrator.agents.qa", "QaResult"),
     ("orchestrator.usage", "TaskUsage"),
     # Phase 33: one registered type for ALL injected steps, so the allowlist
@@ -335,21 +347,68 @@ async def create_branch_task(
     return await asyncio.to_thread(create_branch, plan_result, max_slug_length, thread_id)
 
 
-# Phase 6b. Runs the implementation agent (Claude Agent SDK in a loop)
-# to edit files according to the plan. The function body is short
-# because all the heavy lifting is inside implement() — the @task
-# wrapper exists so LangGraph can checkpoint the ImplementationResult
-# and skip re-running on resume. Implementation is the most expensive
-# task by far (minutes of LLM time, real file edits), so resume-skip
-# is the single biggest cost win the checkpointer gives us.
+# Phase 6b / Phase 42. Runs the implementation agent (Claude Agent SDK in a
+# loop) to edit files according to the plan. It is now a GENERIC retry-block
+# producer: it emits a plain StepResult (its `detail` is ignored downstream),
+# and the commit/PR summary + test_plan are produced separately by
+# summarize_task. The old implement()/ImplementationResult and the
+# implement/"fix" mode switch are gone — on a retry the failing gate's feedback
+# arrives via `feedback`, appended to the user message under a standard heading
+# (feedback_section). Implementation is the most expensive task by far (minutes
+# of LLM time, real file edits), so the @task wrapper's resume-skip is the
+# single biggest cost win the checkpointer gives us.
+async def _run_implementation_producer(
+    plan_text: str, feedback: str | None, model: str
+) -> StepResult:
+    """The implementation agent invocation, factored out of implementation_task.
+
+    Keeping it separate lets the @task wrapper stay a pure checkpoint boundary:
+    on resume the @task replays its cached StepResult and this expensive agent
+    call is skipped. (It is also the seam tests fake when they resume mid-loop,
+    so the real @task's replay semantics stay under test — the same role the old
+    implement() played before Phase 42.)
+    """
+    _impl = load_config().workflow.implementation  # Phase 40: [workflow.implementation]
+    parts = ["## Plan", "", plan_text]
+    if feedback:
+        # Phase 42: replaces mode="fix" + qa_failures. The producer formats the
+        # raw gate detail via the engine's standard helper.
+        parts += ["", feedback_section(feedback)]
+    return await run_structured_agent(
+        system_prompt=load_prompt("implementation"),
+        user_message="\n".join(parts),
+        model=model,
+        # File-editing tools from [workflow.implementation]. No Git, no commit,
+        # no PR tools — the orchestrator owns those entirely.
+        allowed_tools=_impl.allowed_tools,
+        disallowed_tools=_impl.disallowed_tools,
+        # cwd must be the target repo root — the agent edits files there.
+        cwd=find_project_root(),
+        timeout=_impl.timeout,
+        emit_tool_name="emit_step_result",
+        emit_tool_description=(
+            "Emit the final result of this step. Call exactly once when the work "
+            "is complete, with a one-line `summary` of what you changed. After "
+            "calling, stop — the orchestrator takes over."
+        ),
+        emit_tool_fields={"summary": str},
+        result_factory=lambda c, u: StepResult(
+            step_id="implementation",
+            kind="llm_agent",
+            ok=True,
+            detail=c.get("summary", "") or "",
+            usage=u,
+        ),
+    )
+
+
 @task
 async def implementation_task(
-    plan_result: PlanResult,
-    mode: str = "implement",
-    qa_failures: str | None = None,
+    plan_text: str,
+    feedback: str | None = None,
     model: str = "claude-sonnet-4-6",
-) -> ImplementationResult:
-    return await implement(plan_result, mode=mode, qa_failures=qa_failures, model=model)
+) -> StepResult:
+    return await _run_implementation_producer(plan_text, feedback, model)
 
 
 # Phase 6c. Read-only LLM task: the QA agent reviews the uncommitted
@@ -363,6 +422,19 @@ async def qa_task(
     plan_result: PlanResult, model: str = "claude-sonnet-4-6"
 ) -> QaResult:
     return await qa(plan_result, model=model)
+
+
+# Phase 42: the summarizer. Runs ONCE after the impl→QA retry block passes,
+# before commit. Reads the plan + `git diff HEAD` and emits the commit/PR
+# summary + test_plan — the structured output that used to live on
+# ImplementationResult, relocated to a read-only post-loop @task so the
+# implementation producer could become generic. Its SummaryResult is
+# checkpointed (on the serde allowlist), so a crash before commit replays it.
+@task
+async def summarize_task(
+    plan_text: str, model: str = "claude-haiku-4-5-20251001"
+) -> SummaryResult:
+    return await summarize(plan_text, model)
 
 
 # Phase 41: documentation agent, now a permanent spine task (was a pluggable
@@ -531,6 +603,7 @@ async def build_workflow(
                 "planning": [],
                 "implementation": [],
                 "qa": [],
+                "summarize": [],
                 "docs": [],
             }
 
@@ -633,46 +706,33 @@ async def build_workflow(
                     )
                 rename_with_branch(thread_id, branch_name)
 
-                # Phase 7: retry loop. Up to config.workflow.qa.max_retries attempts: first
-                # is always "implement" (fresh execution); subsequent attempts
-                # are "fix" mode, passing qa_failures so the agent knows exactly
-                # what to correct without re-doing passing work.
+                # Phase 42: the impl→QA retry loop is now the first consumer of
+                # the generic retry engine (retry_block.run_retry_block). The
+                # implementation step is a *generic* producer; QA stays
+                # HARD-BAKED — _run_gate calls the existing qa() and adapts its
+                # QaResult into the gate verdict, so QaResult / write_qa / the
+                # "qa" output key are untouched. The producer/gate callables and
+                # the per-attempt human gates are injected here (not baked into
+                # the engine) because they call interrupt(), which must run in
+                # the entrypoint body.
                 #
-                # Python's for/else: the `else` block runs only if the loop
-                # exhausted all attempts WITHOUT hitting `break`. A `break`
-                # means QA passed — the else block (failure path) is skipped.
-                qa_failures: str | None = None
-                impl_result = None
-                for attempt in range(1, config.workflow.qa.max_retries + 1):
-                    _check_cancel()
-                    mode = "implement" if attempt == 1 else "fix"
+                # The gate verdict is replayed from the checkpointed QaResult on
+                # resume (qa_task is a @task); _qa_holder stashes the passing
+                # verdict for the success result dict.
+                _qa_holder: dict[str, QaResult] = {}
+
+                async def _run_producer(step_id: str, feedback: str | None) -> StepResult:
                     async with audited(_audit, thread_id, "implementation"):
-                        impl_result = await implementation_task(
-                            plan_result,
-                            mode=mode,
-                            qa_failures=qa_failures,
-                            model=config.resolved_model(config.workflow.implementation),
+                        result = await implementation_task(
+                            plan_result.plan_text,
+                            feedback,
+                            config.resolved_model(config.workflow.implementation),
                         )
-                    if impl_result.usage:
-                        usage_by_task["implementation"].append(impl_result.usage)
-                    write_implementation(thread_id, impl_result)
+                    if result.usage:
+                        usage_by_task["implementation"].append(result.usage)
+                    return result
 
-                    # Phase 33 seam: after_impl — fires on EVERY attempt, since
-                    # each attempt produces freshly changed code. `attempt`
-                    # keeps each run a distinct checkpoint entry.
-                    await run_seam(
-                        "after_impl", manifest, plan_result.plan_text,
-                        _check_cancel, usage_by_task, attempt,
-                    )
-
-                    if config.workflow.implementation.human_in_loop:
-                        emit_event(_audit, thread_id, "interrupt", payload={"kind": "implementation_approval"})
-                        interrupt({
-                            "kind": "implementation_approval",
-                            "ask": "Implementation complete. Proceed to QA?",
-                        })
-
-                    _check_cancel()
+                async def _run_gate(step_id: str) -> StepResult:
                     async with audited(_audit, thread_id, "qa"):
                         qa_result = await qa_task(
                             plan_result, config.resolved_model(config.workflow.qa)
@@ -680,60 +740,99 @@ async def build_workflow(
                     if qa_result.usage:
                         usage_by_task["qa"].append(qa_result.usage)
                     write_qa(thread_id, qa_result)
+                    _qa_holder["qa"] = qa_result
+                    # Adapt the hard-baked QA verdict into the generic gate
+                    # contract: PASS → passed=True; FAIL → passed=False + the
+                    # failure report becomes the feedback the engine injects.
+                    return StepResult(
+                        step_id="qa",
+                        kind="llm_agent",
+                        ok=True,
+                        passed=(qa_result.result == "PASS"),
+                        detail=qa_result.failures or "",
+                    )
 
-                    if qa_result.result == "PASS":
-                        # Phase 33 seam: after_qa — fires ONCE, only after QA
-                        # has passed and is finished (not on failed attempts).
-                        # `attempt` is the passing attempt number.
-                        await run_seam(
-                            "after_qa", manifest, plan_result.plan_text,
-                            _check_cancel, usage_by_task, attempt,
-                        )
-                        break
+                async def _on_producers_done(attempt: int) -> None:
+                    # Phase 33 seam: after_impl — fires on EVERY attempt (each
+                    # produces freshly changed code); `attempt` keeps each run a
+                    # distinct checkpoint entry. Then the optional impl→QA gate.
+                    await run_seam(
+                        "after_impl", manifest, plan_result.plan_text,
+                        _check_cancel, usage_by_task, attempt,
+                    )
+                    if config.workflow.implementation.human_in_loop:
+                        emit_event(_audit, thread_id, "interrupt", payload={"kind": "implementation_approval"})
+                        interrupt({
+                            "kind": "implementation_approval",
+                            "ask": "Implementation complete. Proceed to QA?",
+                        })
 
+                async def _on_gate_failed(attempt: int, feedback: str) -> bool:
                     # Log QA failure at ERROR level so scripted-gate failures
                     # (Phase 28) and LLM failures are both visible in the log.
                     logger.error(
                         "QA FAIL (attempt %d/%d):\n%s",
                         attempt,
                         config.workflow.qa.max_retries,
-                        qa_result.failures or "(no failure details)",
+                        feedback or "(no failure details)",
                     )
-
                     # Phase 13: optional gate on QA failure — user can abort
                     # rather than burning another retry attempt.
                     if config.workflow.qa.human_in_loop:
                         emit_event(_audit, thread_id, "interrupt", payload={"kind": "qa_failure"})
                         decision = interrupt({
                             "kind": "qa_failure",
-                            "failures": qa_result.failures,
+                            "failures": feedback,
                             "ask": (
                                 f"QA FAIL (attempt {attempt}/{config.workflow.qa.max_retries}). "
                                 "Retry? Reply 'yes' or 'abort'."
                             ),
                         })
                         if decision == "abort":
-                            _usage = aggregate_usage(usage_by_task)
-                            write_usage(thread_id, _usage)
-                            return {
-                                "status": "failed",
-                                "plan": plan_result.model_dump(),
-                                "branch": branch_name,
-                                "qa_failures": qa_result.failures,
-                                "usage": _usage,
-                            }
+                            return False  # stop now; don't spend another attempt
+                    return True
 
-                    qa_failures = qa_result.failures
-                else:
+                # on_exhausted is hard-locked to "abort" for the built-in block:
+                # committing code that FAILED QA must never be reachable from
+                # config (the engine's "proceed" policy is for user-declared
+                # blocks only). Exhausting the budget = a failed run, exactly as
+                # before Phase 42. The per-failure human gate is _on_gate_failed.
+                _block = RetryBlock(
+                    producers=["implementation"],
+                    gates=["qa"],
+                    max_retries=config.workflow.qa.max_retries,
+                    on_exhausted="abort",
+                )
+                block_result = await run_retry_block(
+                    block=_block,
+                    run_producer=_run_producer,
+                    run_gate=_run_gate,
+                    check_cancel=_check_cancel,
+                    on_producers_done=_on_producers_done,
+                    on_gate_failed=_on_gate_failed,
+                )
+
+                if not block_result.proceed:
+                    # QA never passed (human abort or exhausted budget). No
+                    # commit, no PR — a broken PR is worse than no PR.
                     _usage = aggregate_usage(usage_by_task)
                     write_usage(thread_id, _usage)
                     return {
                         "status": "failed",
                         "plan": plan_result.model_dump(),
                         "branch": branch_name,
-                        "qa_failures": qa_failures,
+                        "qa_failures": block_result.last_feedback,
                         "usage": _usage,
                     }
+
+                qa_result = _qa_holder["qa"]  # the passing verdict
+
+                # Phase 33 seam: after_qa — fires ONCE, only after QA has passed.
+                # block_result.attempts is the passing attempt number.
+                await run_seam(
+                    "after_qa", manifest, plan_result.plan_text,
+                    _check_cancel, usage_by_task, block_result.attempts,
+                )
 
                 # Phase 13: optional gate before committing and opening PR.
                 if config.workflow.commit.human_in_loop:
@@ -742,6 +841,20 @@ async def build_workflow(
                         "kind": "pr_approval",
                         "ask": "QA passed. Open a PR?",
                     })
+
+                # Phase 42: summarizer — runs once on the QA-passed tree and
+                # derives the commit/PR summary + test_plan from the plan + diff
+                # (replacing implementation's old self-report). Read-only, so
+                # cancel is still safe here (nothing committed yet).
+                _check_cancel()
+                async with audited(_audit, thread_id, "summarize"):
+                    summary_result = await summarize_task(
+                        plan_result.plan_text,
+                        config.resolved_model(config.workflow.summarize),
+                    )
+                if summary_result.usage:
+                    usage_by_task["summarize"].append(summary_result.usage)
+                write_summary(thread_id, summary_result)
 
                 # Phase 33 seam: before_commit (last chance before the spine
                 # commits — still before the commit line, so cancel-safe).
@@ -777,7 +890,7 @@ async def build_workflow(
                 _check_cancel()
                 async with audited(_audit, thread_id, "commit"):
                     sha = await commit_task(
-                        branch_name, plan_result.title, impl_result.summary,
+                        branch_name, plan_result.title, summary_result.summary,
                         config.pr.base_branch,
                     )
                 async with audited(_audit, thread_id, "push"):
@@ -786,8 +899,8 @@ async def build_workflow(
                     pr_url = await pr_create_task(
                         branch_name,
                         plan_result.title,
-                        impl_result.summary,
-                        impl_result.test_plan,
+                        summary_result.summary,
+                        summary_result.test_plan,
                         sha,
                         config.pr.base_branch,
                         config.pr.draft,
@@ -800,7 +913,12 @@ async def build_workflow(
                     "status": "succeeded",
                     "plan": plan_result.model_dump(),
                     "branch": branch_name,
-                    "implementation": impl_result.model_dump(),
+                    # Assembled from the summarizer (was impl_result.model_dump());
+                    # the {summary, test_plan} shape is unchanged for MCP/UI/tests.
+                    "implementation": {
+                        "summary": summary_result.summary,
+                        "test_plan": summary_result.test_plan,
+                    },
                     "qa": qa_result.model_dump(),
                     "pr_url": pr_url,
                     "usage": _usage,

@@ -204,7 +204,7 @@ def test_git_config_toml_false(tmp_path):
 # MCP server: rebase conflict surfaces as user_action_required
 # ---------------------------------------------------------------------------
 
-from orchestrator.agents.implementation import ImplementationResult
+from orchestrator.manifest import StepResult
 from orchestrator.agents.planning import PlanResult
 from orchestrator.agents.qa import QaResult
 
@@ -222,8 +222,8 @@ class _BaseStubs:
     def create_branch(self, plan, max_slug_length=50, thread_id="") -> str:
         return "feature/test"
 
-    async def implement(self, plan, mode="implement", qa_failures=None, model="claude-sonnet-4-6"):
-        return ImplementationResult(summary="s", test_plan="tp")
+    async def implementation_task(self, plan_text, feedback=None, model="claude-sonnet-4-6"):
+        return StepResult(step_id="implementation", kind="llm_agent", ok=True)
 
     async def qa(self, plan, model="claude-sonnet-4-6") -> QaResult:
         return QaResult(result="PASS")
@@ -243,7 +243,7 @@ def _patch(stubs, monkeypatch, tmp_path):
     monkeypatch.setattr("orchestrator.workflow.ensure_on_main", stubs.ensure_on_main)
     monkeypatch.setattr("orchestrator.workflow.plan", stubs.plan)
     monkeypatch.setattr("orchestrator.workflow.create_branch", stubs.create_branch)
-    monkeypatch.setattr("orchestrator.workflow.implement", stubs.implement)
+    monkeypatch.setattr("orchestrator.workflow.implementation_task", stubs.implementation_task)
     monkeypatch.setattr("orchestrator.workflow.qa", stubs.qa)
     monkeypatch.setattr("orchestrator.workflow.commit", stubs.commit)
     monkeypatch.setattr("orchestrator.workflow.push", stubs.push)

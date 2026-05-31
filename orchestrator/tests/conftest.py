@@ -55,3 +55,22 @@ def _stub_docs_task(monkeypatch):
         )
 
     monkeypatch.setattr("orchestrator.workflow.docs_task", _fake_docs_task)
+
+
+@pytest.fixture(autouse=True)
+def _stub_summarize_task(monkeypatch):
+    """Phase 42: summarize_task is a mandatory spine step (runs after the retry
+    block, before commit) that would spawn a real Claude agent. Stub it for the
+    whole suite so full-workflow tests never hit a live model. It supplies the
+    commit/PR summary + test_plan; tests that assert on those override this with
+    their own monkeypatch (which runs after this fixture and wins)."""
+    from orchestrator.agents.summarize import SummaryResult
+
+    async def _fake_summarize_task(plan_text, model="claude-haiku-4-5-20251001"):
+        return SummaryResult(
+            summary="(summary stubbed in tests)",
+            test_plan="(test plan stubbed in tests)",
+            usage=None,
+        )
+
+    monkeypatch.setattr("orchestrator.workflow.summarize_task", _fake_summarize_task)
