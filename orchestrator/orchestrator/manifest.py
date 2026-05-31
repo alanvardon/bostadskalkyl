@@ -28,9 +28,31 @@ TOML shape (everything optional; no [steps] table = no injected steps):
     type = "human_gate"
     ask  = "QA passed. Approve security posture before commit?"
 
+Phase 42 — a `retry` block: re-run producer(s) until gate(s) pass (or the
+budget is exhausted), with the failing gate's feedback injected into the next
+producer attempt. produce/gate reference definitions under [steps.defs.*]:
+
+    [[steps.after_impl]]
+    id           = "lint-loop"
+    type         = "retry"
+    produce      = ["lint-fix"]      # ids defined in [steps.defs.*]
+    gate         = ["lint-check"]    # gate verdict = script exit / agent `passed`
+    max_retries  = 3
+    on_exhausted = "abort"           # abort | human_gate | proceed
+
+    [steps.defs.lint-fix]
+    type  = "llm_agent"
+    agent = "lint-fixer"
+
+    [steps.defs.lint-check]
+    type = "script"
+    path = ".orchestrator/scripts/lint.sh"
+
 The loader validates at load time (before any LLM spend): unknown seam
-names, duplicate ids, missing script paths, unknown agent references. A
-problem raises ManifestError with a clear message.
+names, duplicate ids, missing script paths, unknown agent references, and —
+for retry blocks — that produce/gate reference defined ids, that no id is both
+a producer and a gate, and that both lists are non-empty. A problem raises
+ManifestError with a clear message.
 """
 
 from __future__ import annotations
@@ -90,11 +112,42 @@ class LlmAgentStep(_BaseStep):
     model: str = "claude-sonnet-4-6"
 
 
+class RetryBlockStep(_BaseStep):
+    """Phase 42: a declarative retry block injected at a seam.
+
+    `produce` and `gate` hold ids that reference [steps.defs.*] definitions. The
+    generic engine (retry_block.run_retry_block) re-runs the producers — with the
+    failing gate's feedback injected — until a gate passes or the retry budget is
+    exhausted. Gates run in declared order; the first to fail short-circuits the
+    rest and triggers a retry. `on_exhausted` decides what happens when the
+    budget runs out: abort the run, ask a human, or proceed anyway.
+    """
+
+    type: Literal["retry"] = "retry"
+    produce: list[str]
+    gate: list[str]
+    max_retries: int = Field(default=3, ge=1)
+    on_exhausted: Literal["abort", "human_gate", "proceed"] = "abort"
+
+
+# Steps that can be INJECTED at a seam (a retry block is one of them).
 Step = Annotated[
-    Union[ScriptStep, HumanGateStep, LlmAgentStep],
+    Union[ScriptStep, HumanGateStep, LlmAgentStep, RetryBlockStep],
     Field(discriminator="type"),
 ]
 _STEP_ADAPTER: TypeAdapter = TypeAdapter(Step)
+
+# Steps that can be DEFINED under [steps.defs.*] and referenced by a retry block
+# as a producer or gate. Only executable mutator/checker steps qualify — a
+# human_gate is a pause, not a producer or gate, so it's excluded; and a retry
+# block can't reference another block. Both variants are gate-capable: a script
+# gate's verdict is its exit code, and an llm_agent gate is run with a
+# `passed`-emitting tool at execution time (see steps.execute_llm_agent).
+StepDef = Annotated[
+    Union[ScriptStep, LlmAgentStep],
+    Field(discriminator="type"),
+]
+_STEPDEF_ADAPTER: TypeAdapter = TypeAdapter(StepDef)
 
 
 class StepResult(BaseModel):
@@ -118,12 +171,29 @@ class StepResult(BaseModel):
 class WorkflowManifest(BaseModel):
     # seam name → ordered steps injected at that seam.
     steps: dict[str, list[Step]] = Field(default_factory=dict)
+    # Phase 42: id → step definition, referenced by retry blocks' produce/gate.
+    defs: dict[str, StepDef] = Field(default_factory=dict)
 
     def for_seam(self, seam: str) -> list[Step]:
         return self.steps.get(seam, [])
 
     def is_empty(self) -> bool:
+        # defs alone (with no seam steps referencing them) execute nothing.
         return not any(self.steps.values())
+
+    def _hashable_step(self, step: Step) -> dict:
+        d = step.model_dump()
+        if isinstance(step, RetryBlockStep):
+            # Phase 42 resume safety: fold the referenced defs into the block's
+            # hashed form so editing a def *body* (not just the block) also
+            # refuses the resume. The block dump alone only names def ids, so
+            # without this a changed lint.sh / agent would resume silently.
+            d["_resolved_defs"] = {
+                rid: self.defs[rid].model_dump()
+                for rid in (step.produce + step.gate)
+                if rid in self.defs
+            }
+        return d
 
     def manifest_hash(self) -> str:
         """Stable hash of the resolved manifest.
@@ -133,7 +203,7 @@ class WorkflowManifest(BaseModel):
         safety) the same way an incompatible WORKFLOW_VERSION does (Phase 20).
         """
         canonical = {
-            seam: [s.model_dump() for s in self.steps.get(seam, [])]
+            seam: [self._hashable_step(s) for s in self.steps.get(seam, [])]
             for seam in SEAMS
             if self.steps.get(seam)
         }
@@ -145,6 +215,40 @@ def _agent_file(
     project_root: Path, agent: str, agents_dir: str = ".orchestrator/agents"
 ) -> Path:
     return project_root / agents_dir / f"{agent}.md"
+
+
+def _validate_retry_block(step: RetryBlockStep, defs: dict[str, StepDef]) -> None:
+    """Validate a retry block's references against [steps.defs.*] (Phase 42).
+
+    max_retries (>= 1) and on_exhausted (the abort/human_gate/proceed enum) are
+    already enforced by the Pydantic model; this covers the cross-references.
+    """
+    if not step.produce:
+        raise ManifestError(
+            f"retry block {step.id!r}: `produce` must list at least one "
+            f"[steps.defs.*] id."
+        )
+    if not step.gate:
+        raise ManifestError(
+            f"retry block {step.id!r}: `gate` must list at least one "
+            f"[steps.defs.*] id."
+        )
+    both = sorted(set(step.produce) & set(step.gate))
+    if both:
+        raise ManifestError(
+            f"retry block {step.id!r}: {both} listed as both producer and gate; "
+            f"a step is one or the other."
+        )
+    for rid in step.produce + step.gate:
+        if rid not in defs:
+            raise ManifestError(
+                f"retry block {step.id!r}: references unknown step def {rid!r}. "
+                f"Define it under [steps.defs.{rid}]."
+            )
+    # Gate-capability: defs are restricted to script | llm_agent (StepDef
+    # excludes human_gate), and both are gate-capable — a script gate's verdict
+    # is its exit code; an llm_agent gate is run with a `passed`-emitting tool.
+    # So a referenced gate id is always gate-capable; no further check needed.
 
 
 def load_manifest(
@@ -180,8 +284,54 @@ def load_manifest(
             "[steps] must be a table of seam arrays, e.g. [[steps.after_qa]]"
         )
 
-    steps: dict[str, list[Step]] = {}
+    # All step ids (seam steps AND [steps.defs.*]) share one namespace so a
+    # retry block can reference a def unambiguously by id.
     seen_ids: dict[str, str] = {}
+
+    # Phase 42: [steps.defs.*] — the producer/gate step definitions referenced
+    # by retry blocks. A table keyed by id (NOT a seam array), so pull it out
+    # before the seam loop and parse it first, so retry blocks can be validated
+    # against it.
+    defs_raw = raw.pop("defs", {})
+    defs: dict[str, StepDef] = {}
+    if defs_raw:
+        if not isinstance(defs_raw, dict):
+            raise ManifestError(
+                "[steps.defs] must be a table of named step definitions, "
+                "e.g. [steps.defs.my-gate]."
+            )
+        for def_id, body in defs_raw.items():
+            if not isinstance(body, dict):
+                raise ManifestError(
+                    f"[steps.defs.{def_id}] must be a table with a `type`."
+                )
+            try:
+                # The id is the table key; inject it so the model is complete.
+                definition = _STEPDEF_ADAPTER.validate_python({**body, "id": def_id})
+            except ValidationError as exc:
+                raise ManifestError(
+                    f"invalid step def {def_id!r}: {exc}"
+                ) from exc
+            if def_id in seen_ids:
+                raise ManifestError(
+                    f"duplicate step id {def_id!r}; ids must be unique."
+                )
+            seen_ids[def_id] = "steps.defs"
+            if isinstance(definition, ScriptStep):
+                if not (project_root / definition.path).exists():
+                    raise ManifestError(
+                        f"step def {def_id!r}: script not found at "
+                        f"{definition.path!r}."
+                    )
+            elif isinstance(definition, LlmAgentStep):
+                if not _agent_file(project_root, definition.agent, agents_dir).exists():
+                    raise ManifestError(
+                        f"step def {def_id!r}: agent file not found at "
+                        f"{agents_dir}/{definition.agent}.md."
+                    )
+            defs[def_id] = definition
+
+    steps: dict[str, list[Step]] = {}
 
     for seam, items in raw.items():
         if seam not in SEAMS:
@@ -204,8 +354,8 @@ def load_manifest(
 
             if step.id in seen_ids:
                 raise ManifestError(
-                    f"duplicate step id {step.id!r} (in seams "
-                    f"{seen_ids[step.id]!r} and {seam!r}); ids must be unique."
+                    f"duplicate step id {step.id!r} (in {seen_ids[step.id]!r} "
+                    f"and {seam!r}); ids must be unique."
                 )
             seen_ids[step.id] = seam
 
@@ -220,9 +370,11 @@ def load_manifest(
                         f"step {step.id!r}: agent file not found at "
                         f"{agents_dir}/{step.agent}.md."
                     )
+            elif isinstance(step, RetryBlockStep):
+                _validate_retry_block(step, defs)
 
             parsed.append(step)
 
         steps[seam] = parsed
 
-    return WorkflowManifest(steps=steps)
+    return WorkflowManifest(steps=steps, defs=defs)

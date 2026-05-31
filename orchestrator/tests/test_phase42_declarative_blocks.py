@@ -1,0 +1,425 @@
+"""Phase 42 Part C — declarative retry blocks in orchestrator.toml.
+
+Three slices:
+1. Parsing — a `[[steps.*]] type="retry"` block + `[steps.defs.*]` round-trips
+   through load_manifest into a RetryBlockStep and a defs table.
+2. Validation — references, producer/gate overlap, empty lists, gate-capability
+   (human_gate can't be a def), budget/policy bounds, id uniqueness, and missing
+   support files are all caught at load time (before any LLM spend).
+3. Resume safety — manifest_hash folds a block's referenced defs in, so editing
+   a def *body* (not just the block) refuses the resume; an unreferenced def
+   doesn't affect the hash.
+4. End-to-end — a declared block at a seam runs on the generic engine: producers
+   re-run until the gate passes (or aborts the run when it never does).
+"""
+
+import uuid
+from pathlib import Path
+
+import pytest
+from langgraph.types import Command
+
+from orchestrator.agents.planning import PlanResult
+from orchestrator.agents.qa import QaResult
+from orchestrator.manifest import (
+    LlmAgentStep,
+    ManifestError,
+    RetryBlockStep,
+    ScriptStep,
+    WorkflowManifest,
+    load_manifest,
+)
+from orchestrator.steps import StepError
+
+
+# --------------------------- parsing / validation ---------------------------
+
+
+def _project(tmp_path: Path, toml_body: str, *, scripts=(), agents=()) -> Path:
+    """Write a tmp orchestrator.toml plus any referenced support files."""
+    (tmp_path / "orchestrator.toml").write_text(toml_body, encoding="utf-8")
+    sd = tmp_path / ".orchestrator" / "scripts"
+    ad = tmp_path / ".orchestrator" / "agents"
+    sd.mkdir(parents=True, exist_ok=True)
+    ad.mkdir(parents=True, exist_ok=True)
+    for s in scripts:
+        p = sd / s
+        p.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        p.chmod(0o755)
+    for a in agents:
+        (ad / f"{a}.md").write_text("agent prompt", encoding="utf-8")
+    return tmp_path
+
+
+def _load(tmp_path: Path, toml_body: str, **files) -> WorkflowManifest:
+    root = _project(tmp_path, toml_body, **files)
+    return load_manifest(config_path=root / "orchestrator.toml", project_root=root)
+
+
+_VALID = """
+[[steps.after_impl]]
+id           = "lint-loop"
+type         = "retry"
+produce      = ["lint-fix"]
+gate         = ["lint-check"]
+max_retries  = 2
+on_exhausted = "abort"
+
+[steps.defs.lint-fix]
+type  = "llm_agent"
+agent = "lint-fixer"
+
+[steps.defs.lint-check]
+type = "script"
+path = ".orchestrator/scripts/lint.sh"
+"""
+
+
+def test_valid_retry_block_round_trips(tmp_path):
+    m = _load(tmp_path, _VALID, scripts=["lint.sh"], agents=["lint-fixer"])
+    block = m.for_seam("after_impl")[0]
+    assert isinstance(block, RetryBlockStep)
+    assert block.id == "lint-loop"
+    assert block.produce == ["lint-fix"]
+    assert block.gate == ["lint-check"]
+    assert block.max_retries == 2
+    assert block.on_exhausted == "abort"
+    # defs parsed into their own table, keyed by id.
+    assert set(m.defs) == {"lint-fix", "lint-check"}
+    assert isinstance(m.defs["lint-fix"], LlmAgentStep)
+    assert isinstance(m.defs["lint-check"], ScriptStep)
+
+
+def test_unknown_referenced_def_raises(tmp_path):
+    toml = """
+[[steps.after_impl]]
+id      = "loop"
+type    = "retry"
+produce = ["lint-fix"]
+gate    = ["does-not-exist"]
+
+[steps.defs.lint-fix]
+type  = "llm_agent"
+agent = "lint-fixer"
+"""
+    with pytest.raises(ManifestError, match="unknown step def 'does-not-exist'"):
+        _load(tmp_path, toml, agents=["lint-fixer"])
+
+
+def test_producer_and_gate_overlap_raises(tmp_path):
+    toml = """
+[[steps.after_impl]]
+id      = "loop"
+type    = "retry"
+produce = ["both"]
+gate    = ["both"]
+
+[steps.defs.both]
+type = "script"
+path = ".orchestrator/scripts/lint.sh"
+"""
+    with pytest.raises(ManifestError, match="both producer and gate"):
+        _load(tmp_path, toml, scripts=["lint.sh"])
+
+
+def test_empty_produce_raises(tmp_path):
+    toml = """
+[[steps.after_impl]]
+id      = "loop"
+type    = "retry"
+produce = []
+gate    = ["lint-check"]
+
+[steps.defs.lint-check]
+type = "script"
+path = ".orchestrator/scripts/lint.sh"
+"""
+    with pytest.raises(ManifestError, match="`produce` must list at least one"):
+        _load(tmp_path, toml, scripts=["lint.sh"])
+
+
+def test_empty_gate_raises(tmp_path):
+    toml = """
+[[steps.after_impl]]
+id      = "loop"
+type    = "retry"
+produce = ["lint-fix"]
+gate    = []
+
+[steps.defs.lint-fix]
+type  = "llm_agent"
+agent = "lint-fixer"
+"""
+    with pytest.raises(ManifestError, match="`gate` must list at least one"):
+        _load(tmp_path, toml, agents=["lint-fixer"])
+
+
+def test_human_gate_def_rejected(tmp_path):
+    # A human_gate is a pause, not a producer/gate — it can't be a def.
+    toml = """
+[[steps.after_impl]]
+id      = "loop"
+type    = "retry"
+produce = ["x"]
+gate    = ["y"]
+
+[steps.defs.x]
+type = "script"
+path = ".orchestrator/scripts/lint.sh"
+
+[steps.defs.y]
+type = "human_gate"
+ask  = "ok?"
+"""
+    with pytest.raises(ManifestError, match="invalid step def 'y'"):
+        _load(tmp_path, toml, scripts=["lint.sh"])
+
+
+def test_max_retries_zero_rejected(tmp_path):
+    toml = """
+[[steps.after_impl]]
+id          = "loop"
+type        = "retry"
+produce     = ["x"]
+gate        = ["y"]
+max_retries = 0
+
+[steps.defs.x]
+type = "script"
+path = ".orchestrator/scripts/lint.sh"
+[steps.defs.y]
+type = "script"
+path = ".orchestrator/scripts/lint.sh"
+"""
+    with pytest.raises(ManifestError, match="invalid step in seam"):
+        _load(tmp_path, toml, scripts=["lint.sh"])
+
+
+def test_bad_on_exhausted_rejected(tmp_path):
+    toml = """
+[[steps.after_impl]]
+id           = "loop"
+type         = "retry"
+produce      = ["x"]
+gate         = ["y"]
+on_exhausted = "explode"
+
+[steps.defs.x]
+type = "script"
+path = ".orchestrator/scripts/lint.sh"
+[steps.defs.y]
+type = "script"
+path = ".orchestrator/scripts/lint.sh"
+"""
+    with pytest.raises(ManifestError, match="invalid step in seam"):
+        _load(tmp_path, toml, scripts=["lint.sh"])
+
+
+def test_def_id_collides_with_seam_step_id(tmp_path):
+    # A def and a seam step share an id — one global namespace, so this is a dup.
+    toml = """
+[[steps.before_plan]]
+id   = "shared"
+type = "script"
+path = ".orchestrator/scripts/lint.sh"
+
+[[steps.after_impl]]
+id      = "loop"
+type    = "retry"
+produce = ["shared"]
+gate    = ["g"]
+
+[steps.defs.shared]
+type = "script"
+path = ".orchestrator/scripts/lint.sh"
+[steps.defs.g]
+type = "script"
+path = ".orchestrator/scripts/lint.sh"
+"""
+    with pytest.raises(ManifestError, match="duplicate step id 'shared'"):
+        _load(tmp_path, toml, scripts=["lint.sh"])
+
+
+def test_missing_def_script_raises(tmp_path):
+    # lint.sh is referenced by a def but not created.
+    with pytest.raises(ManifestError, match="script not found"):
+        _load(tmp_path, _VALID, agents=["lint-fixer"])  # note: no scripts=
+
+
+def test_missing_def_agent_raises(tmp_path):
+    # lint-fixer.md is referenced by a def but not created.
+    with pytest.raises(ManifestError, match="agent file not found"):
+        _load(tmp_path, _VALID, scripts=["lint.sh"])  # note: no agents=
+
+
+# --------------------------- resume safety (hash) ---------------------------
+
+
+def test_hash_changes_when_referenced_def_changes():
+    defs = {
+        "fix": LlmAgentStep(id="fix", agent="a"),
+        "check": ScriptStep(id="check", path="x.sh"),
+    }
+    block = RetryBlockStep(id="b", produce=["fix"], gate=["check"])
+    m1 = WorkflowManifest(steps={"after_impl": [block]}, defs=defs)
+    # Edit a referenced def's BODY (not the block) → hash must change so a
+    # mid-run edit refuses the resume.
+    m2 = WorkflowManifest(
+        steps={"after_impl": [block]},
+        defs={**defs, "check": ScriptStep(id="check", path="DIFFERENT.sh")},
+    )
+    assert m1.manifest_hash() != m2.manifest_hash()
+
+
+def test_hash_ignores_unreferenced_def():
+    defs = {
+        "fix": LlmAgentStep(id="fix", agent="a"),
+        "check": ScriptStep(id="check", path="x.sh"),
+    }
+    block = RetryBlockStep(id="b", produce=["fix"], gate=["check"])
+    m1 = WorkflowManifest(steps={"after_impl": [block]}, defs=defs)
+    # Adding a def the block does NOT reference changes nothing it depends on.
+    m3 = WorkflowManifest(
+        steps={"after_impl": [block]},
+        defs={**defs, "unused": ScriptStep(id="unused", path="z.sh")},
+    )
+    assert m1.manifest_hash() == m3.manifest_hash()
+
+
+# --------------------------- end-to-end execution ---------------------------
+
+
+class _Stubs:
+    """Happy-path spine stubs (plan → impl → qa PASS → commit/push/pr)."""
+
+    async def plan(self, request, model="claude-sonnet-4-6") -> PlanResult:
+        return PlanResult(title="t", type="feature", plan_text="p")
+
+    def create_branch(self, plan, max_slug_length=50, thread_id="") -> str:
+        return "feature/test"
+
+    async def implementation_task(self, plan_text, feedback=None, model="claude-sonnet-4-6"):
+        from orchestrator.manifest import StepResult
+        return StepResult(step_id="implementation", kind="llm_agent", ok=True)
+
+    async def qa(self, plan, model="claude-sonnet-4-6") -> QaResult:
+        return QaResult(result="PASS")
+
+    def commit(self, branch, title, summary, base_branch="main") -> str:
+        return "abc123"
+
+    def push(self, branch, base_branch="main", auto_rebase=True) -> None:
+        pass
+
+    def pr_create(self, branch, title, summary, test_plan, base_branch="main", draft=False, reviewers=None, labels=None) -> str:
+        return "https://github.com/test/pr/1"
+
+    def verify_clean_tree(self) -> None:
+        pass
+
+    def ensure_on_main(self, base_branch: str = "main") -> None:
+        pass
+
+
+def _patch_spine(stubs, monkeypatch):
+    monkeypatch.setattr("orchestrator.workflow.plan", stubs.plan)
+    monkeypatch.setattr("orchestrator.workflow.create_branch", stubs.create_branch)
+    monkeypatch.setattr("orchestrator.workflow.implementation_task", stubs.implementation_task)
+    monkeypatch.setattr("orchestrator.workflow.qa", stubs.qa)
+    monkeypatch.setattr("orchestrator.workflow.commit", stubs.commit)
+    monkeypatch.setattr("orchestrator.workflow.push", stubs.push)
+    monkeypatch.setattr("orchestrator.workflow.pr_create", stubs.pr_create)
+    monkeypatch.setattr("orchestrator.workflow.verify_clean_tree", stubs.verify_clean_tree)
+    monkeypatch.setattr("orchestrator.workflow.ensure_on_main", stubs.ensure_on_main)
+
+
+def _block_manifest(on_exhausted="abort", max_retries=3) -> WorkflowManifest:
+    """A retry block at after_plan: a script producer + a script gate."""
+    return WorkflowManifest(
+        steps={
+            "after_plan": [
+                RetryBlockStep(
+                    id="loop",
+                    produce=["fix"],
+                    gate=["check"],
+                    max_retries=max_retries,
+                    on_exhausted=on_exhausted,
+                )
+            ]
+        },
+        defs={
+            "fix": ScriptStep(id="fix", path="fix.sh"),
+            "check": ScriptStep(id="check", path="check.sh"),
+        },
+    )
+
+
+def _fake_execute_script_factory(gate_passes_on_attempt: int | None):
+    """Build a fake workflow.execute_script that records calls. The gate
+    ('check') passes on `gate_passes_on_attempt` (1-based); None = never."""
+    from orchestrator.manifest import StepResult
+
+    calls: list[tuple[str, bool]] = []
+
+    async def fake(step, repo_root, *, as_gate=False):
+        calls.append((step.id, as_gate))
+        if as_gate:  # the "check" gate
+            gate_runs = sum(1 for c in calls if c == (step.id, True))
+            passed = gate_passes_on_attempt is not None and gate_runs >= gate_passes_on_attempt
+            return StepResult(
+                step_id=step.id, kind="script", ok=True, passed=passed,
+                detail="" if passed else "lint failed",
+            )
+        return StepResult(step_id=step.id, kind="script", ok=True)  # producer
+
+    return fake, calls
+
+
+async def _drive(monkeypatch, tmp_path, manifest, fake_execute_script):
+    stubs = _Stubs()
+    _patch_spine(stubs, monkeypatch)
+    monkeypatch.setattr("orchestrator.workflow.load_manifest", lambda *a, **k: manifest)
+    monkeypatch.setattr("orchestrator.workflow.execute_script", fake_execute_script)
+
+    from orchestrator.workflow import build_workflow
+
+    config = {"configurable": {"thread_id": f"test-{uuid.uuid4().hex[:8]}"}}
+    async with build_workflow(db_path=str(tmp_path / "ckpt.db")) as workflow:
+        result = await workflow.ainvoke("req", config=config)  # plan_approval
+        result = await workflow.ainvoke(Command(resume="yes"), config=config)
+    return result
+
+
+@pytest.mark.asyncio
+async def test_declared_block_retries_until_gate_passes(monkeypatch, tmp_path):
+    fake, calls = _fake_execute_script_factory(gate_passes_on_attempt=2)
+    result = await _drive(monkeypatch, tmp_path, _block_manifest(), fake)
+
+    assert result["status"] == "succeeded"
+    # Producer ran twice (fail → retry → pass), gate ran twice.
+    assert [c for c in calls if c == ("fix", False)] == [("fix", False)] * 2
+    assert [c for c in calls if c == ("check", True)] == [("check", True)] * 2
+
+
+@pytest.mark.asyncio
+async def test_declared_block_abort_when_gate_never_passes(monkeypatch, tmp_path):
+    fake, calls = _fake_execute_script_factory(gate_passes_on_attempt=None)
+    # on_exhausted="abort" → the block fails the whole run via StepError.
+    with pytest.raises(StepError, match="did not pass its gate"):
+        await _drive(
+            monkeypatch, tmp_path, _block_manifest(on_exhausted="abort", max_retries=2), fake
+        )
+    # Producer + gate each ran the full budget (2 attempts).
+    assert sum(1 for c in calls if c == ("fix", False)) == 2
+    assert sum(1 for c in calls if c == ("check", True)) == 2
+
+
+@pytest.mark.asyncio
+async def test_declared_block_proceed_when_gate_never_passes(monkeypatch, tmp_path):
+    fake, calls = _fake_execute_script_factory(gate_passes_on_attempt=None)
+    # on_exhausted="proceed" → exhausting the budget continues the run anyway.
+    result = await _drive(
+        monkeypatch, tmp_path, _block_manifest(on_exhausted="proceed", max_retries=2), fake
+    )
+    assert result["status"] == "succeeded"
+    assert sum(1 for c in calls if c == ("check", True)) == 2
