@@ -134,6 +134,70 @@ model = "claude-sonnet-4-6"
 
 
 # ---------------------------------------------------------------------------
+# 5) retry @ after_impl — a self-correcting loop (Phase 42).
+#    A retry block re-runs its PRODUCER step(s) until its GATE step(s) pass, or
+#    the retry budget runs out. On each gate failure the gate's output is
+#    injected into the next producer attempt as feedback (under a
+#    "## Previous attempt feedback" heading), so an llm_agent producer can
+#    target its fixes — the very same engine the built-in implementation↔QA
+#    loop runs on.
+#
+#    `produce` and `gate` are lists of ids defined under [steps.defs.*] (below).
+#    Gates run in declared order; the FIRST to fail short-circuits the rest and
+#    triggers a retry.
+#
+#    Gate contract — a gate must be one of:
+#      - a `script`: exit 0 = pass; non-zero = fail, and its output becomes the
+#        feedback (it does NOT abort the run the way a plain script step does);
+#      - an `llm_agent`: run READ-ONLY with an emit tool that requires a
+#        `passed` boolean (the verdict) and a `detail` string (the feedback).
+#    A producer mutates the tree; a gate only judges it. No id may be both a
+#    producer and a gate.
+#
+#    on_exhausted (when the budget runs out without a pass):
+#      "abort"      — fail the run (default; nothing is committed — pre-commit)
+#      "human_gate" — ask whether to proceed or abort
+#      "proceed"    — continue anyway (use with care)
+#    max_retries must be >= 1.
+#
+#    Here: lint-fix (an agent) tries to satisfy lint-check (a script), up to 3×.
+#
+#    Create .orchestrator/scripts/lint.sh (chmod +x):
+#      #!/bin/sh
+#      npx eslint .          # exit 0 = pass; non-zero = fail (output = feedback)
+#
+#    Create .orchestrator/agents/lint-fixer.md:
+#      ---
+#      name: lint-fixer
+#      model: claude-haiku-4-5-20251001
+#      ---
+#      You fix lint errors. If a "## Previous attempt feedback" section is
+#      present it holds the lint output — fix exactly those errors and nothing
+#      else. Edit only the offending source files. When done, call
+#      emit_step_result with a one-line summary.
+# ---------------------------------------------------------------------------
+[[steps.after_impl]]
+id           = "lint-loop"
+type         = "retry"
+produce      = ["lint-fix"]         # producer id(s), defined in [steps.defs.*]
+gate         = ["lint-check"]       # gate id(s); first to fail triggers a retry
+max_retries  = 3
+on_exhausted = "abort"              # abort | human_gate | proceed
+
+# [steps.defs.*] — definitions referenced by retry blocks' produce/gate. These
+# are NOT seam steps themselves; they only run when a block references them.
+[steps.defs.lint-fix]
+type  = "llm_agent"
+agent = "lint-fixer"                # → .orchestrator/agents/lint-fixer.md
+model = "claude-haiku-4-5-20251001"
+
+[steps.defs.lint-check]
+type    = "script"
+path    = ".orchestrator/scripts/lint.sh"
+timeout = 60
+
+
+# ---------------------------------------------------------------------------
 # The fifth seam, after_qa, isn't used above. It fires ONCE, only after QA has
 # passed — useful for a final action that should run exactly once on the
 # green code, e.g. a script that records a pass metric or notifies a channel:

@@ -108,12 +108,13 @@ from orchestrator.config import OrchestratorConfig, load_config
 from orchestrator.manifest import (
     HumanGateStep,
     LlmAgentStep,
+    RetryBlockStep,
     ScriptStep,
     StepResult,
     WorkflowManifest,
     load_manifest,
 )
-from orchestrator.steps import execute_llm_agent, execute_script, _strip_frontmatter
+from orchestrator.steps import StepError, execute_llm_agent, execute_script
 from orchestrator.usage import TaskUsage, aggregate_usage
 from orchestrator.git_ops import (
     commit,
@@ -211,18 +212,20 @@ async def record_manifest_hash_task() -> str:
 # `attempt` is carried purely for context (it tags the trace inputs and the
 # human_gate payload); per-attempt distinctness comes from call position, not
 # from this value.
-def _make_script_task(step_id: str):
+def _make_script_task(step_id: str, *, as_gate: bool = False):
     async def run_script_step(
         step_id: str, path: str, timeout: int, repo_root: str, attempt: int = 0
     ) -> StepResult:
         return await execute_script(
-            ScriptStep(id=step_id, path=path, timeout=timeout), Path(repo_root)
+            ScriptStep(id=step_id, path=path, timeout=timeout),
+            Path(repo_root),
+            as_gate=as_gate,
         )
 
     return task(run_script_step, name=f"step:{step_id}")
 
 
-def _make_llm_agent_task(step_id: str):
+def _make_llm_agent_task(step_id: str, *, as_gate: bool = False):
     async def run_llm_agent_step(
         step_id: str,
         agent: str,
@@ -230,11 +233,14 @@ def _make_llm_agent_task(step_id: str):
         repo_root: str,
         plan_text: str,
         attempt: int = 0,
+        feedback: str | None = None,
     ) -> StepResult:
         return await execute_llm_agent(
             LlmAgentStep(id=step_id, agent=agent, model=model),
             Path(repo_root),
             plan_text,
+            feedback=feedback,
+            as_gate=as_gate,
         )
 
     return task(run_llm_agent_step, name=f"step:{step_id}")
@@ -308,6 +314,86 @@ async def run_seam(
             )
             if result.usage:
                 usage_by_task.setdefault(step.id, []).append(result.usage)
+        elif isinstance(step, RetryBlockStep):
+            # Phase 42 Part C: a declarative retry block. Runs on the SAME
+            # generic engine the built-in spine uses (Part B), with producers
+            # and gates resolved from manifest.defs.
+            await _run_declared_retry_block(
+                step, manifest, plan_text, check_cancel, usage_by_task
+            )
+
+
+async def _run_declared_retry_block(
+    block_step: RetryBlockStep,
+    manifest: WorkflowManifest,
+    plan_text: str,
+    check_cancel,
+    usage_by_task: dict,
+) -> None:
+    """Execute a declarative [[steps.*]] type="retry" block (Phase 42 Part C).
+
+    Wraps the generic engine (retry_block.run_retry_block). Producers and gates
+    are resolved from manifest.defs and run via the SAME @task factories
+    run_seam uses, so they inherit checkpoint/replay and per-attempt distinctness
+    by call position. A gate's verdict is its StepResult.passed (script: exit
+    code; llm_agent: the emitted `passed`); a producer's detail is ignored and,
+    on a retry, the failing gate's feedback is injected into producer llm_agents.
+
+    A non-proceed outcome (gate never passed under on_exhausted="abort", or a
+    human aborted under "human_gate") raises StepError, aborting the run — seams
+    are pre-commit, so nothing is half-shipped. interrupt() (used only by
+    on_exhausted="human_gate") is reachable because this helper, like run_seam,
+    runs in the entrypoint body.
+    """
+    repo_root = str(find_project_root())
+    defs = manifest.defs
+
+    async def run_producer(pid: str, feedback: str | None) -> StepResult:
+        d = defs[pid]
+        if isinstance(d, ScriptStep):
+            step_task = _make_script_task(d.id)
+            result = await step_task(d.id, d.path, d.timeout, repo_root)
+        else:  # LlmAgentStep — feedback is injected into its user message
+            step_task = _make_llm_agent_task(d.id)
+            result = await step_task(
+                d.id, d.agent, d.model, repo_root, plan_text, 0, feedback
+            )
+        if result.usage:
+            usage_by_task.setdefault(d.id, []).append(result.usage)
+        return result
+
+    async def run_gate(gid: str) -> StepResult:
+        d = defs[gid]
+        if isinstance(d, ScriptStep):
+            step_task = _make_script_task(d.id, as_gate=True)
+            result = await step_task(d.id, d.path, d.timeout, repo_root)
+        else:  # LlmAgentStep gate — emits a `passed` verdict, runs read-only
+            step_task = _make_llm_agent_task(d.id, as_gate=True)
+            result = await step_task(d.id, d.agent, d.model, repo_root, plan_text)
+        if result.usage:
+            usage_by_task.setdefault(d.id, []).append(result.usage)
+        return result
+
+    block = RetryBlock(
+        producers=block_step.produce,
+        gates=block_step.gate,
+        max_retries=block_step.max_retries,
+        on_exhausted=block_step.on_exhausted,
+    )
+    result = await run_retry_block(
+        block=block,
+        run_producer=run_producer,
+        run_gate=run_gate,
+        check_cancel=check_cancel,
+        interrupt_fn=interrupt,  # used only when on_exhausted="human_gate"
+    )
+    if not result.proceed:
+        raise StepError(
+            f"retry block {block_step.id!r} did not pass its gate(s) after "
+            f"{result.attempts} attempt(s) "
+            f"(on_exhausted={block_step.on_exhausted!r}); last feedback:\n"
+            f"{result.last_feedback or '(none)'}"
+        )
 
 
 @task
@@ -440,20 +526,11 @@ async def summarize_task(
 # Phase 41: documentation agent, now a permanent spine task (was a pluggable
 # before_commit step). Runs once after the before_commit seam, before commit —
 # on the final, QA-passed code — so any doc edits land in the same commit. The
-# prompt ships in the package (orchestrator/agents/docs.md, tracked by git)
-# rather than .orchestrator/agents/ (gitignored), so a spine step never depends
-# on a local-only file. Built directly on Phase 39's run_structured_agent.
-_DOCS_PROMPT_PATH = Path(__file__).parent / "agents" / "docs.md"
-
-
-def _load_docs_prompt() -> str:
-    """Read the package-shipped docs agent prompt, stripping YAML frontmatter.
-
-    Loaded by path relative to this module — works for source / editable
-    installs, which is how the orchestrator runs."""
-    return _strip_frontmatter(_DOCS_PROMPT_PATH.read_text(encoding="utf-8"))
-
-
+# prompt ships in the package (orchestrator/prompts/docs.md, tracked by git)
+# and is loaded via load_prompt — the same loader as planning/implementation/qa,
+# so it inherits the .orchestrator/prompts/ override path — rather than from
+# .orchestrator/agents/ (gitignored), so a spine step never depends on a
+# local-only file. Built directly on Phase 39's run_structured_agent.
 @task
 async def docs_task(
     plan_text: str, model: str = "claude-haiku-4-5-20251001"
@@ -467,7 +544,7 @@ async def docs_task(
     source, including the workflow that orchestrates it. Returns a StepResult
     (already on the serde allowlist)."""
     return await run_structured_agent(
-        system_prompt=_load_docs_prompt(),
+        system_prompt=load_prompt("docs"),
         user_message="\n".join(["## Plan", "", plan_text]),
         model=model,
         allowed_tools=["Read", "Edit", "Write", "Bash", "Grep"],
