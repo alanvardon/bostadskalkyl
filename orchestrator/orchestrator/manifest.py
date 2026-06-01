@@ -117,6 +117,16 @@ class AiAgentStep(_BaseStep):
     agent: str
     dir: str
     model: str = "claude-sonnet-4-6"
+    # Optional tool/timeout config (Phase 46a) so an ai_agent def is a first-class
+    # producer/gate. When `allowed_tools` is None, the role default applies:
+    # ["Read", "Bash", "Grep"] as a gate (Bash lets it run `git diff HEAD` etc.),
+    # or ["Read", "Edit", "Write", "Bash", "Grep"] as a producer. `timeout` is the
+    # agent-loop wall-clock in seconds (None = no limit). NOTE: the gate default
+    # is NOT strictly read-only — Bash can still mutate the tree. A gate that must
+    # not write should set allowed_tools = ["Read", "Grep"].
+    allowed_tools: list[str] | None = None
+    disallowed_tools: list[str] = Field(default_factory=list)
+    timeout: int | None = None
     # When true, pause AFTER the agent runs (before the workflow continues) so a
     # human can inspect what it produced. Same reply contract as approval_gate: an
     # abort word ('abort'/'no'/'stop') stops the run; anything else proceeds.
@@ -124,7 +134,7 @@ class AiAgentStep(_BaseStep):
     # For a [steps.defs.*] agent used as a retry-block PRODUCER it fires once,
     # after the block succeeds (the gate passed) — not on intermediate failed
     # attempts, and not if the block exhausts its budget. Ignored on a retry-block
-    # gate (a read-only judge run every attempt).
+    # gate (a verdict-only judge run every attempt).
     human_in_loop: bool = False
 
 
