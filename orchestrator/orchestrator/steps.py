@@ -180,7 +180,7 @@ async def execute_ai_agent(
 
     if as_gate:
         # A gate judges and reports; it must not mutate the tree (read-only).
-        allowed_tools = ["Read", "Bash", "Grep"]
+        default_tools = ["Read", "Bash", "Grep"]
         emit_tool_description = (
             "Emit the gate verdict. Call exactly once when the check is "
             "complete: `passed` is true if the check passes, false otherwise; "
@@ -197,7 +197,7 @@ async def execute_ai_agent(
             usage=usage,
         )
     else:
-        allowed_tools = ["Read", "Edit", "Write", "Bash", "Grep"]
+        default_tools = ["Read", "Edit", "Write", "Bash", "Grep"]
         emit_tool_description = (
             "Emit the final result of this step. Call exactly once when "
             "done, with a one-line `summary` of what you did. After "
@@ -211,6 +211,9 @@ async def execute_ai_agent(
             detail=captured.get("summary", "") or "",
             usage=usage,
         )
+
+    # Phase 46a: a step may override the role-default tools; None inherits it.
+    allowed_tools = step.allowed_tools if step.allowed_tools is not None else default_tools
 
     log.info(
         "running ai_agent step %r (agent=%s, as_gate=%s)", step.id, step.agent, as_gate
@@ -226,8 +229,9 @@ async def execute_ai_agent(
             user_message=user_message,
             model=step.model,
             allowed_tools=allowed_tools,
-            disallowed_tools=[],
+            disallowed_tools=step.disallowed_tools,
             cwd=project_root,
+            timeout=step.timeout,
             emit_tool_name="emit_step_result",
             emit_tool_description=emit_tool_description,
             emit_tool_fields=emit_tool_fields,
