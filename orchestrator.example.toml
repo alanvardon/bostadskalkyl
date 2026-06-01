@@ -31,7 +31,7 @@
 #
 # Validation: the manifest is checked at the start of every run (before any
 # LLM spend) — unknown seam, duplicate id, missing script, unknown agent, and
-# (for retry blocks) unresolved produce/gate references all fail loudly. The
+# (for build steps) unresolved produce/gate references all fail loudly. The
 # resolved manifest is snapshotted per run, so editing
 # it while a run is paused refuses the resume rather than silently changing
 # the graph. `id` is a step's resume identity — don't rename it mid-run.
@@ -147,8 +147,8 @@ human_in_loop = false               # true = pause to review the agent's output
 
 
 # ---------------------------------------------------------------------------
-# 5) retry @ after_impl — a self-correcting loop (Phase 42).
-#    A retry block re-runs its PRODUCER step(s) until its GATE step(s) pass, or
+# 5) build @ after_impl — a self-correcting loop (Phase 46, formerly `retry`).
+#    A build step re-runs its PRODUCER step(s) until its GATE step(s) pass, or
 #    the retry budget runs out. On each gate failure the gate's output is
 #    injected into the next producer attempt as feedback (under a
 #    "## Previous attempt feedback" heading), so an ai_agent producer can
@@ -167,11 +167,13 @@ human_in_loop = false               # true = pause to review the agent's output
 #    A producer mutates the tree; a gate only judges it. No id may be both a
 #    producer and a gate.
 #
-#    on_exhausted (when the budget runs out without a pass):
+#    retry = { max, on_exhausted } tunes the loop. on_exhausted (when the budget
+#    runs out without a pass):
 #      "abort"      — fail the run (default; nothing is committed — pre-commit)
 #      "approval_gate" — ask whether to proceed or abort
 #      "proceed"    — continue anyway (use with care)
-#    max_retries must be >= 1.
+#    retry.max must be >= 1. Omit `gate` and set `ungated = true` to run the
+#    producer once with no gate.
 #
 #    A producer ai_agent may set human_in_loop = true: when the block SUCCEEDS
 #    (the gate passes — first try or after retries), the workflow pauses once to
@@ -196,14 +198,13 @@ human_in_loop = false               # true = pause to review the agent's output
 #      emit_step_result with a one-line summary.
 # ---------------------------------------------------------------------------
 [[steps.after_impl]]
-id           = "lint-loop"
-type         = "retry"
-produce      = ["lint-fix"]         # producer id(s), defined in [steps.defs.*]
-gate         = ["lint-check"]       # gate id(s); first to fail triggers a retry
-max_retries  = 3
-on_exhausted = "abort"              # abort | approval_gate | proceed
+id      = "lint-loop"
+type    = "build"
+produce = ["lint-fix"]              # producer id(s), defined in [steps.defs.*]
+gate    = ["lint-check"]            # gate id(s); first to fail triggers a retry
+retry   = { max = 3, on_exhausted = "abort" }   # abort | approval_gate | proceed
 
-# [steps.defs.*] — definitions referenced by retry blocks' produce/gate. These
+# [steps.defs.*] — definitions referenced by build steps' produce/gate. These
 # are NOT seam steps themselves; they only run when a block references them.
 [steps.defs.lint-fix]
 type          = "ai_agent"

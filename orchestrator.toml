@@ -117,15 +117,17 @@ include_content = false   # if true, also log prompt/result content (verbose)
 #                 per-step directory (store agents wherever you like).
 #                 Set human_in_loop = true to pause for review AFTER it runs
 #                 (same abort/proceed reply as approval_gate).
-#   retry       — re-run producer step(s) until gate step(s) pass, injecting the
-#                 failing gate's feedback into the next attempt (Phase 42). The
-#                 producer/gate steps are defined in a [steps.defs.*] table and
-#                 referenced by id. See orchestrator.example.toml for the fully
-#                 commented `lint-loop` worked example and the gate contract.
+#   build       — run producer step(s), then gate step(s), re-running the
+#                 producers with the failing gate's feedback until a gate passes
+#                 or retry.max is exhausted (Phase 46). produce/gate reference
+#                 [steps.defs.*] ids; `retry = { max, on_exhausted }` tunes the
+#                 loop. A build step must list a gate unless `ungated = true`
+#                 (then the producer runs once). See orchestrator.example.toml
+#                 for the fully commented `lint-loop` worked example.
 #
 # `id` is the step's resume identity — don't rename it mid-run. The manifest
 # is validated at load time (unknown seam, duplicate id, missing script,
-# unknown agent, and — for retry blocks — unresolved produce/gate references)
+# unknown agent, and — for build steps — unresolved produce/gate references)
 # and snapshotted per run: editing it mid-run refuses resume.
 #
 # Examples (uncomment and provide the referenced files to enable):

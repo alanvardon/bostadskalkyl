@@ -108,7 +108,7 @@ from orchestrator.config import OrchestratorConfig, load_config
 from orchestrator.manifest import (
     ApprovalGateStep,
     AiAgentStep,
-    RetryBlockStep,
+    BuildStep,
     ScriptStep,
     StepResult,
     WorkflowManifest,
@@ -331,23 +331,23 @@ async def run_seam(
                 })
                 if isinstance(decision, str) and decision.strip().lower() in _GATE_ABORT_WORDS:
                     raise StepGateAborted(step.id)
-        elif isinstance(step, RetryBlockStep):
-            # Phase 42 Part C: a declarative retry block. Runs on the SAME
-            # generic engine the built-in spine uses (Part B), with producers
-            # and gates resolved from manifest.defs.
-            await _run_declared_retry_block(
+        elif isinstance(step, BuildStep):
+            # Phase 46: a declarative build step. Runs on the SAME generic engine
+            # the built-in spine uses, with producers and gates resolved from
+            # manifest.defs.
+            await _run_build_step(
                 step, manifest, plan_text, check_cancel, usage_by_task
             )
 
 
-async def _run_declared_retry_block(
-    block_step: RetryBlockStep,
+async def _run_build_step(
+    block_step: BuildStep,
     manifest: WorkflowManifest,
     plan_text: str,
     check_cancel,
     usage_by_task: dict,
 ) -> None:
-    """Execute a declarative [[steps.*]] type="retry" block (Phase 42 Part C).
+    """Execute a declarative [[steps.*]] type="build" step (Phase 46).
 
     Wraps the generic engine (retry_block.run_retry_block). Producers and gates
     are resolved from manifest.defs and run via the SAME @task factories
@@ -401,8 +401,8 @@ async def _run_declared_retry_block(
     block = RetryBlock(
         producers=block_step.produce,
         gates=block_step.gate,
-        max_retries=block_step.max_retries,
-        on_exhausted=block_step.on_exhausted,
+        max_retries=block_step.retry.max,
+        on_exhausted=block_step.retry.on_exhausted,
     )
     result = await run_retry_block(
         block=block,
@@ -413,9 +413,9 @@ async def _run_declared_retry_block(
     )
     if not result.proceed:
         raise StepError(
-            f"retry block {block_step.id!r} did not pass its gate(s) after "
+            f"build step {block_step.id!r} did not pass its gate(s) after "
             f"{result.attempts} attempt(s) "
-            f"(on_exhausted={block_step.on_exhausted!r}); last feedback:\n"
+            f"(on_exhausted={block_step.retry.on_exhausted!r}); last feedback:\n"
             f"{result.last_feedback or '(none)'}"
         )
 

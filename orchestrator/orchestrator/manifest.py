@@ -29,17 +29,17 @@ TOML shape (everything optional; no [steps] table = no injected steps):
     type = "approval_gate"
     ask  = "QA passed. Approve security posture before commit?"
 
-Phase 42 — a `retry` block: re-run producer(s) until gate(s) pass (or the
-budget is exhausted), with the failing gate's feedback injected into the next
-producer attempt. produce/gate reference definitions under [steps.defs.*]:
+Phase 46 — a `build` step (formerly the `retry` block): run producer(s), then
+gate(s), re-running the producers with the failing gate's feedback until a gate
+passes or the retry budget is exhausted. produce/gate reference definitions
+under [steps.defs.*]:
 
     [[steps.after_impl]]
-    id           = "lint-loop"
-    type         = "retry"
-    produce      = ["lint-fix"]      # ids defined in [steps.defs.*]
-    gate         = ["lint-check"]    # gate verdict = script exit / agent `passed`
-    max_retries  = 3
-    on_exhausted = "abort"           # abort | approval_gate | proceed
+    id      = "lint-loop"
+    type    = "build"
+    produce = ["lint-fix"]           # ids defined in [steps.defs.*]
+    gate    = ["lint-check"]         # gate verdict = script exit / agent `passed`
+    retry   = { max = 3, on_exhausted = "abort" }   # abort | approval_gate | proceed
 
     [steps.defs.lint-fix]
     type  = "ai_agent"
@@ -50,10 +50,14 @@ producer attempt. produce/gate reference definitions under [steps.defs.*]:
     type = "script"
     path = ".orchestrator/scripts/lint.sh"
 
+The gating guarantee: a build step must list at least one `gate` unless it sets
+`ungated = true` (then the producer runs once, no gate, no retry).
+
 The loader validates at load time (before any LLM spend): unknown seam
 names, duplicate ids, missing script paths, unknown agent references, and —
-for retry blocks — that produce/gate reference defined ids, that no id is both
-a producer and a gate, and that both lists are non-empty. A problem raises
+for build steps — that produce/gate reference defined ids, that no id is both
+a producer and a gate, and that `produce` (and `gate`, unless `ungated`) is
+non-empty. A problem raises
 ManifestError with a clear message.
 """
 
@@ -65,7 +69,7 @@ import tomllib
 from pathlib import Path
 from typing import Annotated, Literal, Union
 
-from pydantic import BaseModel, Field, TypeAdapter, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 from orchestrator.errors import FatalError
 from orchestrator.paths import find_project_root
@@ -138,27 +142,40 @@ class AiAgentStep(_BaseStep):
     human_in_loop: bool = False
 
 
-class RetryBlockStep(_BaseStep):
-    """Phase 42: a declarative retry block injected at a seam.
+class RetryConfig(BaseModel):
+    """Retry behaviour for a build step's producer⇄gate loop (Phase 46).
 
-    `produce` and `gate` hold ids that reference [steps.defs.*] definitions. The
-    generic engine (retry_block.run_retry_block) re-runs the producers — with the
-    failing gate's feedback injected — until a gate passes or the retry budget is
-    exhausted. Gates run in declared order; the first to fail short-circuits the
-    rest and triggers a retry. `on_exhausted` decides what happens when the
-    budget runs out: abort the run, ask a human, or proceed anyway.
+    `max` is the attempt budget (>= 1); `on_exhausted` decides what happens when
+    it runs out: abort the run, ask a human, or proceed anyway.
     """
 
-    type: Literal["retry"] = "retry"
-    produce: list[str]
-    gate: list[str]
-    max_retries: int = Field(default=3, ge=1)
+    model_config = ConfigDict(extra="forbid")
+    max: int = Field(default=3, ge=1)
     on_exhausted: Literal["abort", "approval_gate", "proceed"] = "abort"
 
 
-# Steps that can be INJECTED at a seam (a retry block is one of them).
+class BuildStep(_BaseStep):
+    """Phase 46: a declarative build step injected at a seam (formerly the
+    `retry` block).
+
+    Run producer(s), then gate(s), re-running the producers — with the failing
+    gate's feedback injected — until a gate passes or `retry.max` is exhausted.
+    Gates run in declared order; the first to fail short-circuits the rest and
+    triggers a retry. `produce` and `gate` hold ids that reference [steps.defs.*]
+    definitions. The gating guarantee: `gate` must be non-empty unless
+    `ungated=true` (then the producer runs once, no gate, no retry).
+    """
+
+    type: Literal["build"] = "build"
+    produce: list[str]
+    gate: list[str] = Field(default_factory=list)
+    ungated: bool = False
+    retry: RetryConfig = Field(default_factory=RetryConfig)
+
+
+# Steps that can be INJECTED at a seam (a build step is one of them).
 Step = Annotated[
-    Union[ScriptStep, ApprovalGateStep, AiAgentStep, RetryBlockStep],
+    Union[ScriptStep, ApprovalGateStep, AiAgentStep, BuildStep],
     Field(discriminator="type"),
 ]
 _STEP_ADAPTER: TypeAdapter = TypeAdapter(Step)
@@ -209,7 +226,7 @@ class WorkflowManifest(BaseModel):
 
     def _hashable_step(self, step: Step) -> dict:
         d = step.model_dump()
-        if isinstance(step, RetryBlockStep):
+        if isinstance(step, BuildStep):
             # Phase 42 resume safety: fold the referenced defs into the block's
             # hashed form so editing a def *body* (not just the block) also
             # refuses the resume. The block dump alone only names def ids, so
@@ -241,32 +258,33 @@ def _agent_file(project_root: Path, step: AiAgentStep) -> Path:
     return project_root / step.dir / step.agent
 
 
-def _validate_retry_block(step: RetryBlockStep, defs: dict[str, StepDef]) -> None:
-    """Validate a retry block's references against [steps.defs.*] (Phase 42).
+def _validate_build_step(step: BuildStep, defs: dict[str, StepDef]) -> None:
+    """Validate a build step's references against [steps.defs.*] (Phase 46).
 
-    max_retries (>= 1) and on_exhausted (the abort/approval_gate/proceed enum) are
-    already enforced by the Pydantic model; this covers the cross-references.
+    retry.max (>= 1) and retry.on_exhausted are already enforced by the Pydantic
+    model; this covers the cross-references and the gating guarantee.
     """
     if not step.produce:
         raise ManifestError(
-            f"retry block {step.id!r}: `produce` must list at least one "
+            f"build step {step.id!r}: `produce` must list at least one "
             f"[steps.defs.*] id."
         )
-    if not step.gate:
+    if not step.gate and not step.ungated:
         raise ManifestError(
-            f"retry block {step.id!r}: `gate` must list at least one "
-            f"[steps.defs.*] id."
+            f"build step {step.id!r}: `gate` must list at least one "
+            f"[steps.defs.*] id, or set `ungated = true` to run the producer "
+            f"once without a gate."
         )
     both = sorted(set(step.produce) & set(step.gate))
     if both:
         raise ManifestError(
-            f"retry block {step.id!r}: {both} listed as both producer and gate; "
+            f"build step {step.id!r}: {both} listed as both producer and gate; "
             f"a step is one or the other."
         )
     for rid in step.produce + step.gate:
         if rid not in defs:
             raise ManifestError(
-                f"retry block {step.id!r}: references unknown step def {rid!r}. "
+                f"build step {step.id!r}: references unknown step def {rid!r}. "
                 f"Define it under [steps.defs.{rid}]."
             )
     # Gate-capability: defs are restricted to script | ai_agent (StepDef
@@ -389,8 +407,8 @@ def load_manifest(
                         f"step {step.id!r}: agent file not found at "
                         f"{step.dir}/{step.agent}."
                     )
-            elif isinstance(step, RetryBlockStep):
-                _validate_retry_block(step, defs)
+            elif isinstance(step, BuildStep):
+                _validate_build_step(step, defs)
 
             parsed.append(step)
 
