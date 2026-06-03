@@ -15,11 +15,25 @@ and the orchestrator handles the structured-output wiring automatically.
 
 from pathlib import Path
 
-from orchestrator.agent_frontmatter import split_frontmatter
+from orchestrator.agent_frontmatter import (
+    AgentFrontmatter,
+    parse_agent_frontmatter,
+    split_frontmatter,
+)
 from orchestrator.paths import find_project_root
 
 # Bundled defaults live next to this file in orchestrator/prompts/.
 _BUNDLED_DIR = Path(__file__).parent / "prompts"
+
+
+def _resolve_prompt_path(name: str) -> Path | None:
+    """The file load_prompt(name) reads: the repo override if present, else the
+    bundled default. None if neither exists."""
+    override = find_project_root() / ".orchestrator" / "prompts" / f"{name}.md"
+    if override.exists():
+        return override
+    bundled = _BUNDLED_DIR / f"{name}.md"
+    return bundled if bundled.exists() else None
 
 # Tool-call footers appended unconditionally after the prompt body.
 # These tell the agent how to return its result to the orchestrator.
@@ -75,14 +89,27 @@ def load_prompt(name: str) -> str:
     then appends the tool-call footer for agents that require one.
     Raises FileNotFoundError if neither source exists (broken package).
     """
-    override = find_project_root() / ".orchestrator" / "prompts" / f"{name}.md"
-    if override.exists():
-        # A prompt override may be a file downloaded from anywhere; strip any
-        # leading `---` frontmatter so its metadata never leaks into the prompt.
-        body = split_frontmatter(override.read_text(encoding="utf-8"))[1]
-    else:
-        bundled = _BUNDLED_DIR / f"{name}.md"
-        body = bundled.read_text(encoding="utf-8")
+    path = _resolve_prompt_path(name)
+    if path is None:
+        raise FileNotFoundError(f"no prompt found for {name!r} (override or bundled)")
+    # A prompt file may be downloaded from anywhere; strip any leading `---`
+    # frontmatter so its metadata never leaks into the prompt body. The
+    # frontmatter's model/tools are honoured separately via load_prompt_frontmatter.
+    body = split_frontmatter(path.read_text(encoding="utf-8"))[1]
 
     footer = _FOOTERS.get(name, "")
     return body.rstrip() + "\n\n" + footer if footer else body
+
+
+def load_prompt_frontmatter(name: str) -> AgentFrontmatter:
+    """The frontmatter config (model/tools) of a built-in agent's prompt file.
+
+    Resolves the same override-then-bundled path as load_prompt, so a prompt
+    downloaded into .orchestrator/prompts/<name>.md drives the built-in agent's
+    model and tools (config.load_config merges this in, with [workflow.<step>]
+    overriding). Returns an empty AgentFrontmatter when there's no file or no
+    frontmatter — i.e. today's behaviour, defaults untouched."""
+    path = _resolve_prompt_path(name)
+    if path is None:
+        return AgentFrontmatter()
+    return parse_agent_frontmatter(path.read_text(encoding="utf-8"))[0]
