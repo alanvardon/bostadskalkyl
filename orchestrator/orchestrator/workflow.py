@@ -66,7 +66,12 @@ logger = logging.getLogger(__name__)
 # build_producer_pause and qa_failure → build_gate_failed. The build step's
 # hashed form gains a human_in_loop key and the body's interrupt wiring changes,
 # so the bump refuses resume of any pre-51 run.
-WORKFLOW_VERSION = "1.8.0"
+# 1.8.0 → 1.9.0 (Phase 52): the retry-block loop becomes a growable budget — under
+# on_exhausted="approval_gate" a human may reply with a count at the exhaustion
+# prompt to grant more attempts (optionally capped by retry.max_total_attempts).
+# The loop structure changes (fixed range → dynamic while-loop), so the bump
+# refuses resume of any pre-52 run.
+WORKFLOW_VERSION = "1.9.0"
 
 
 from orchestrator.errors import FatalError
@@ -428,8 +433,11 @@ async def _run_build_step(
     `after_producer` pauses after the producers, before the gates, every attempt
     (kind `build_producer_pause`); `on_gate_fail` pauses on a failing gate (kind
     `build_gate_failed`) where an abort word stops the run and anything else
-    retries. A non-proceed outcome (gate never passed under on_exhausted="abort",
-    or a human aborted) raises BuildFailed, which the entrypoint body turns into
+    retries. Phase 52: under on_exhausted="approval_gate" the exhaustion prompt
+    also accepts a count — a human may grant more attempts (bounded by the optional
+    retry.max_total_attempts) and the loop keeps going. A non-proceed outcome (gate
+    never passed under on_exhausted="abort", or a human aborted) raises BuildFailed,
+    which the entrypoint body turns into
     the clean status="failed" return — seams are pre-commit, so nothing is
     half-shipped. Phase 44: if the block succeeds and a producer ai_agent set
     human_in_loop, pause once for review of its final output. interrupt() (for
@@ -538,6 +546,7 @@ async def _run_build_step(
         gates=block_step.gate,
         max_retries=block_step.retry.max,
         on_exhausted=block_step.retry.on_exhausted,
+        max_total_attempts=block_step.retry.max_total_attempts,
     )
     result = await run_retry_block(
         block=block,

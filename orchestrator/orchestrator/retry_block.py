@@ -21,6 +21,7 @@ error and raises (it never defaults to a pass).
 
 from __future__ import annotations
 
+import re
 from typing import Any, Awaitable, Callable, Literal
 
 from pydantic import BaseModel, Field
@@ -31,6 +32,13 @@ from orchestrator.manifest import StepResult
 
 # Resume/abort vocabulary, shared with run_seam's approval gates.
 _ABORT_WORDS = frozenset({"abort", "no", "stop"})
+
+# Phase 52: at the on_exhausted="approval_gate" prompt a human may grant MORE
+# attempts by replying with a positive integer. Accepted forms: a bare int
+# ("2"), "+N" ("+2"), "retry N", or "more N". An optional "attempt(s)" suffix is
+# tolerated. Parsed strictly so a plan/feedback reply that isn't clearly a count
+# falls through to "proceed".
+_EXTEND_RE = re.compile(r"(?:retry|more|\+)?\s*(\d+)(?:\s*attempts?)?")
 
 # Feedback injection (replaces the old mode="fix"). On attempt 1 a producer gets
 # no feedback; on a retry the failing gate's detail is rendered under this
@@ -51,6 +59,10 @@ class RetryBlock(BaseModel):
     gates: list[str]
     max_retries: int = Field(default=3, ge=1)
     on_exhausted: Literal["abort", "approval_gate", "proceed"] = "abort"
+    # Phase 52: optional hard ceiling on the TOTAL number of attempts a run may
+    # reach via extensions. None = unbounded (a human must keep typing numbers).
+    # A grant that would push past it is clamped; a grant at the cap can't extend.
+    max_total_attempts: int | None = Field(default=None, ge=1)
 
 
 class RetryBlockResult(BaseModel):
@@ -65,6 +77,22 @@ def feedback_section(detail: str) -> str:
     (Part B/C producers) append this to their user message; the engine passes
     the raw gate detail and lets the producer format it via this helper."""
     return f"{_FEEDBACK_HEADING}\n\n{detail}"
+
+
+def _parse_extend(reply: object) -> int | None:
+    """Parse an exhaustion reply as a request for N more attempts (Phase 52).
+
+    Returns a positive int N if the reply is *clearly* a count ("2", "+2",
+    "retry 2", "more 2"), else None (let the caller treat it as abort/proceed).
+    Abort words are matched by the caller first, so they never reach here.
+    """
+    if not isinstance(reply, str):
+        return None
+    m = _EXTEND_RE.fullmatch(reply.strip().lower())
+    if not m:
+        return None
+    n = int(m.group(1))
+    return n if n > 0 else None
 
 
 async def run_retry_block(
@@ -91,79 +119,139 @@ async def run_retry_block(
 
     `interrupt_fn` is used only for on_exhausted="approval_gate".
 
+    Phase 52: under on_exhausted="approval_gate" a human may reply with a count
+    (e.g. "2") to GRANT more attempts and keep looping, instead of only choosing
+    abort vs proceed-as-is. The budget grows dynamically; `attempt` keeps counting
+    across extensions. To avoid a double prompt on the last budgeted attempt (the
+    Phase 51 on_gate_failed pause AND then this exhaustion gate), the per-attempt
+    on_gate_failed pause is suppressed on the final budgeted attempt when
+    on_exhausted="approval_gate" — the richer exhaustion prompt owns that moment.
+
     Returns a RetryBlockResult; `proceed` tells the caller whether to continue
     past the block (e.g. commit) or treat it as a failure.
     """
     feedback: str | None = None
+    budget = block.max_retries
+    attempt = 0
 
-    for attempt in range(1, block.max_retries + 1):
-        for pid in block.producers:
-            check_cancel()
-            await run_producer(pid, feedback)
+    while True:
+        while attempt < budget:
+            attempt += 1
+            for pid in block.producers:
+                check_cancel()
+                await run_producer(pid, feedback)
 
-        if on_producers_done is not None:
-            await on_producers_done(attempt)
+            if on_producers_done is not None:
+                await on_producers_done(attempt)
 
-        for gid in block.gates:  # ordered; the first gate to fail wins
-            check_cancel()
-            gate_result = await run_gate(gid)
-            if gate_result.passed is None:
-                raise RetryConfigError(
-                    f"gate step {gid!r} returned no verdict (passed is None); "
-                    "a gate must report pass/fail"
-                )
-            if gate_result.passed is False:
-                feedback = gate_result.detail
-                break
-        else:
-            # No gate failed → every gate passed.
-            return RetryBlockResult(ok=True, proceed=True, attempts=attempt)
+            for gid in block.gates:  # ordered; the first gate to fail wins
+                check_cancel()
+                gate_result = await run_gate(gid)
+                if gate_result.passed is None:
+                    raise RetryConfigError(
+                        f"gate step {gid!r} returned no verdict (passed is None); "
+                        "a gate must report pass/fail"
+                    )
+                if gate_result.passed is False:
+                    feedback = gate_result.detail
+                    break
+            else:
+                # No gate failed → every gate passed.
+                return RetryBlockResult(ok=True, proceed=True, attempts=attempt)
 
-        # A gate failed. Optional human decision before spending another attempt.
-        if on_gate_failed is not None:
-            keep_going = await on_gate_failed(attempt, feedback or "")
-            if not keep_going:
-                return RetryBlockResult(
-                    ok=False, proceed=False, attempts=attempt, last_feedback=feedback
-                )
+            # A gate failed. Optional human decision before spending another
+            # attempt — but suppress it on the final budgeted attempt when the
+            # exhaustion approval gate will own the decision (no double prompt).
+            exhaustion_owns = (
+                attempt >= budget and block.on_exhausted == "approval_gate"
+            )
+            if on_gate_failed is not None and not exhaustion_owns:
+                keep_going = await on_gate_failed(attempt, feedback or "")
+                if not keep_going:
+                    return RetryBlockResult(
+                        ok=False, proceed=False, attempts=attempt,
+                        last_feedback=feedback,
+                    )
 
-    return _handle_exhausted(block, feedback, interrupt_fn)
+        # Budget exhausted without a pass. on_exhausted decides; under
+        # approval_gate a human may grant more attempts → grow the budget and
+        # re-enter the loop from the current `attempt`.
+        outcome = _handle_exhausted(block, feedback, interrupt_fn, attempt)
+        if outcome[0] == "abort":
+            return RetryBlockResult(
+                ok=False, proceed=False, attempts=attempt, last_feedback=feedback
+            )
+        if outcome[0] == "proceed":
+            return RetryBlockResult(
+                ok=False, proceed=True, attempts=attempt, last_feedback=feedback
+            )
+        # ("extend", n): grant n more attempts and loop again.
+        budget += outcome[1]
+
+
+# Tagged outcomes from _handle_exhausted, consumed by run_retry_block's loop.
+ExhaustedOutcome = tuple[str, int] | tuple[str]
 
 
 def _handle_exhausted(
     block: RetryBlock,
     feedback: str | None,
     interrupt_fn: Callable[[dict], Any] | None,
-) -> RetryBlockResult:
-    attempts = block.max_retries
-
+    attempts: int,
+) -> ExhaustedOutcome:
+    """Decide what happens when the budget runs out. Returns a tagged outcome:
+    ("abort",), ("proceed",), or ("extend", n) — the last only under
+    on_exhausted="approval_gate" when a human grants n more attempts."""
     if block.on_exhausted == "proceed":
-        return RetryBlockResult(
-            ok=False, proceed=True, attempts=attempts, last_feedback=feedback
-        )
+        return ("proceed",)
 
     if block.on_exhausted == "approval_gate":
         if interrupt_fn is None:
             raise RetryConfigError(
                 "on_exhausted='approval_gate' requires an interrupt function"
             )
+        # Headroom under the optional hard cap; None = unbounded.
+        cap = block.max_total_attempts
+        remaining = None if cap is None else max(0, cap - attempts)
+
         decision = interrupt_fn({
             "kind": "retry_exhausted",
             "attempts": attempts,
             "feedback": feedback,
-            "ask": (
-                f"Retry budget ({attempts}) exhausted. "
-                "Reply 'abort' to stop, anything else to proceed."
-            ),
+            "remaining": remaining,
+            "ask": _exhausted_ask(attempts, remaining),
         })
-        proceed = not (
-            isinstance(decision, str) and decision.strip().lower() in _ABORT_WORDS
-        )
-        return RetryBlockResult(
-            ok=False, proceed=proceed, attempts=attempts, last_feedback=feedback
-        )
+
+        if isinstance(decision, str) and decision.strip().lower() in _ABORT_WORDS:
+            return ("abort",)
+
+        grant = _parse_extend(decision)
+        if grant is not None and remaining != 0:
+            if remaining is not None:
+                grant = min(grant, remaining)  # clamp to the hard cap
+            return ("extend", grant)
+
+        # Anything else (yes/proceed/empty, or a count with no headroom left).
+        return ("proceed",)
 
     # default: "abort" — the caller treats proceed=False as a failed run.
-    return RetryBlockResult(
-        ok=False, proceed=False, attempts=attempts, last_feedback=feedback
+    return ("abort",)
+
+
+def _exhausted_ask(attempts: int, remaining: int | None) -> str:
+    """The exhaustion prompt text — advertises the number option when there is
+    headroom for more attempts (Phase 52)."""
+    if remaining is None:
+        extend_clause = "reply a number N to grant N more attempts, "
+    elif remaining > 0:
+        extend_clause = (
+            f"reply a number N (up to {remaining} more) to grant more attempts, "
+        )
+    else:
+        extend_clause = ""  # at the max_total_attempts cap — no more extends
+    return (
+        f"Retry budget ({attempts}) exhausted. "
+        "Reply 'abort' to stop, "
+        f"{extend_clause}"
+        "anything else to proceed as-is."
     )
