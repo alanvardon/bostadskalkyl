@@ -176,6 +176,13 @@ The rule is a simple merge: **frontmatter is the default; a key set on the TOML
 entry wins.** So the shared `.md` stays canonical while a repo can swap the model
 or tighten tools in one line, without forking the prompt.
 
+The same applies to the **built-in agents**. Drop a prompt into
+`.orchestrator/prompts/<step>.md` (`planning`, `implementation`, `qa`, `docs`,
+`summarize`) and its frontmatter `model`/`tools` drive that built-in too — with
+the matching `[workflow.<step>]` table overriding when set. So a downloaded agent
+plugs in the same way whether it's a custom step or a replacement for one of the
+spine agents.
+
 ---
 
 ## Run it

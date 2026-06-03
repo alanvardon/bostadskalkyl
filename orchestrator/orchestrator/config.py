@@ -31,6 +31,8 @@ Sample orchestrator.toml (all fields optional, defaults shown):
 
     [workflow.implementation]
     allowed_tools = ["Read", "Edit", "Write", "Bash"]
+    # A built-in's model/tools may instead come from its prompt frontmatter
+    # (.orchestrator/prompts/<step>.md); a key set here overrides it (Phase 54).
 
     [workflow.qa]
     allowed_tools = ["Read", "Grep", "Bash"]
@@ -219,20 +221,69 @@ class OrchestratorConfig(BaseModel):
         return step.model if step.model is not None else self.default_model
 
 
+# Phase 54: built-in spine steps whose model/tools may be driven by their prompt
+# file's frontmatter. branch/commit run no agent (deterministic git ops), so
+# they have no prompt and are absent here.
+_BUILTIN_PROMPT_STEPS: tuple[str, ...] = (
+    "planning", "implementation", "qa", "docs", "summarize",
+)
+# Only the operational dials cross over from frontmatter. human_in_loop is
+# deliberately excluded: planning/branch/commit own that flag, and the build's
+# implementation/qa pauses moved to the build step in Phase 51 (guarded above).
+_BUILTIN_FRONTMATTER_FIELDS: tuple[str, ...] = (
+    "model", "allowed_tools", "disallowed_tools", "timeout",
+)
+
+
+def _merge_builtin_frontmatter(
+    config: OrchestratorConfig, raw_workflow: dict
+) -> OrchestratorConfig:
+    """Let a built-in agent's prompt frontmatter supply its model/tools (Phase 54).
+
+    A prompt downloaded into .orchestrator/prompts/<step>.md drives that built-in
+    the same way frontmatter drives a [steps.defs.*] agent: frontmatter is the
+    default, an explicit key under [workflow.<step>] overrides it. `raw_workflow`
+    is the un-validated [workflow] table, so its keys tell us exactly what the
+    user set (a code default set via default_factory must NOT count as user-set)."""
+    from orchestrator.prompt_loader import load_prompt_frontmatter
+
+    step_updates: dict[str, WorkflowStepConfig] = {}
+    for step_name in _BUILTIN_PROMPT_STEPS:
+        fm = load_prompt_frontmatter(step_name)
+        user_keys = set((raw_workflow.get(step_name) or {}).keys())
+        step_cfg = getattr(config.workflow, step_name)
+        updates = {}
+        for field in _BUILTIN_FRONTMATTER_FIELDS:
+            if field in user_keys:
+                continue  # an explicit [workflow.<step>] value wins
+            value = getattr(fm, field)
+            if value is not None:
+                updates[field] = value
+        if updates:
+            step_updates[step_name] = step_cfg.model_copy(update=updates)
+
+    if not step_updates:
+        return config
+    new_workflow = config.workflow.model_copy(update=step_updates)
+    return config.model_copy(update={"workflow": new_workflow})
+
+
 def load_config(path: Path | None = None) -> OrchestratorConfig:
     """Load config from orchestrator.toml; return defaults if file is missing."""
     if path is None:
         path = find_project_root() / "orchestrator.toml"
     if not path.exists():
-        return OrchestratorConfig()
-    with path.open("rb") as f:
-        data = tomllib.load(f)
-    # [steps.*] is the pluggable-step manifest namespace (owned by manifest.py),
-    # not orchestrator config. Drop it before validation so extra="forbid" can
-    # guard the config keys without rejecting the manifest table that shares
-    # this file.
-    data.pop("steps", None)
-    config = OrchestratorConfig.model_validate(data)
+        config, raw_workflow = OrchestratorConfig(), {}
+    else:
+        with path.open("rb") as f:
+            data = tomllib.load(f)
+        # [steps.*] is the pluggable-step manifest namespace (owned by
+        # manifest.py), not orchestrator config. Drop it before validation so
+        # extra="forbid" can guard the config keys without rejecting the manifest
+        # table that shares this file.
+        data.pop("steps", None)
+        config = OrchestratorConfig.model_validate(data)
+        raw_workflow = data.get("workflow") or {}
     # Phase 51: the build's human pauses moved onto the build step's own
     # human_in_loop = { after_producer, on_gate_fail }. The global
     # [workflow.implementation]/[workflow.qa] human_in_loop flags no longer drive
@@ -244,7 +295,10 @@ def load_config(path: Path | None = None) -> OrchestratorConfig:
             "build step instead, e.g. in its [[steps.work]] entry:\n"
             "    human_in_loop = { after_producer = true, on_gate_fail = true }"
         )
-    return config
+    # Phase 54: a built-in agent's prompt frontmatter (model/tools) drives that
+    # step, with [workflow.<step>] overriding. No-op when prompts have no
+    # frontmatter (today's default).
+    return _merge_builtin_frontmatter(config, raw_workflow)
 
 
 def apply_overrides(
