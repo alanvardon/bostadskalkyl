@@ -85,6 +85,11 @@ Two layers of review ([qa_scripts.py](orchestrator/qa_scripts.py),
 
 On FAIL, the workflow retries implementation (up to the build step's
 `retry.max`), passing the failure notes so the agent knows exactly what to fix.
+When the budget runs out under `retry.on_exhausted = "approval_gate"`, the
+exhaustion prompt lets a human reply with a count (e.g. `2`) to grant that many
+more attempts and keep looping — handy when the last attempt was close — instead
+of only choosing abort vs proceed-as-is. An optional `retry.max_total_attempts`
+caps how far the budget can be extended this way.
 
 ### 5. Audit trails — what happened and why
 

@@ -45,6 +45,8 @@ or the retry budget is exhausted. produce/gate reference definitions under
     produce = ["lint-fix"]           # ids defined in [steps.defs.*]
     gate    = ["lint-check"]         # gate verdict = script exit / agent `passed`
     retry   = { max = 3, on_exhausted = "abort" }   # abort | approval_gate | proceed
+    # under on_exhausted="approval_gate" a human may grant more attempts at the
+    # exhaustion prompt; cap the total with the optional max_total_attempts.
 
     [steps.defs.lint-fix]
     type  = "ai_agent"
@@ -191,11 +193,17 @@ class RetryConfig(BaseModel):
 
     `max` is the attempt budget (>= 1); `on_exhausted` decides what happens when
     it runs out: abort the run, ask a human, or proceed anyway.
+
+    Phase 52: under on_exhausted="approval_gate" a human may reply with a count
+    at the exhaustion prompt to grant more attempts. `max_total_attempts` is an
+    optional hard ceiling on the TOTAL attempts a run may reach that way
+    (None = unbounded); an over-large grant is clamped to it.
     """
 
     model_config = ConfigDict(extra="forbid")
     max: int = Field(default=3, ge=1)
     on_exhausted: Literal["abort", "approval_gate", "proceed"] = "abort"
+    max_total_attempts: int | None = Field(default=None, ge=1)
 
 
 class HumanInLoopConfig(BaseModel):
