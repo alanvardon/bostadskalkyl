@@ -8,90 +8,13 @@ from typing import AsyncIterator
 logger = logging.getLogger(__name__)
 
 
-# Phase 20: workflow body version. Bump on INCOMPATIBLE changes to the
-# entrypoint body — reordered/removed tasks, new required tasks, changed
-# control flow that a half-finished checkpoint can't safely resume into.
-# Pure additive changes (a new optional gate, a new trailing task that
-# legacy checkpoints simply haven't reached) don't strictly require a bump.
-# On every resume, the version stored at run creation is compared against
-# this constant; a mismatch refuses the resume with a clear error instead
-# of risking a confusing deserialization failure mid-run.
-# 1.0.0 → 1.1.0 (Phase 33): the body gained the manifest-hash gate and five
-# run_seam() insertion points, plus new tasks (record_manifest_hash_task and
-# the per-step tasks built by _make_script_task / _make_ai_agent_task). That's
-# a body change, so the bump makes any checkpoint created before Phase 33
-# refuse to resume (clean version error) rather than resume into a changed
-# task graph. (Phase 33's later refinements — per-id step task names, after_qa
-# firing only on PASS, approval_gate abort — all landed before 1.1.0 shipped, so
-# they fold into this same version.)
-# 1.1.0 → 1.2.0 (Phase 41): docs_task is now a permanent spine task, inserted
-# after the before_commit seam and before commit_task. A new required task in
-# the body is a control-flow change, so the bump refuses resume of any run
-# created before Phase 41 (clean version error) rather than resuming into a
-# task graph that lacks the docs step.
-# 1.2.0 → 1.3.0 (Phase 42): the hand-written impl↔QA retry loop is replaced by
-# the generic retry engine (retry_block.run_retry_block), implementation is now
-# a generic producer @task (no ImplementationResult), and a new summarize_task
-# runs after the block to derive the commit/PR summary + test_plan from the diff.
-# New/removed task names and changed control flow = a body change, so the bump
-# refuses resume of any run created before Phase 42 rather than resuming into a
-# shifted task graph.
-# 1.3.0 → 1.4.0 (Phase 46): the impl↔QA loop is no longer inline in the body —
-# it now runs through run_seam("after_branch") as a declarative `build` step
-# (synthesized by default; overridable in orchestrator.toml). The per-attempt
-# `after_impl` and pass-only `after_qa` seams are removed (→ after_branch /
-# before_commit), and a build that exhausts its budget raises BuildFailed instead
-# of returning the failed dict inline. The control-flow reshape is a body change,
-# so the bump refuses resume of any run created before Phase 46.
-# 1.4.0 → 1.5.0 (Phase 47): the after_branch build is no longer synthesized — it
-# is declared explicitly in orchestrator.toml (no _ensure_default_build). A run
-# with no after_branch build now reaches the empty-diff guard and returns
-# status="no_changes" rather than running an invisible default loop. Removing the
-# synthesis step is a body change; the bump refuses resume of any pre-47 run.
-# 1.5.0 → 1.6.0 (Phase 48): AiAgentStep's `dir` + `agent` split is merged into a
-# single project-root-relative `agent` path. The ai_agent @task signature drops
-# its `dir` positional and the step's hashed form changes (no `dir` key), so a
-# pre-48 checkpoint would replay a @task with the wrong arity — the bump refuses
-# resume of any pre-48 run. (Config-shape change only; no control-flow reshape.)
-# 1.6.0 → 1.7.0 (Phase 49): the four positional seams (before_plan / after_plan /
-# after_branch / before_commit) collapse into one `[[steps.work]]` list that runs
-# between branch and summarize. The before_plan / after_plan / before_commit
-# run_seam dispatch points are removed from the body and after_branch is renamed
-# to work; before_commit steps now run before summarize (so they're in its diff).
-# That control-flow reshape is a body change — the bump refuses resume of any
-# pre-49 run.
-# 1.7.0 → 1.8.0 (Phase 51): the build's two human pauses move off the global
-# [workflow.implementation]/[workflow.qa] human_in_loop flags onto the build
-# step's own human_in_loop = { after_producer, on_gate_fail }, handled inside
-# _run_build_step; the interrupt kinds rename implementation_approval →
-# build_producer_pause and qa_failure → build_gate_failed. The build step's
-# hashed form gains a human_in_loop key and the body's interrupt wiring changes,
-# so the bump refuses resume of any pre-51 run.
-# 1.8.0 → 1.9.0 (Phase 52): the retry-block loop becomes a growable budget — under
-# on_exhausted="approval_gate" a human may reply with a count at the exhaustion
-# prompt to grant more attempts (optionally capped by retry.max_total_attempts).
-# The loop structure changes (fixed range → dynamic while-loop), so the bump
-# refuses resume of any pre-52 run.
-# 1.9.0 → 1.10.0 (Phase 55): a new decompose_task runs after planning (and re-runs
-# on plan-feedback regeneration), turning the plan into an ordered task list; the
-# plan_approval interrupt payload gains a `tasks` key. A new required body task +
-# a changed interrupt payload shape is a body change, so the bump refuses resume of
-# any pre-55 run. The step is execution-inert (nothing consumes the list yet —
-# Phase 56), but the task graph still changed, hence the bump.
-# 1.10.0 → 1.11.0 (Phase 56): the single impl⇄QA build is replaced by a per-task
-# execution station (_run_task_loop) that runs one produce⇄gate build per decomposed
-# task, followed by an optional whole-diff final_qa. The work region's task-graph
-# shape changes (N per-task builds instead of one, driven by the checkpointed
-# decompose result; a new final_qa), so the bump refuses resume of any pre-56 run.
-# The task list itself needs no separate hash gate — it's a checkpointed decompose
-# result that replays deterministically, and each task's build @tasks replay
-# positionally (same "rely on existing guards" reasoning as Phase 42's no-new-hash).
-# 1.11.0 unchanged (Phase 58): the entrypoint body was carved into named helpers
-# (_gate_checkpoint_and_manifest / _plan_and_approve / _ship / _finalize) with NO
-# change to @task names, count, or execution order. Task identity is position-based
-# and calling @tasks from module-level helpers is already established (run_seam /
-# _run_build_step), so the task graph is byte-for-byte identical — a graph-preserving
-# refactor needs no bump (same reasoning as the "pure additive" note at the top).
+# Version of the @entrypoint body. Bump on INCOMPATIBLE body changes — reordered/
+# removed tasks, new required tasks, changed control flow a half-finished checkpoint
+# can't safely resume into. Pure additive changes (a new optional gate, a new
+# trailing task legacy checkpoints haven't reached) don't strictly require a bump.
+# On resume, the version stored at run creation is compared against this constant; a
+# mismatch refuses the resume with a clear error rather than a confusing mid-run
+# deserialization failure. Per-version history: ../CHANGELOG.md.
 WORKFLOW_VERSION = "1.11.0"
 
 
@@ -117,11 +40,11 @@ class IncompatibleCheckpointError(FatalError):
 
 
 class IncompatibleManifestError(FatalError):
-    """Phase 33: raised on resume when the step manifest in orchestrator.toml
-    was edited since the run started. The resolved manifest is snapshotted
-    into the first checkpoint; a different hash on resume means the injected
-    step graph changed underneath the run, so we refuse rather than resume
-    into a shifted graph. Extends Phase 20's version gate with a second hash.
+    """Raised on resume when the step manifest in orchestrator.toml was edited
+    since the run started. The resolved manifest is snapshotted into the first
+    checkpoint; a different hash on resume means the injected step graph changed
+    underneath the run, so we refuse rather than resume into a shifted graph.
+    The companion of the WORKFLOW_VERSION gate — a second hash over the steps.
     """
 
     def __init__(self, stored_hash: str, current_hash: str) -> None:
@@ -140,10 +63,9 @@ class IncompatibleManifestError(FatalError):
 from langgraph.func import entrypoint, task
 from langgraph.types import interrupt
 
-# AsyncSqliteSaver replaces Phase 2's MemorySaver. Same checkpointer API,
-# but state is written to a SQLite file on disk — durable across process
-# restarts and crashes. The .aio submodule is the async variant; the
-# sync variant lives in langgraph.checkpoint.sqlite.
+# AsyncSqliteSaver writes checkpoint state to a SQLite file on disk — durable
+# across process restarts and crashes. The .aio submodule is the async variant;
+# the sync variant lives in langgraph.checkpoint.sqlite.
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 # JsonPlusSerializer is the default serde the checkpointer uses to encode
@@ -202,17 +124,15 @@ from orchestrator.run_artifacts import (
 # across upgrades. Each entry is (module_path, class_name).
 _ALLOWED_MSGPACK_MODULES = [
     ("orchestrator.agents.planning", "PlanResult"),
-    # Phase 55: the decomposer's task list. `Task` rides inside DecompositionResult,
-    # so only the container type needs registering.
+    # The decomposer's task list. `Task` rides inside DecompositionResult, so only
+    # the container type needs registering.
     ("orchestrator.agents.decompose", "DecompositionResult"),
-    # Phase 42: ImplementationResult is gone — implementation is now a generic
-    # producer returning StepResult; SummaryResult (the relocated commit/PR
-    # summary + test_plan) takes its slot. QaResult stays (QA is hard-baked).
+    # The summarizer's commit/PR summary + test_plan.
     ("orchestrator.agents.summarize", "SummaryResult"),
     ("orchestrator.agents.qa", "QaResult"),
     ("orchestrator.usage", "TaskUsage"),
-    # Phase 33: one registered type for ALL injected steps, so the allowlist
-    # stays closed however many steps users add.
+    # One registered type for ALL injected steps, so the allowlist stays closed
+    # however many steps users add.
     ("orchestrator.manifest", "StepResult"),
 ]
 
@@ -227,39 +147,34 @@ _CUSTOM_SERDE = JsonPlusSerializer(
 #   - surface it as a span in the LangSmith trace tree
 # @task knows nothing about which checkpointer is in use — that's
 # configured on the @entrypoint below.
-# Phase 20: the version gate's storage mechanism. This task records the
-# WORKFLOW_VERSION current at the moment a run is first created. Because
-# @task results are checkpointed and replayed (not recomputed) on resume,
-# calling it at the top of the body returns:
+# The version gate's storage mechanism. This task records the WORKFLOW_VERSION
+# current at the moment a run is first created. Because @task results are
+# checkpointed and replayed (not recomputed) on resume, calling it at the top of
+# the body returns:
 #   - on the first run: the live WORKFLOW_VERSION (and persists it)
 #   - on every resume:   the CACHED value — the version that created the run
 # That cached value is exactly "what version of the workflow created this
-# checkpoint", which LangGraph doesn't expose natively (see the landmine in
-# phase_20_schema_versioning.md). The body compares it against the live
-# constant and refuses the resume on mismatch.
-#
-# Adding this as a new task is safe for checkpoints created before Phase 20:
-# @task cache keys are per-function-name, so inserting a new name doesn't
-# shift the keys of existing tasks. A legacy checkpoint simply runs this
-# task fresh on resume (returning the live version → no false mismatch).
+# checkpoint", which LangGraph doesn't expose natively. The body compares it
+# against the live constant and refuses the resume on mismatch. Adding a new
+# @task name is safe for older checkpoints: cache keys are per-function-name, so
+# a legacy checkpoint just runs this fresh on resume (no false mismatch).
 @task
 async def record_version_task() -> str:
     return WORKFLOW_VERSION
 
 
-# Phase 33: manifest snapshot. Mirrors record_version_task EXACTLY — takes no
-# input and recomputes the hash itself, so its checkpointed value is
-# unambiguously "the manifest hash at run-creation time" with nothing that
-# could look input-dependent. Returns the live hash on the first run (and
-# persists it), the cached creation-time hash on every resume. The body
-# compares it against the freshly-loaded manifest and refuses the resume if
+# Manifest snapshot. Mirrors record_version_task EXACTLY — takes no input and
+# recomputes the hash itself, so its checkpointed value is unambiguously "the
+# manifest hash at run-creation time" with nothing that could look input-dependent.
+# Returns the live hash on the first run (and persists it), the cached
+# creation-time hash on every resume; the body refuses the resume if
 # orchestrator.toml's steps changed mid-run.
 @task
 async def record_manifest_hash_task() -> str:
     return load_manifest().manifest_hash()
 
 
-# Phase 33: per-step task factories. Each injected step is wrapped in a @task
+# Per-step task factories. Each injected step is wrapped in a @task
 # NAMED for its step id (`step:<id>`) — so it appears under its own id in the
 # LangSmith trace tree and gets its own checkpoint identity, instead of every
 # script (or every ai_agent) step collapsing onto one shared task name.
@@ -310,12 +225,12 @@ def _make_ai_agent_task(step_id: str, *, as_gate: bool = False):
 
 
 class StepGateAborted(RuntimeError):
-    """Phase 33: raised when a human pause is resumed with an abort decision
+    """Raised when a human pause is resumed with an abort decision
     ('abort'/'no'/'stop') — an approval_gate step, or a human_in_loop review
-    pause on an ai_agent step / retry-block producer (Phase 44). Propagates out
-    of run_seam to the entrypoint body, which converts it into a clean
-    status="aborted" return. All seams run before the commit line, so an abort
-    never leaves a half-shipped state.
+    pause on an ai_agent step / retry-block producer. Propagates out of run_seam
+    to the entrypoint body, which converts it into a clean status="aborted"
+    return. All gates run before the commit line, so an abort never leaves a
+    half-shipped state.
     """
 
     def __init__(self, step_id: str) -> None:
@@ -324,12 +239,11 @@ class StepGateAborted(RuntimeError):
 
 
 class BuildFailed(RuntimeError):
-    """Phase 46: a `build` step ran its full retry budget without a passing gate
-    under on_exhausted="abort" (or a human declined to keep retrying). Carries
-    the failing gate's last feedback so the entrypoint body can return the clean
-    status="failed" dict (preserving the pre-46 contract: a QA-exhausted run ends
-    `failed` with `qa_failures`, never a raw exception). Build steps are
-    pre-commit, so nothing is half-shipped.
+    """A `build` step ran its full retry budget without a passing gate under
+    on_exhausted="abort" (or a human declined to keep retrying). Carries the
+    failing gate's last feedback so the entrypoint body can return the clean
+    status="failed" dict (a QA-exhausted run ends `failed` with `qa_failures`,
+    never a raw exception). Build steps are pre-commit, so nothing is half-shipped.
     """
 
     def __init__(self, step_id: str, attempts: int, last_feedback: str | None) -> None:
@@ -350,25 +264,25 @@ _GATE_ABORT_WORDS = frozenset({"abort", "no", "stop"})
 def _is_abort(decision) -> bool:
     """True if a human's resume value at a gate/pause is an abort word.
 
-    Phase 60: the single home for the abort decision check that every interrupt
-    site (approval_gate, ai_agent review, build producer/gate pauses, retry review)
-    used to inline. A non-string decision (or any non-abort word) is not an abort —
+    The single home for the abort decision check that every interrupt site
+    (approval_gate, ai_agent review, build producer/gate pauses, retry review)
+    shares. A non-string decision (or any non-abort word) is not an abort —
     the run proceeds."""
     return isinstance(decision, str) and decision.strip().lower() in _GATE_ABORT_WORDS
 
 
 def _record_usage(usage_by_task: dict, key: str, result) -> None:
-    """Append `result`'s token usage under `key`, if it has any (Phase 60).
+    """Append `result`'s token usage under `key`, if it has any.
 
     The single home for the `if result.usage: usage_by_task[...].append(...)` pair
-    that every agent step inlined. setdefault covers both the pre-seeded spine keys
+    that every agent step shares. setdefault covers both the pre-seeded spine keys
     (planning/qa/...) and dynamic step ids; a result with no usage is a no-op."""
     if result.usage:
         usage_by_task.setdefault(key, []).append(result.usage)
 
 
 class AutonomousCeilingExceeded(WorkflowCancelled):
-    """Phase 37: a fully-autonomous run hit its time or cost safety ceiling.
+    """A fully-autonomous run hit its time or cost safety ceiling.
 
     Subclasses WorkflowCancelled so it stops the run through the SAME between-task
     path as a user cancel — but carries a `reason` the entrypoint surfaces so a
@@ -405,12 +319,12 @@ async def run_seam(
     checked before each step (between-step semantics, inherited from the spine).
     Each ai_agent step's usage is accumulated under its own `id`.
 
-    Phase 46: a `build` step at this seam dispatches to _run_build_step.
+    A `build` step at this seam dispatches to _run_build_step.
     `builtin_producers`/`builtin_gates` are the spine's own implementation/QA
     callables, injected so a build can reference the built-in `implementation`
     producer / `qa` gate without a [steps.defs.*] entry. `thread_id`/`audit` are
-    forwarded so a build's per-step human_in_loop pauses (Phase 51) can emit
-    interrupt audit events.
+    forwarded so a build's per-step human_in_loop pauses can emit interrupt
+    audit events.
     """
     steps = manifest.for_seam(seam)
     if not steps:
@@ -419,9 +333,9 @@ async def run_seam(
     for step in steps:
         check_cancel()
         if isinstance(step, ApprovalGateStep):
-            # Phase 37: in autonomous mode an approval_gate has no one to answer
-            # it, so auto-proceed (treat as approved) rather than deadlock. The
-            # bypass is recorded so it's visible in the audit trail.
+            # In autonomous mode an approval_gate has no one to answer it, so
+            # auto-proceed (treat as approved) rather than deadlock. The bypass is
+            # recorded so it's visible in the audit trail.
             if autonomous:
                 if audit is not None and thread_id is not None:
                     emit_event(audit, thread_id, "auto_approved",
@@ -453,7 +367,7 @@ async def run_seam(
                 # Pause AFTER the agent ran (its @task output is checkpointed, so
                 # resume replays it instead of re-running) to let a human review
                 # the result. Same abort contract as an approval_gate step.
-                # Phase 37: skipped entirely in autonomous mode.
+                # Skipped entirely in autonomous mode.
                 decision = interrupt({
                     "kind": "step_ai_agent_review",
                     "step_id": step.id,
@@ -463,8 +377,8 @@ async def run_seam(
                 if _is_abort(decision):
                     raise StepGateAborted(step.id)
         elif isinstance(step, BuildStep):
-            # Phase 46: a declarative build step. Runs on the SAME generic engine
-            # the built-in spine uses, with producers and gates resolved from
+            # A declarative build step. Runs on the SAME generic engine the
+            # built-in spine uses, with producers and gates resolved from
             # manifest.defs (or the injected built-ins).
             await _run_build_step(
                 step, manifest, plan_text, check_cancel, usage_by_task,
@@ -489,7 +403,7 @@ async def _run_build_step(
     audit=None,
     autonomous: bool = False,
 ) -> None:
-    """Execute a declarative [[steps.*]] type="build" step (Phase 46).
+    """Execute a declarative [[steps.*]] type="build" step.
 
     Wraps the generic engine (retry_block.run_retry_block). Producer/gate ids
     resolve in order: a [steps.defs.*] entry (run via the SAME @task factories
@@ -499,21 +413,21 @@ async def _run_build_step(
     StepResult.passed (script: exit code; ai_agent: the emitted `passed`); on a
     retry, the failing gate's feedback is injected into producer ai_agents.
 
-    Phase 51: the two human pauses are driven by THIS build step's
-    `human_in_loop` config (not global flags), so they work for any producer/gate:
-    `after_producer` pauses after the producers, before the gates, every attempt
-    (kind `build_producer_pause`); `on_gate_fail` pauses on a failing gate (kind
+    The two human pauses are driven by THIS build step's `human_in_loop` config
+    (not global flags), so they work for any producer/gate: `after_producer` pauses
+    after the producers, before the gates, every attempt (kind
+    `build_producer_pause`); `on_gate_fail` pauses on a failing gate (kind
     `build_gate_failed`) where an abort word stops the run and anything else
-    retries. Phase 52: under on_exhausted="approval_gate" the exhaustion prompt
-    also accepts a count — a human may grant more attempts (bounded by the optional
+    retries. Under on_exhausted="approval_gate" the exhaustion prompt also accepts
+    a count — a human may grant more attempts (bounded by the optional
     retry.max_total_attempts) and the loop keeps going. A non-proceed outcome (gate
     never passed under on_exhausted="abort", or a human aborted) raises BuildFailed,
-    which the entrypoint body turns into
-    the clean status="failed" return — seams are pre-commit, so nothing is
-    half-shipped. Phase 44: if the block succeeds and a producer ai_agent set
-    human_in_loop, pause once for review of its final output. interrupt() (for
-    on_exhausted="approval_gate", the gate-fail pause, and the success review) is
-    reachable because this helper, like run_seam, runs in the entrypoint body.
+    which the entrypoint body turns into the clean status="failed" return — builds
+    are pre-commit, so nothing is half-shipped. If the block succeeds and a producer
+    ai_agent set human_in_loop, pause once for review of its final output.
+    interrupt() (for on_exhausted="approval_gate", the gate-fail pause, and the
+    success review) is reachable because this helper, like run_seam, runs in the
+    entrypoint body.
     """
     repo_root = str(find_project_root())
     defs = manifest.defs
@@ -522,10 +436,9 @@ async def _run_build_step(
     hil = block_step.human_in_loop
 
     async def on_producers_done(attempt: int) -> None:
-        # Phase 51: optional pause after the producer(s), before the gate(s),
-        # every attempt — driven by this build's human_in_loop.after_producer
-        # (the generic replacement for the old implementation_approval).
-        # Phase 37: suppressed in autonomous mode.
+        # Optional pause after the producer(s), before the gate(s), every attempt
+        # — driven by this build's human_in_loop.after_producer. Suppressed in
+        # autonomous mode.
         if hil.after_producer and not autonomous:
             if audit is not None and thread_id is not None:
                 emit_event(audit, thread_id, "interrupt",
@@ -546,10 +459,9 @@ async def _run_build_step(
             attempt,
             feedback or "(no failure details)",
         )
-        # Phase 51: optional pause on a gate failure — driven by this build's
-        # human_in_loop.on_gate_fail (the generic replacement for the old
-        # qa_failure). An abort word stops the run; anything else retries.
-        # Phase 37: suppressed in autonomous mode (the loop just retries).
+        # Optional pause on a gate failure — driven by this build's
+        # human_in_loop.on_gate_fail. An abort word stops the run; anything else
+        # retries. Suppressed in autonomous mode (the loop just retries).
         if hil.on_gate_fail and not autonomous:
             if audit is not None and thread_id is not None:
                 emit_event(audit, thread_id, "interrupt",
@@ -567,8 +479,8 @@ async def _run_build_step(
                 return False  # stop now; don't spend another attempt
         return True
     # Final result of each producer, so a human_in_loop producer's gate-passing
-    # output can be surfaced for review once the block succeeds (Phase 44). On
-    # resume the producer @tasks replay from checkpoint and repopulate this.
+    # output can be surfaced for review once the block succeeds. On resume the
+    # producer @tasks replay from checkpoint and repopulate this.
     last_producer_result: dict[str, StepResult] = {}
 
     async def run_producer(pid: str, feedback: str | None) -> StepResult:
@@ -627,19 +539,19 @@ async def _run_build_step(
         on_producers_done=on_producers_done,
         on_gate_failed=on_gate_failed,
         interrupt_fn=interrupt,  # used only when on_exhausted="approval_gate"
-        autonomous=autonomous,   # Phase 37: unbounded budget; loop until a gate passes
+        autonomous=autonomous,   # unbounded budget; loop until a gate passes
     )
     if not result.proceed:
         raise BuildFailed(block_step.id, result.attempts, result.last_feedback)
 
-    # Phase 44: pause ONCE after the block SUCCEEDS (result.ok — a real gate
-    # pass, whether first try or after retries) if any producer ai_agent opted
-    # into human_in_loop, so a human can review the final, gate-passing output.
+    # Pause ONCE after the block SUCCEEDS (result.ok — a real gate pass, whether
+    # first try or after retries) if any producer ai_agent opted into
+    # human_in_loop, so a human can review the final, gate-passing output.
     # Intermediate failed attempts never pause; nor does an exhausted-but-proceed
     # block (result.ok is False there — on_exhausted governs that path). The flag
     # is honoured on producers only; a gate is a read-only judge run every
     # attempt, so its human_in_loop is ignored.
-    if result.ok and not autonomous:  # Phase 37: no review pause in autonomous mode
+    if result.ok and not autonomous:  # no review pause in autonomous mode
         reviewed = [
             pid
             for pid in block_step.produce
@@ -665,17 +577,16 @@ async def _run_build_step(
 
 
 # ---------------------------------------------------------------------------
-# Phase 56: the per-task execution station (Option B).
-# Loops the FROZEN task list from the decomposer (Phase 55) and runs each task as
-# a produce⇄gate build via the SAME engine the spine used before — _run_build_step
-# / run_retry_block — with the [workflow.task_build] recipe. This REPLACES the
-# single hard-baked impl⇄QA build as the spine's implementation mechanism.
+# The per-task execution station.
+# Loops the FROZEN task list from the decomposer and runs each task as a
+# produce⇄gate build via the same engine the rest of the spine uses —
+# _run_build_step / run_retry_block — with the [workflow.task_build] recipe.
 #
-# Two nested loops: the OUTER per-task loop here (new), wrapping the INNER
-# per-attempt retry inside each task's build (unchanged engine). The task list is
-# a checkpointed decompose_task result, so it replays deterministically on resume;
-# each task's build @tasks replay positionally — no separate task-list hash gate is
-# needed (same "rely on existing guards" reasoning as Phase 42's no-new-hash note).
+# Two nested loops: the OUTER per-task loop here, wrapping the INNER per-attempt
+# retry inside each task's build. The task list is a checkpointed decompose_task
+# result, so it replays deterministically on resume; each task's build @tasks
+# replay positionally — no separate task-list hash gate is needed (the existing
+# checkpoint guards cover it).
 # ---------------------------------------------------------------------------
 
 
@@ -719,15 +630,15 @@ async def _run_task_loop(
     audit,
     autonomous: bool = False,
 ) -> None:
-    """Run the decomposed task list, one produce⇄gate build per task (Phase 56).
+    """Run the decomposed task list, one produce⇄gate build per task.
 
     Each task reuses _run_build_step with a synthetic BuildStep built from
-    [workflow.task_build], so per-task retry/feedback (Phase 42), human pauses
-    (Phase 51), and the growable budget (Phase 52) all come for free. The built-in
-    `implementation` producer / `qa` gate are made task-aware by composing this
-    task's context into the plan text. A task that exhausts its budget raises
-    BuildFailed(step_id="task:<id>") → the entrypoint's clean status="failed".
-    Runs in the entrypoint body so its interrupt()s are reachable."""
+    [workflow.task_build], so per-task retry/feedback, human pauses, and the
+    growable budget all come for free. The built-in `implementation` producer /
+    `qa` gate are made task-aware by composing this task's context into the plan
+    text. A task that exhausts its budget raises BuildFailed(step_id="task:<id>")
+    → the entrypoint's clean status="failed". Runs in the entrypoint body so its
+    interrupt()s are reachable."""
     tb = config.workflow.task_build
     for task in decomposition.tasks:
         impl_plan = _compose_task_plan(plan_result.plan_text, task)
@@ -788,7 +699,7 @@ async def _run_final_qa(
     thread_id: str,
     audit,
 ) -> None:
-    """Phase 56: optional single whole-diff acceptance check after all tasks pass.
+    """Optional single whole-diff acceptance check after all tasks pass.
 
     Default no-op ([workflow.final_qa].gate is empty — QA runs per-task). When
     configured, runs each gate over the WHOLE diff: the built-in `qa` (judged
@@ -828,22 +739,20 @@ async def _run_final_qa(
 
 @task
 async def planning_task(request: str, model: str) -> PlanResult:
-    # Phase 59: `model` is required — every caller resolves it via
-    # config.resolved_model(...), so a default here would be dead and a drift trap.
+    # `model` is required — every caller resolves it via config.resolved_model(...),
+    # so a default here would be dead and a drift trap.
     return await plan(request, model=model)
 
 
-# Phase 55: the decomposer. Runs after planning (and again after each plan-feedback
-# regeneration), turning the approved plan into an ordered task list. Its
-# DecompositionResult is checkpointed (on the serde allowlist), so a re-execution of
-# the entrypoint body after the plan-approval interrupt replays it for free. The
-# step is EXECUTION-INERT in Phase 55 — the list is surfaced for review and written
-# to the run folder, but nothing drives work off it yet (Phase 56 adds that loop).
+# The decomposer. Runs after planning (and again after each plan-feedback
+# regeneration), turning the approved plan into an ordered task list that
+# _run_task_loop executes. Its DecompositionResult is checkpointed (on the serde
+# allowlist), so a re-execution of the entrypoint body after the plan-approval
+# interrupt replays it for free.
 @task
 async def decompose_task(
     plan_text: str, model: str, max_tasks: int = 0
 ) -> DecompositionResult:
-    # Phase 59: `model` required (resolved by the caller); see planning_task.
     return await decompose(plan_text, model, max_tasks)
 
 
@@ -853,11 +762,11 @@ async def decompose_task(
 # internally, since the tree could be dirtied between approval and branch
 # creation (the user has time to make edits during plan review).
 #
-# Phase 29: after the tree check, run any user-defined pre-hook scripts
-# from `.orchestrator/pre-hooks/` (configurable). A non-zero exit from
-# any script raises PreHookError, which propagates out of the task and
-# aborts the workflow — same pattern as DirtyTreeError from
-# verify_clean_tree. The hook's stdout becomes the displayed abort reason.
+# After the tree check, run any user-defined pre-hook scripts from
+# `.orchestrator/pre-hooks/` (configurable). A non-zero exit from any script
+# raises PreHookError, which propagates out of the task and aborts the workflow —
+# same pattern as DirtyTreeError from verify_clean_tree. The hook's stdout becomes
+# the displayed abort reason.
 @task
 async def verify_clean_tree_task() -> None:
     await asyncio.to_thread(verify_clean_tree)
@@ -866,7 +775,7 @@ async def verify_clean_tree_task() -> None:
     await asyncio.to_thread(run_pre_hooks, _cfg.pre_hooks.dir, _cfg.pre_hooks.timeout)
 
 
-# Deterministic git task (Phase 6a). Wraps the synchronous create_branch
+# Deterministic git task. Wraps the synchronous create_branch
 # function with asyncio.to_thread so it doesn't block the event loop —
 # subprocess.run is blocking, and even fast git commands shouldn't stall
 # the loop. The @task wrapper means a successful branch creation is
@@ -879,16 +788,14 @@ async def create_branch_task(
     return await asyncio.to_thread(create_branch, plan_result, max_slug_length, thread_id)
 
 
-# Phase 6b / Phase 42. Runs the implementation agent (Claude Agent SDK in a
-# loop) to edit files according to the plan. It is now a GENERIC retry-block
-# producer: it emits a plain StepResult (its `detail` is ignored downstream),
-# and the commit/PR summary + test_plan are produced separately by
-# summarize_task. The old implement()/ImplementationResult and the
-# implement/"fix" mode switch are gone — on a retry the failing gate's feedback
-# arrives via `feedback`, appended to the user message under a standard heading
-# (feedback_section). Implementation is the most expensive task by far (minutes
-# of LLM time, real file edits), so the @task wrapper's resume-skip is the
-# single biggest cost win the checkpointer gives us.
+# Runs the implementation agent (Claude Agent SDK in a loop) to edit files per the
+# plan. A generic retry-block producer: it emits a plain StepResult (its `detail`
+# is ignored downstream), and the commit/PR summary + test_plan are produced
+# separately by summarize_task. On a retry the failing gate's feedback arrives via
+# `feedback`, appended to the user message under a standard heading
+# (feedback_section). Implementation is the most expensive task by far (minutes of
+# LLM time, real file edits), so the @task wrapper's resume-skip is the single
+# biggest cost win the checkpointer gives us.
 async def _run_implementation_producer(
     plan_text: str, feedback: str | None, model: str
 ) -> StepResult:
@@ -896,15 +803,13 @@ async def _run_implementation_producer(
 
     Keeping it separate lets the @task wrapper stay a pure checkpoint boundary:
     on resume the @task replays its cached StepResult and this expensive agent
-    call is skipped. (It is also the seam tests fake when they resume mid-loop,
-    so the real @task's replay semantics stay under test — the same role the old
-    implement() played before Phase 42.)
+    call is skipped. (It is also what the build tests fake when they resume
+    mid-loop, so the real @task's replay semantics stay under test.)
     """
-    _impl = load_config().workflow.implementation  # Phase 40: [workflow.implementation]
+    _impl = load_config().workflow.implementation
     parts = ["## Plan", "", plan_text]
     if feedback:
-        # Phase 42: replaces mode="fix" + qa_failures. The producer formats the
-        # raw gate detail via the engine's standard helper.
+        # The producer formats the raw gate detail via the engine's standard helper.
         parts += ["", feedback_section(feedback)]
     return await run_structured_agent(
         system_prompt=load_prompt("implementation"),
@@ -940,54 +845,46 @@ async def implementation_task(
     feedback: str | None,
     model: str,
 ) -> StepResult:
-    # Phase 59: `model` required (resolved by the caller). `feedback` also loses its
-    # default — both call sites pass it positionally — so a required `model` can
-    # follow it without a "non-default arg after default arg" error.
+    # `model` is required (resolved by the caller). `feedback` also has no default —
+    # both call sites pass it positionally — so a required `model` can follow it
+    # without a "non-default arg after default arg" error.
     return await _run_implementation_producer(plan_text, feedback, model)
 
 
-# Phase 6c. Read-only LLM task: the QA agent reviews the uncommitted
-# diff against the approved plan and emits a PASS/FAIL verdict. No file
-# edits, no git operations. The QaResult feeds into Phase 7's retry
-# loop — on FAIL the orchestrator will call implementation_task again
-# in "fix" mode with the failure text. For now (linear chain, no
-# retries yet) we just record the verdict in the workflow result.
+# Read-only LLM task: the QA agent reviews the uncommitted diff against the
+# approved plan and emits a PASS/FAIL verdict. No file edits, no git operations.
+# On FAIL the build's retry loop re-runs the implementation producer with the
+# failure text as feedback.
 @task
 async def qa_task(
     plan_result: PlanResult, model: str
 ) -> QaResult:
-    # Phase 59: `model` required (resolved by the caller); see planning_task.
     return await qa(plan_result, model=model)
 
 
-# Phase 42: the summarizer. Runs ONCE after the impl→QA retry block passes,
-# before commit. Reads the plan + `git diff HEAD` and emits the commit/PR
-# summary + test_plan — the structured output that used to live on
-# ImplementationResult, relocated to a read-only post-loop @task so the
-# implementation producer could become generic. Its SummaryResult is
-# checkpointed (on the serde allowlist), so a crash before commit replays it.
+# The summarizer. Runs ONCE after the impl→QA retry block passes, before commit.
+# Reads the plan + `git diff HEAD` and emits the commit/PR summary + test_plan
+# (the implementation producer is generic, so this read-only post-loop @task owns
+# that structured output). Its SummaryResult is checkpointed (on the serde
+# allowlist), so a crash before commit replays it.
 @task
 async def summarize_task(
     plan_text: str, model: str
 ) -> SummaryResult:
-    # Phase 59: `model` required (resolved by the caller); see planning_task.
     return await summarize(plan_text, model)
 
 
-# Phase 41: documentation agent, a permanent spine task. Runs once after
-# summarize, before commit — on the final, QA-passed code — so any doc edits
-# land in the same commit. (Phase 49: pre-commit work is now the tail of the
-# `work` list, which runs before summarize.) The
-# prompt ships in the package (orchestrator/prompts/docs.md, tracked by git)
+# Documentation agent, a permanent spine task. Runs once after summarize, before
+# commit — on the final, QA-passed code — so any doc edits land in the same commit.
+# The prompt ships in the package (orchestrator/prompts/docs.md, tracked by git)
 # and is loaded via load_prompt — the same loader as planning/implementation/qa,
 # so it inherits the .orchestrator/prompts/ override path — rather than from
 # .orchestrator/agents/ (gitignored), so a spine step never depends on a
-# local-only file. Built directly on Phase 39's run_structured_agent.
+# local-only file.
 @task
 async def docs_task(
     plan_text: str, model: str
 ) -> StepResult:
-    # Phase 59: `model` required (resolved by the caller); see planning_task.
     """Run the documentation agent against the QA-passed working tree.
 
     A @task like every other spine step: its StepResult is checkpointed, so a
@@ -1020,10 +917,10 @@ async def docs_task(
     )
 
 
-# Phase 15: the old commit_and_pr_task split into three idempotent
-# tasks. Each step's success is checkpointed independently, so a
-# failure at push or pr_create can be resumed via the resume_run MCP
-# tool without re-committing or re-pushing work that already landed.
+# Commit / push / PR are three idempotent tasks. Each step's success is
+# checkpointed independently, so a failure at push or pr_create can be resumed via
+# the resume_run MCP tool without re-committing or re-pushing work that already
+# landed.
 #
 # push_task and pr_create_task take `sha` as an input even though they
 # don't use it directly — including it in the inputs invalidates the
@@ -1046,9 +943,8 @@ async def push_task(branch: str, sha: str, base_branch: str | None = None, auto_
     no-op when the remote is already up to date).
 
     Fetches origin first and rebases onto origin/<base_branch> if it
-    moved since branch creation (Phase 22). Rebase conflicts surface as
-    a UserActionError; set auto_rebase=False to skip and ask for manual
-    rebase instead.
+    moved since branch creation. Rebase conflicts surface as a UserActionError;
+    set auto_rebase=False to skip and ask for manual rebase instead.
     """
     return await asyncio.to_thread(push, branch, base_branch, auto_rebase)
 
@@ -1068,8 +964,8 @@ async def pr_create_task(
     """Open a PR and return its URL. Idempotent: if a PR already exists
     for this branch, returns its URL instead of opening another.
 
-    Phase 40: `plan_type` (plan_result.type) is passed through to pr_create,
-    which auto-derives the PR label from it (replacing the old pr.labels list)."""
+    `plan_type` (plan_result.type) is passed through to pr_create, which
+    auto-derives the PR label from it."""
     return await asyncio.to_thread(
         pr_create, branch, title, summary, test_plan,
         base_branch, draft, reviewers or [], plan_type,
@@ -1077,21 +973,19 @@ async def pr_create_task(
 
 
 # ---------------------------------------------------------------------------
-# Phase 58: entrypoint-body helpers. The @entrypoint body used to inline every
-# phase; these named helpers carve it into readable sections. They are plain
-# `async def` (not @task), so the interrupt()s inside _plan_and_approve run in
-# the entrypoint frame — the same rule run_seam / _run_build_step already follow.
+# Entrypoint-body helpers carve the @entrypoint body into readable sections. They
+# are plain `async def` (not @task), so the interrupt()s inside _plan_and_approve
+# run in the entrypoint frame — the same rule run_seam / _run_build_step follow.
 #
-# Refactor invariant: the @task names, their count, and their EXECUTION ORDER are
-# unchanged. LangGraph keys a task by name + call position, and calling @tasks
-# from module-level helpers is the established pattern (run_seam), so the task
-# graph is identical and resume/replay is unaffected — hence no WORKFLOW_VERSION
-# bump (see the note above the constant).
+# Invariant: the @task names, their count, and their EXECUTION ORDER must stay
+# fixed. LangGraph keys a task by name + call position, and calling @tasks from
+# module-level helpers is the established pattern (run_seam), so the task graph
+# stays identical and resume/replay is unaffected.
 # ---------------------------------------------------------------------------
 
 
 async def _gate_checkpoint_and_manifest() -> WorkflowManifest:
-    """Phase 20/33 resume gates. Returns the loaded manifest.
+    """The version + manifest-hash resume gates. Returns the loaded manifest.
 
     record_version_task / record_manifest_hash_task return the live values on a
     fresh run (and persist them) and the cached creation-time values on resume; a
@@ -1126,9 +1020,8 @@ async def _plan_and_approve(
     The loop runs until the user replies "yes"; any other reply is feedback that
     regenerates the plan (and re-decomposes, so the two never drift). The plan is
     decomposed BEFORE the approval interrupt so the task list is shown alongside
-    the plan (Phase 55). interrupt() is reachable because this helper runs in the
-    entrypoint frame. Planning is auto-approved under human_in_loop=false or
-    autonomous mode (Phase 13/37).
+    the plan. interrupt() is reachable because this helper runs in the entrypoint
+    frame. Planning is auto-approved under human_in_loop=false or autonomous mode.
     """
     async def _run_planning(req: str) -> PlanResult:
         check_cancel()
@@ -1184,12 +1077,12 @@ async def _ship(
 ) -> tuple[SummaryResult, str]:
     """summarize → docs → commit → push → pr. Returns (summary_result, pr_url).
 
-    summarize (Phase 42) and docs (Phase 41) run read-only on the QA-passed tree
-    before the commit, so doc edits land in the same commit and cancel is still
-    safe up to the commit line. The three git @tasks (Phase 15) are idempotent and
-    individually checkpointed, so a failure between commit/push/pr is resumable.
-    No cancel checks once the commit has landed — aborting then would leave a
-    half-shipped branch (use git, not the orchestrator).
+    summarize and docs run read-only on the QA-passed tree before the commit, so
+    doc edits land in the same commit and cancel is still safe up to the commit
+    line. The three git @tasks are idempotent and individually checkpointed, so a
+    failure between commit/push/pr is resumable. No cancel checks once the commit
+    has landed — aborting then would leave a half-shipped branch (use git, not the
+    orchestrator).
     """
     check_cancel()
     async with audited(audit, thread_id, "summarize"):
@@ -1273,20 +1166,20 @@ async def build_workflow(
         async def workflow(request: str) -> dict:
             thread_id = get_config()["configurable"]["thread_id"]
 
-            # Phase 37: one resolved flag for the whole run. Read once here so
-            # every gate-suppression check below shares it.
+            # One resolved flag for the whole run. Read once here so every
+            # gate-suppression check below shares it.
             autonomous = config.fully_autonomous
             # Wall-clock budget is per-invocation (monotonic resets per process).
             # Fine because autonomous runs don't pause mid-flight — a run is one
             # continuous process; a resume after a crash starts a fresh budget.
             _run_started = time.monotonic()
 
-            # Phase 16/37: cancel-check helper closed over thread_id. Called
-            # before each task (and threaded into builds as check_cancel, so it
-            # fires per producer attempt). Raises WorkflowCancelled if the
-            # cancel_run MCP tool marked this thread, OR — in autonomous mode —
-            # if the run crossed its time/cost safety ceiling. The except clause
-            # at the bottom converts either into a status="cancelled" dict.
+            # Cancel-check helper closed over thread_id. Called before each task
+            # (and threaded into builds as check_cancel, so it fires per producer
+            # attempt). Raises WorkflowCancelled if the cancel_run MCP tool marked
+            # this thread, OR — in autonomous mode — if the run crossed its
+            # time/cost safety ceiling. The except clause at the bottom converts
+            # either into a status="cancelled" dict.
             def _check_cancel() -> None:
                 raise_if_cancelled(thread_id)
                 if not autonomous:
@@ -1305,9 +1198,9 @@ async def build_workflow(
                     if spent > max_cost:
                         raise AutonomousCeilingExceeded(thread_id, "autonomous_ceiling")
 
-            # Phase 24: build the audit sink once per invocation.
-            # Each ainvoke() call (fresh start or resume after interrupt)
-            # emits a "resume" event so the log captures every interaction.
+            # Build the audit sink once per invocation. Each ainvoke() call (fresh
+            # start or resume after interrupt) emits a "resume" event so the log
+            # captures every interaction.
             _audit_log = str(find_project_root() / config.audit.log_path)
             _audit: AuditSink = (
                 build_sink(_audit_log) if config.audit.enabled else NoopAuditSink()
@@ -1335,9 +1228,9 @@ async def build_workflow(
             branch_name: str | None = None
 
             try:
-                # Phase 20/33 resume gates (workflow-version + injected-step
-                # manifest hash). Raised from the body, not a @task, so a mismatch
-                # leaves the checkpoint untouched and resumable. See the helper.
+                # Resume gates (workflow-version + injected-step manifest hash).
+                # Raised from the body, not a @task, so a mismatch leaves the
+                # checkpoint untouched and resumable. See the helper.
                 manifest = await _gate_checkpoint_and_manifest()
 
                 _check_cancel()
@@ -1355,7 +1248,7 @@ async def build_workflow(
                     check_cancel=_check_cancel, usage_by_task=usage_by_task,
                 )
 
-                # Phase 13: optional branch-creation approval gate.
+                # Optional branch-creation approval gate.
                 if config.workflow.branch.human_in_loop and not autonomous:
                     emit_event(_audit, thread_id, "interrupt", payload={"kind": "branch_approval"})
                     interrupt({
@@ -1370,17 +1263,13 @@ async def build_workflow(
                     )
                 rename_with_branch(thread_id, branch_name)
 
-                # Phase 56: the per-task execution station (Option B). The frozen
-                # task list (Phase 55) is run one produce⇄gate build per task via the
-                # SAME engine the spine used before (_run_build_step / run_retry_block)
-                # with the [workflow.task_build] recipe — REPLACING the single
-                # hard-baked impl⇄QA build as the implementation mechanism. n=1 (a
-                # single-task plan) runs exactly one build → today's behaviour. A task
-                # that exhausts its budget raises BuildFailed → the clean
+                # The per-task execution station: the frozen task list is run one
+                # produce⇄gate build per task (_run_build_step / run_retry_block) with
+                # the [workflow.task_build] recipe. A single-task plan runs exactly one
+                # build. A task that exhausts its budget raises BuildFailed → the clean
                 # status="failed" return below (no commit, no PR), tagging the task.
-                # _qa_holder stashes the latest QA verdict for the result dict; the
-                # "qa"/write_qa contract is unchanged. Runs in the entrypoint body so
-                # the build's interrupt()s (Phase 51/52) are reachable.
+                # _qa_holder stashes the latest QA verdict for the result dict. Runs in
+                # the entrypoint body so the build's interrupt()s are reachable.
                 _qa_holder: dict[str, QaResult] = {}
                 await _run_task_loop(
                     decomposition, manifest, plan_result, config,
@@ -1388,12 +1277,10 @@ async def build_workflow(
                     thread_id=thread_id, audit=_audit, autonomous=autonomous,
                 )
 
-                # Any remaining [[steps.work]] entries (user scripts / gates / builds)
-                # still run after the task loop — the seam is no longer the home of the
-                # core impl loop, but it stays for additional user steps. The built-in
-                # implementation/qa are still exposed so a user-declared work build can
-                # reference them. The default orchestrator.toml has no work steps, so
-                # this is a no-op there.
+                # Any [[steps.work]] entries (user scripts / gates / builds) run after
+                # the task loop. The built-in implementation/qa are exposed so a
+                # user-declared work build can reference them. The default
+                # orchestrator.toml has no work steps, so this is a no-op there.
                 async def _builtin_implementation(
                     step_id: str, feedback: str | None
                 ) -> StepResult:
@@ -1432,8 +1319,8 @@ async def build_workflow(
                     autonomous=autonomous,
                 )
 
-                # Phase 56: optional final whole-diff QA after all tasks pass
-                # (default no-op — QA runs per-task). A FAIL raises BuildFailed.
+                # Optional final whole-diff QA after all tasks pass (default no-op —
+                # QA runs per-task). A FAIL raises BuildFailed.
                 await _run_final_qa(
                     config, manifest, plan_result, _check_cancel,
                     usage_by_task, _qa_holder, thread_id=thread_id, audit=_audit,
@@ -1443,10 +1330,10 @@ async def build_workflow(
                 # None only if the task build was ungated AND no final_qa ran.
                 qa_result = _qa_holder.get("qa")
 
-                # Phase 46d: empty-diff resilience. If the build produced no diff
-                # (the producer made no edits and nothing is ahead of base), there
-                # is nothing to ship — committing would create an empty commit and
-                # a no-op PR. Return a clean status="no_changes" instead, skipping
+                # Empty-diff resilience. If the build produced no diff (the producer
+                # made no edits and nothing is ahead of base), there is nothing to
+                # ship — committing would create an empty commit and a no-op PR.
+                # Return a clean status="no_changes" instead, skipping
                 # summarize / docs / commit / push / pr. Checked before the
                 # pr_approval gate so we never ask "open a PR?" for an empty diff.
                 # All of this is pre-commit, so cancel/return is safe.
@@ -1462,12 +1349,12 @@ async def build_workflow(
                         qa=qa_result.model_dump() if qa_result else None,
                     )
 
-                # Phase 13: optional gate before committing and opening PR.
+                # Optional gate before committing and opening PR.
                 if config.workflow.commit.human_in_loop and not autonomous:
                     emit_event(_audit, thread_id, "interrupt", payload={"kind": "pr_approval"})
                     interrupt({"kind": "pr_approval", "ask": "QA passed. Open a PR?"})
 
-                # Phase 42/41/15: summarize → docs → commit → push → pr (see _ship).
+                # summarize → docs → commit → push → pr (see _ship).
                 summary_result, pr_url = await _ship(
                     plan_result, branch_name, config,
                     thread_id=thread_id, audit=_audit,
@@ -1489,13 +1376,13 @@ async def build_workflow(
                 )
 
             except BuildFailed as exc:
-                # Phase 46: a build step ran its full budget without a passing gate
-                # under on_exhausted="abort" (or a human declined to keep retrying).
-                # Clean status="failed" with the last gate feedback under
-                # `qa_failures`, no commit, no PR — build steps are pre-commit, so
-                # nothing is half-shipped. plan_result/branch_name are guarded for a
-                # pre-branch user build. failed_task_id is "task:<id>" (per-task
-                # station), "final_qa", or a [[steps.work]] build id (Phase 56).
+                # A build step ran its full budget without a passing gate under
+                # on_exhausted="abort" (or a human declined to keep retrying). Clean
+                # status="failed" with the last gate feedback under `qa_failures`, no
+                # commit, no PR — build steps are pre-commit, so nothing is
+                # half-shipped. plan_result/branch_name are guarded for a pre-branch
+                # user build. failed_task_id is "task:<id>" (per-task station),
+                # "final_qa", or a [[steps.work]] build id.
                 return _finalize(
                     usage_by_task, thread_id,
                     status="failed",
@@ -1506,9 +1393,9 @@ async def build_workflow(
                 )
 
             except StepGateAborted as exc:
-                # Phase 33: an approval_gate step was resumed with an abort decision.
-                # Every gate runs before the commit line, so nothing is half-shipped;
-                # branch_name may not exist yet (gates can fire pre-branch).
+                # An approval_gate step was resumed with an abort decision. Every gate
+                # runs before the commit line, so nothing is half-shipped; branch_name
+                # may not exist yet (gates can fire pre-branch).
                 return _finalize(
                     usage_by_task, thread_id,
                     status="aborted",
@@ -1517,9 +1404,9 @@ async def build_workflow(
                 )
 
             except WorkflowCancelled as exc:
-                # Phase 16/37: a between-task check found the cancel flag set, or an
-                # autonomous run tripped its safety ceiling — `reason` tells them
-                # apart ("autonomous_ceiling" vs. a user cancel_run). Whatever was in
+                # A between-task check found the cancel flag set, or an autonomous run
+                # tripped its safety ceiling — `reason` tells them apart
+                # ("autonomous_ceiling" vs. a user cancel_run). Whatever was in
                 # progress has completed (the SDK doesn't interrupt mid-task).
                 reason = getattr(exc, "reason", "user_cancel")
                 emit_event(_audit, thread_id, "cancel", payload={"reason": reason})
