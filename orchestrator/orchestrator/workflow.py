@@ -86,6 +86,12 @@ logger = logging.getLogger(__name__)
 # The task list itself needs no separate hash gate — it's a checkpointed decompose
 # result that replays deterministically, and each task's build @tasks replay
 # positionally (same "rely on existing guards" reasoning as Phase 42's no-new-hash).
+# 1.11.0 unchanged (Phase 58): the entrypoint body was carved into named helpers
+# (_gate_checkpoint_and_manifest / _plan_and_approve / _ship / _finalize) with NO
+# change to @task names, count, or execution order. Task identity is position-based
+# and calling @tasks from module-level helpers is already established (run_seam /
+# _run_build_step), so the task graph is byte-for-byte identical — a graph-preserving
+# refactor needs no bump (same reasoning as the "pure additive" note at the top).
 WORKFLOW_VERSION = "1.11.0"
 
 
@@ -1048,6 +1054,176 @@ async def pr_create_task(
     )
 
 
+# ---------------------------------------------------------------------------
+# Phase 58: entrypoint-body helpers. The @entrypoint body used to inline every
+# phase; these named helpers carve it into readable sections. They are plain
+# `async def` (not @task), so the interrupt()s inside _plan_and_approve run in
+# the entrypoint frame — the same rule run_seam / _run_build_step already follow.
+#
+# Refactor invariant: the @task names, their count, and their EXECUTION ORDER are
+# unchanged. LangGraph keys a task by name + call position, and calling @tasks
+# from module-level helpers is the established pattern (run_seam), so the task
+# graph is identical and resume/replay is unaffected — hence no WORKFLOW_VERSION
+# bump (see the note above the constant).
+# ---------------------------------------------------------------------------
+
+
+async def _gate_checkpoint_and_manifest() -> WorkflowManifest:
+    """Phase 20/33 resume gates. Returns the loaded manifest.
+
+    record_version_task / record_manifest_hash_task return the live values on a
+    fresh run (and persist them) and the cached creation-time values on resume; a
+    mismatch means the body or the injected-step manifest changed incompatibly
+    since the run started. Raised from the entrypoint body (not a @task) so it
+    propagates straight out of ainvoke without mutating the checkpoint — the run
+    stays resumable once the code is reverted or the run abandoned.
+    """
+    stored_version = await record_version_task()
+    if stored_version != WORKFLOW_VERSION:
+        raise IncompatibleCheckpointError(stored_version, WORKFLOW_VERSION)
+    manifest = load_manifest()
+    current_hash = manifest.manifest_hash()
+    stored_hash = await record_manifest_hash_task()
+    if stored_hash != current_hash:
+        raise IncompatibleManifestError(stored_hash, current_hash)
+    return manifest
+
+
+async def _plan_and_approve(
+    request: str,
+    config: OrchestratorConfig,
+    *,
+    thread_id: str,
+    audit,
+    autonomous: bool,
+    check_cancel,
+    usage_by_task: dict,
+) -> tuple[PlanResult, DecompositionResult]:
+    """Plan → decompose → approval loop. Returns the approved (plan, decomposition).
+
+    The loop runs until the user replies "yes"; any other reply is feedback that
+    regenerates the plan (and re-decomposes, so the two never drift). The plan is
+    decomposed BEFORE the approval interrupt so the task list is shown alongside
+    the plan (Phase 55). interrupt() is reachable because this helper runs in the
+    entrypoint frame. Planning is auto-approved under human_in_loop=false or
+    autonomous mode (Phase 13/37).
+    """
+    async def _run_planning(req: str) -> PlanResult:
+        check_cancel()
+        async with audited(audit, thread_id, "planning"):
+            pr = await planning_task(req, config.resolved_model(config.workflow.planning))
+        if pr.usage:
+            usage_by_task["planning"].append(pr.usage)
+        write_plan(thread_id, pr)
+        return pr
+
+    async def _run_decompose(pr: PlanResult) -> DecompositionResult:
+        check_cancel()
+        async with audited(audit, thread_id, "decompose"):
+            d = await decompose_task(
+                pr.plan_text,
+                config.resolved_model(config.workflow.decompose),
+                config.workflow.decompose.max_tasks,
+            )
+        if d.usage:
+            usage_by_task["decompose"].append(d.usage)
+        write_decomposition(thread_id, d)
+        return d
+
+    plan_result = await _run_planning(request)
+    decomposition = await _run_decompose(plan_result)
+
+    while True:
+        if config.workflow.planning.human_in_loop and not autonomous:
+            emit_event(audit, thread_id, "interrupt", payload={"kind": "plan_approval"})
+            approval = interrupt({
+                "kind": "plan_approval",
+                "plan": plan_result.model_dump(),
+                "tasks": [t.model_dump() for t in decomposition.tasks],
+                "ask": "Approve this plan? Reply 'yes' or describe changes.",
+            })
+        else:
+            approval = "yes"
+        if approval == "yes":
+            break
+        plan_result = await _run_planning(f"{request}\n\nFeedback: {approval}")
+        decomposition = await _run_decompose(plan_result)
+
+    return plan_result, decomposition
+
+
+async def _ship(
+    plan_result: PlanResult,
+    branch_name: str,
+    config: OrchestratorConfig,
+    *,
+    thread_id: str,
+    audit,
+    check_cancel,
+    usage_by_task: dict,
+) -> tuple[SummaryResult, str]:
+    """summarize → docs → commit → push → pr. Returns (summary_result, pr_url).
+
+    summarize (Phase 42) and docs (Phase 41) run read-only on the QA-passed tree
+    before the commit, so doc edits land in the same commit and cancel is still
+    safe up to the commit line. The three git @tasks (Phase 15) are idempotent and
+    individually checkpointed, so a failure between commit/push/pr is resumable.
+    No cancel checks once the commit has landed — aborting then would leave a
+    half-shipped branch (use git, not the orchestrator).
+    """
+    check_cancel()
+    async with audited(audit, thread_id, "summarize"):
+        summary_result = await summarize_task(
+            plan_result.plan_text, config.resolved_model(config.workflow.summarize)
+        )
+    if summary_result.usage:
+        usage_by_task["summarize"].append(summary_result.usage)
+    write_summary(thread_id, summary_result)
+
+    check_cancel()
+    async with audited(audit, thread_id, "docs"):
+        docs_result = await docs_task(
+            plan_result.plan_text, config.resolved_model(config.workflow.docs)
+        )
+    if docs_result.usage:
+        usage_by_task["docs"].append(docs_result.usage)
+
+    check_cancel()
+    async with audited(audit, thread_id, "commit"):
+        sha = await commit_task(
+            branch_name, plan_result.title, summary_result.summary, config.pr.base_branch
+        )
+    async with audited(audit, thread_id, "push"):
+        await push_task(branch_name, sha, config.pr.base_branch, config.git.auto_rebase)
+    async with audited(audit, thread_id, "pr_create"):
+        pr_url = await pr_create_task(
+            branch_name,
+            plan_result.title,
+            summary_result.summary,
+            summary_result.test_plan,
+            sha,
+            config.pr.base_branch,
+            config.pr.draft,
+            config.pr.reviewers,
+            plan_result.type,
+        )
+    return summary_result, pr_url
+
+
+def _finalize(usage_by_task: dict, thread: str, **fields) -> dict:
+    """Assemble a workflow result dict: aggregate + persist usage, append it.
+
+    Every workflow exit (succeeded / no_changes / failed / aborted / cancelled)
+    ends by aggregating usage, writing it to the run folder, and returning a dict
+    with a `usage` key. This collapses that shared tail; `fields` carries the
+    per-status keys. `thread` is the run's thread_id used for write_usage (named
+    distinctly so a result `thread_id` field can still be passed in `fields`).
+    """
+    usage = aggregate_usage(usage_by_task)
+    write_usage(thread, usage)
+    return {**fields, "usage": usage}
+
+
 # build_workflow is a factory, not a module-level workflow definition.
 # Why: AsyncSqliteSaver.from_conn_string returns an async context manager
 # that opens the SQLite connection on entry and closes it on exit. The
@@ -1141,105 +1317,25 @@ async def build_workflow(
             branch_name: str | None = None
 
             try:
-                # Phase 20: workflow-version gate. Runs first on every
-                # invocation. On a fresh run this records and returns the
-                # live WORKFLOW_VERSION; on a resume it returns the cached
-                # version that created the run. A mismatch means the body
-                # changed incompatibly since this run started — refuse
-                # rather than resume into a shifted task graph. Raised here
-                # (not inside a @task) so it propagates straight out of
-                # ainvoke without mutating the checkpoint, leaving the run
-                # resumable once the code is reverted or the run abandoned.
-                stored_version = await record_version_task()
-                if stored_version != WORKFLOW_VERSION:
-                    raise IncompatibleCheckpointError(stored_version, WORKFLOW_VERSION)
-
-                # Phase 33: load + validate the injected-step manifest (raises
-                # ManifestError on a bad config, before any LLM spend), then
-                # gate on its hash the same way as the version above — a
-                # mid-run orchestrator.toml edit refuses the resume.
-                manifest = load_manifest()
-                current_manifest_hash = manifest.manifest_hash()
-                stored_manifest_hash = await record_manifest_hash_task()
-                if stored_manifest_hash != current_manifest_hash:
-                    raise IncompatibleManifestError(
-                        stored_manifest_hash, current_manifest_hash
-                    )
+                # Phase 20/33 resume gates (workflow-version + injected-step
+                # manifest hash). Raised from the body, not a @task, so a mismatch
+                # leaves the checkpoint untouched and resumable. See the helper.
+                manifest = await _gate_checkpoint_and_manifest()
 
                 _check_cancel()
                 async with audited(_audit, thread_id, "preflight"):
                     await verify_clean_tree_task()
 
-                _check_cancel()
-                async with audited(_audit, thread_id, "planning"):
-                    plan_result = await planning_task(request, config.resolved_model(config.workflow.planning))
-                if plan_result.usage:
-                    usage_by_task["planning"].append(plan_result.usage)
-                write_plan(thread_id, plan_result)
-
-                # Phase 55: decompose the plan into an ordered task list. Closure so
-                # it can run both for the initial plan and again after each
-                # plan-feedback regeneration (so the list never drifts from the
-                # plan). Reads the CURRENT plan_result binding (late binding) — the
-                # loop reassigns plan_result on feedback. EXECUTION-INERT: the result
-                # is surfaced for review + checkpointed + written to the run folder,
-                # but nothing consumes it (Phase 56 adds the per-task loop).
-                async def _run_decompose() -> DecompositionResult:
-                    _check_cancel()
-                    async with audited(_audit, thread_id, "decompose"):
-                        d = await decompose_task(
-                            plan_result.plan_text,
-                            config.resolved_model(config.workflow.decompose),
-                            config.workflow.decompose.max_tasks,
-                        )
-                    if d.usage:
-                        usage_by_task["decompose"].append(d.usage)
-                    write_decomposition(thread_id, d)
-                    return d
-
-                decomposition = await _run_decompose()
-
-                # Phase 8: plan approval interrupt. The loop runs until the
-                # user replies "yes". Any other reply is treated as feedback:
-                # the plan is regenerated with the feedback appended to the
-                # original request, then the new plan is surfaced for another
-                # round of review.
-                #
-                # Phase 13: gated by config.workflow.planning.human_in_loop.
-                # false = auto-approve (fully autonomous mode).
-                #
-                # Landmine #4: create_branch_task (the first side effect) is
-                # intentionally AFTER this block. interrupt() re-executes the
-                # entrypoint body on resume; tasks already completed with the
-                # same inputs return their cached result without a new LLM call,
-                # so planning_task(request) on re-execution is effectively free.
-                while True:
-                    if config.workflow.planning.human_in_loop and not autonomous:
-                        emit_event(_audit, thread_id, "interrupt", payload={"kind": "plan_approval"})
-                        approval = interrupt({
-                            "kind": "plan_approval",
-                            "plan": plan_result.model_dump(),
-                            # Phase 55: the decomposed task list, shown alongside the
-                            # plan for review. Inert in Phase 55 (nothing runs off it).
-                            "tasks": [t.model_dump() for t in decomposition.tasks],
-                            "ask": "Approve this plan? Reply 'yes' or describe changes.",
-                        })
-                    else:
-                        approval = "yes"
-                    if approval == "yes":
-                        break
-                    _check_cancel()
-                    async with audited(_audit, thread_id, "planning"):
-                        plan_result = await planning_task(
-                            f"{request}\n\nFeedback: {approval}",
-                            config.resolved_model(config.workflow.planning),
-                        )
-                    if plan_result.usage:
-                        usage_by_task["planning"].append(plan_result.usage)
-                    write_plan(thread_id, plan_result)
-                    # Phase 55: re-decompose the regenerated plan so the reviewed
-                    # task list always matches the plan the user is approving.
-                    decomposition = await _run_decompose()
+                # Plan → decompose → approval loop (see _plan_and_approve). Returns
+                # the approved plan + its task list. Landmine #4: create_branch_task
+                # (the first side effect) stays AFTER this on purpose — interrupt()
+                # re-executes the body on resume, and completed @tasks replay from
+                # cache, so re-running planning_task(request) costs nothing.
+                plan_result, decomposition = await _plan_and_approve(
+                    request, config,
+                    thread_id=thread_id, audit=_audit, autonomous=autonomous,
+                    check_cancel=_check_cancel, usage_by_task=usage_by_task,
+                )
 
                 # Phase 13: optional branch-creation approval gate.
                 if config.workflow.branch.human_in_loop and not autonomous:
@@ -1342,155 +1438,80 @@ async def build_workflow(
                 if not await asyncio.to_thread(
                     working_tree_has_changes, config.pr.base_branch
                 ):
-                    _usage = aggregate_usage(usage_by_task)
-                    write_usage(thread_id, _usage)
-                    return {
-                        "status": "no_changes",
-                        "plan": plan_result.model_dump(),
-                        "branch": branch_name,
-                        "qa": qa_result.model_dump() if qa_result else None,
-                        "usage": _usage,
-                    }
+                    return _finalize(
+                        usage_by_task, thread_id,
+                        status="no_changes",
+                        plan=plan_result.model_dump(),
+                        branch=branch_name,
+                        qa=qa_result.model_dump() if qa_result else None,
+                    )
 
                 # Phase 13: optional gate before committing and opening PR.
                 if config.workflow.commit.human_in_loop and not autonomous:
                     emit_event(_audit, thread_id, "interrupt", payload={"kind": "pr_approval"})
-                    interrupt({
-                        "kind": "pr_approval",
-                        "ask": "QA passed. Open a PR?",
-                    })
+                    interrupt({"kind": "pr_approval", "ask": "QA passed. Open a PR?"})
 
-                # Phase 42: summarizer — runs once on the QA-passed tree and
-                # derives the commit/PR summary + test_plan from the plan + diff
-                # (replacing implementation's old self-report). Read-only, so
-                # cancel is still safe here (nothing committed yet).
-                _check_cancel()
-                async with audited(_audit, thread_id, "summarize"):
-                    summary_result = await summarize_task(
-                        plan_result.plan_text,
-                        config.resolved_model(config.workflow.summarize),
-                    )
-                if summary_result.usage:
-                    usage_by_task["summarize"].append(summary_result.usage)
-                write_summary(thread_id, summary_result)
-
-                # Phase 41: documentation agent — permanent spine task. Runs
-                # once on the final, QA-passed code, before the commit, so doc
-                # edits land in the same commit. cwd is the target repo; cancel
-                # is still safe here (nothing committed yet). (Phase 49: the
-                # before_commit seam is gone — pre-commit work is the tail of the
-                # `work` list, which runs before summarize.)
-                _check_cancel()
-                async with audited(_audit, thread_id, "docs"):
-                    docs_result = await docs_task(
-                        plan_result.plan_text,
-                        config.resolved_model(config.workflow.docs),
-                    )
-                if docs_result.usage:
-                    usage_by_task["docs"].append(docs_result.usage)
-
-                # Phase 15: three separate @tasks instead of one
-                # commit_and_pr_task. A failure between commit and push
-                # (or push and PR creation) is resumable via resume_run —
-                # completed tasks return cached SHAs/URLs; the failed task
-                # re-executes against the now-fixed underlying issue.
-                #
-                # No cancel checks between commit/push/pr_create: by the time
-                # the commit has landed, "cancelling" would leave the branch
-                # in a confusing half-shipped state. If you need to abort
-                # after commit, do it with git, not the orchestrator.
-                _check_cancel()
-                async with audited(_audit, thread_id, "commit"):
-                    sha = await commit_task(
-                        branch_name, plan_result.title, summary_result.summary,
-                        config.pr.base_branch,
-                    )
-                async with audited(_audit, thread_id, "push"):
-                    await push_task(branch_name, sha, config.pr.base_branch, config.git.auto_rebase)
-                async with audited(_audit, thread_id, "pr_create"):
-                    pr_url = await pr_create_task(
-                        branch_name,
-                        plan_result.title,
-                        summary_result.summary,
-                        summary_result.test_plan,
-                        sha,
-                        config.pr.base_branch,
-                        config.pr.draft,
-                        config.pr.reviewers,
-                        plan_result.type,
-                    )
-                _usage = aggregate_usage(usage_by_task)
-                write_usage(thread_id, _usage)
-                return {
-                    "status": "succeeded",
-                    "plan": plan_result.model_dump(),
-                    "branch": branch_name,
-                    # Assembled from the summarizer (was impl_result.model_dump());
-                    # the {summary, test_plan} shape is unchanged for MCP/UI/tests.
-                    "implementation": {
+                # Phase 42/41/15: summarize → docs → commit → push → pr (see _ship).
+                summary_result, pr_url = await _ship(
+                    plan_result, branch_name, config,
+                    thread_id=thread_id, audit=_audit,
+                    check_cancel=_check_cancel, usage_by_task=usage_by_task,
+                )
+                return _finalize(
+                    usage_by_task, thread_id,
+                    status="succeeded",
+                    plan=plan_result.model_dump(),
+                    branch=branch_name,
+                    # {summary, test_plan} shape unchanged for MCP/UI/tests.
+                    implementation={
                         "summary": summary_result.summary,
                         "test_plan": summary_result.test_plan,
                     },
-                    # None when the build was ungated or gated only on a non-qa
-                    # gate (no built-in QA verdict to report).
-                    "qa": qa_result.model_dump() if qa_result else None,
-                    "pr_url": pr_url,
-                    "usage": _usage,
-                }
+                    # None when the build was ungated or gated only on a non-qa gate.
+                    qa=qa_result.model_dump() if qa_result else None,
+                    pr_url=pr_url,
+                )
 
             except BuildFailed as exc:
-                # Phase 46: a build step ran its full budget without a passing
-                # gate under on_exhausted="abort" (or a human declined to keep
-                # retrying). For the default build this is the old QA-exhausted
-                # path: a clean status="failed" with the last gate feedback under
-                # `qa_failures`, no commit, no PR. Build steps are pre-commit, so
-                # nothing is half-shipped. branch_name/plan_result are set by the
-                # time the default build runs; guarded for a pre-branch user build.
-                _usage = aggregate_usage(usage_by_task)
-                write_usage(thread_id, _usage)
-                return {
-                    "status": "failed",
-                    "plan": plan_result.model_dump() if plan_result else None,
-                    "branch": branch_name,
-                    # Phase 56: which build/task exhausted its budget. For the per-task
-                    # station this is "task:<id>"; "final_qa" for the post-loop check;
-                    # a user build id for a [[steps.work]] build.
-                    "failed_task_id": exc.step_id,
-                    "qa_failures": exc.last_feedback,
-                    "usage": _usage,
-                }
+                # Phase 46: a build step ran its full budget without a passing gate
+                # under on_exhausted="abort" (or a human declined to keep retrying).
+                # Clean status="failed" with the last gate feedback under
+                # `qa_failures`, no commit, no PR — build steps are pre-commit, so
+                # nothing is half-shipped. plan_result/branch_name are guarded for a
+                # pre-branch user build. failed_task_id is "task:<id>" (per-task
+                # station), "final_qa", or a [[steps.work]] build id (Phase 56).
+                return _finalize(
+                    usage_by_task, thread_id,
+                    status="failed",
+                    plan=plan_result.model_dump() if plan_result else None,
+                    branch=branch_name,
+                    failed_task_id=exc.step_id,
+                    qa_failures=exc.last_feedback,
+                )
 
             except StepGateAborted as exc:
-                # Phase 33: an approval_gate step was resumed with an abort
-                # decision. Every seam runs before the commit line, so there's
-                # nothing half-shipped to unwind — return a clean status and
-                # whatever usage was spent up to the gate. branch_name may not
-                # exist yet (gates can fire pre-branch), so it isn't referenced.
-                _usage = aggregate_usage(usage_by_task)
-                write_usage(thread_id, _usage)
-                return {
-                    "status": "aborted",
-                    "thread_id": thread_id,
-                    "aborted_at": exc.step_id,
-                    "usage": _usage,
-                }
+                # Phase 33: an approval_gate step was resumed with an abort decision.
+                # Every gate runs before the commit line, so nothing is half-shipped;
+                # branch_name may not exist yet (gates can fire pre-branch).
+                return _finalize(
+                    usage_by_task, thread_id,
+                    status="aborted",
+                    thread_id=thread_id,
+                    aborted_at=exc.step_id,
+                )
 
             except WorkflowCancelled as exc:
-                # Phase 16: a between-task check found the cancel flag set.
-                # Whatever was in progress has completed (the SDK doesn't
-                # interrupt mid-task); we still owe the caller a final
-                # status and the usage accumulated so far. Phase 37: the same
-                # path also handles a safety-ceiling trip — `reason` tells the
-                # two apart ("autonomous_ceiling" vs. a user cancel_run).
+                # Phase 16/37: a between-task check found the cancel flag set, or an
+                # autonomous run tripped its safety ceiling — `reason` tells them
+                # apart ("autonomous_ceiling" vs. a user cancel_run). Whatever was in
+                # progress has completed (the SDK doesn't interrupt mid-task).
                 reason = getattr(exc, "reason", "user_cancel")
                 emit_event(_audit, thread_id, "cancel", payload={"reason": reason})
-                _usage = aggregate_usage(usage_by_task)
-                write_usage(thread_id, _usage)
-                return {
-                    "status": "cancelled",
-                    "thread_id": thread_id,
-                    "reason": reason,
-                    "usage": _usage,
-                }
+                return _finalize(
+                    usage_by_task, thread_id,
+                    status="cancelled",
+                    thread_id=thread_id,
+                    reason=reason,
+                )
 
         yield workflow
