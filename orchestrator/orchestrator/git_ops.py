@@ -198,7 +198,10 @@ def create_branch(plan: PlanResult, max_slug_length: int = 50, thread_id: str = 
     # your current coordinator. Sanitize type since it's now free-form.
     type_prefix = _sanitize_type(plan.type)
     suffix = f"-{_strip_thread_prefix(thread_id)}" if thread_id else ""
-    slug = _slugify(plan.title, max_slug_length - len(suffix))
+    # Clamp to at least 8 so a small max_slug_length never produces a negative
+    # budget (which would make s[:negative] silently slice from the END of the slug).
+    slug_budget = max(8, max_slug_length - len(suffix))
+    slug = _slugify(plan.title, slug_budget)
     branch_name = f"{type_prefix}/{slug}{suffix}"
 
     # 4. Refuse to clobber an existing branch. If the user retries a
@@ -399,6 +402,7 @@ def push(branch: str, base_branch: str | None = None, auto_rebase: bool = True) 
         or "0"
     )
 
+    did_rebase = False
     if behind > 0:
         if not auto_rebase:
             raise UserActionError(
@@ -410,6 +414,7 @@ def push(branch: str, base_branch: str | None = None, auto_rebase: bool = True) 
             )
         try:
             _run(["git", "rebase", remote_base])
+            did_rebase = True
         except subprocess.CalledProcessError:
             try:
                 _run(["git", "rebase", "--abort"])
@@ -423,8 +428,15 @@ def push(branch: str, base_branch: str | None = None, auto_rebase: bool = True) 
                 ),
             )
 
+    # A rebase rewrites local history. If this branch was pushed before (resume-
+    # after-failure path), a plain push would be rejected as non-fast-forward.
+    # --force-with-lease is safe: it refuses if the remote moved since our fetch,
+    # so a genuinely concurrent push still fails loud rather than being overwritten.
+    push_cmd = ["git", "push", "-u", "origin", branch]
+    if did_rebase:
+        push_cmd.insert(2, "--force-with-lease")
     try:
-        _run(["git", "push", "-u", "origin", branch])
+        _run(push_cmd)
     except subprocess.CalledProcessError as e:
         raise CommitAndPrError(
             f"push failed: {(e.stderr or e.stdout).strip()}"
