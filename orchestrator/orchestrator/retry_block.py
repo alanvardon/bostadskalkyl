@@ -104,6 +104,7 @@ async def run_retry_block(
     on_producers_done: Callable[[int], Awaitable[None]] | None = None,
     on_gate_failed: Callable[[int, str], Awaitable[bool]] | None = None,
     interrupt_fn: Callable[[dict], Any] | None = None,
+    autonomous: bool = False,
 ) -> RetryBlockResult:
     """Run a retry block to a verdict.
 
@@ -131,7 +132,12 @@ async def run_retry_block(
     past the block (e.g. commit) or treat it as a failure.
     """
     feedback: str | None = None
-    budget = block.max_retries
+    # Phase 37: in fully-autonomous mode the loop never exhausts — it re-produces
+    # with the failing gate's feedback until a gate passes (or check_cancel stops
+    # it, e.g. a safety ceiling). An unbounded budget makes the inner loop's
+    # `attempt < budget` always true, so the exhaustion branch / on_exhausted are
+    # never reached.
+    budget = float("inf") if autonomous else block.max_retries
     attempt = 0
 
     while True:

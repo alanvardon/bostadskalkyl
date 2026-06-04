@@ -34,7 +34,7 @@ class AuditEvent(BaseModel):
     user: str | None = None
     event_type: Literal[
         "task_start", "task_complete", "task_failed",
-        "interrupt", "resume", "cancel",
+        "interrupt", "resume", "cancel", "auto_approved",
     ]
     task_name: str | None = None
     payload: dict = Field(default_factory=dict)
@@ -81,7 +81,7 @@ def emit_event(
     thread_id: str,
     event_type: Literal[
         "task_start", "task_complete", "task_failed",
-        "interrupt", "resume", "cancel",
+        "interrupt", "resume", "cancel", "auto_approved",
     ],
     *,
     task_name: str | None = None,

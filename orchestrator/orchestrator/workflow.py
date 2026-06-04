@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator
@@ -340,6 +341,20 @@ class BuildFailed(RuntimeError):
 _GATE_ABORT_WORDS = frozenset({"abort", "no", "stop"})
 
 
+class AutonomousCeilingExceeded(WorkflowCancelled):
+    """Phase 37: a fully-autonomous run hit its time or cost safety ceiling.
+
+    Subclasses WorkflowCancelled so it stops the run through the SAME between-task
+    path as a user cancel — but carries a `reason` the entrypoint surfaces so a
+    caller can tell a budget trip from a human `cancel_run`. No cancel marker is
+    written (unlike cancel_run), so the thread can still be resumed with a larger
+    budget."""
+
+    def __init__(self, thread_id: str, reason: str):
+        super().__init__(thread_id)
+        self.reason = reason
+
+
 async def run_seam(
     seam: str,
     manifest: WorkflowManifest,
@@ -352,6 +367,7 @@ async def run_seam(
     builtin_gates: dict | None = None,
     thread_id: str | None = None,
     audit=None,
+    autonomous: bool = False,
 ) -> None:
     """Run every injected step at `seam`, in declared order.
 
@@ -377,6 +393,14 @@ async def run_seam(
     for step in steps:
         check_cancel()
         if isinstance(step, ApprovalGateStep):
+            # Phase 37: in autonomous mode an approval_gate has no one to answer
+            # it, so auto-proceed (treat as approved) rather than deadlock. The
+            # bypass is recorded so it's visible in the audit trail.
+            if autonomous:
+                if audit is not None and thread_id is not None:
+                    emit_event(audit, thread_id, "auto_approved",
+                               payload={"kind": "step_approval_gate", "step_id": step.id})
+                continue
             # A human checkpoint. The resume value decides: an abort word
             # ('abort'/'no'/'stop') stops the run cleanly via StepGateAborted;
             # anything else (including 'yes' or empty) proceeds — replying is
@@ -400,10 +424,11 @@ async def run_seam(
             )
             if result.usage:
                 usage_by_task.setdefault(step.id, []).append(result.usage)
-            if step.human_in_loop:
+            if step.human_in_loop and not autonomous:
                 # Pause AFTER the agent ran (its @task output is checkpointed, so
                 # resume replays it instead of re-running) to let a human review
                 # the result. Same abort contract as an approval_gate step.
+                # Phase 37: skipped entirely in autonomous mode.
                 decision = interrupt({
                     "kind": "step_ai_agent_review",
                     "step_id": step.id,
@@ -422,6 +447,7 @@ async def run_seam(
                 builtin_gates=builtin_gates,
                 thread_id=thread_id,
                 audit=audit,
+                autonomous=autonomous,
             )
 
 
@@ -436,6 +462,7 @@ async def _run_build_step(
     builtin_gates: dict | None = None,
     thread_id: str | None = None,
     audit=None,
+    autonomous: bool = False,
 ) -> None:
     """Execute a declarative [[steps.*]] type="build" step (Phase 46).
 
@@ -473,7 +500,8 @@ async def _run_build_step(
         # Phase 51: optional pause after the producer(s), before the gate(s),
         # every attempt — driven by this build's human_in_loop.after_producer
         # (the generic replacement for the old implementation_approval).
-        if hil.after_producer:
+        # Phase 37: suppressed in autonomous mode.
+        if hil.after_producer and not autonomous:
             if audit is not None and thread_id is not None:
                 emit_event(audit, thread_id, "interrupt",
                            payload={"kind": "build_producer_pause", "step_id": block_step.id})
@@ -496,7 +524,8 @@ async def _run_build_step(
         # Phase 51: optional pause on a gate failure — driven by this build's
         # human_in_loop.on_gate_fail (the generic replacement for the old
         # qa_failure). An abort word stops the run; anything else retries.
-        if hil.on_gate_fail:
+        # Phase 37: suppressed in autonomous mode (the loop just retries).
+        if hil.on_gate_fail and not autonomous:
             if audit is not None and thread_id is not None:
                 emit_event(audit, thread_id, "interrupt",
                            payload={"kind": "build_gate_failed", "step_id": block_step.id})
@@ -575,6 +604,7 @@ async def _run_build_step(
         on_producers_done=on_producers_done,
         on_gate_failed=on_gate_failed,
         interrupt_fn=interrupt,  # used only when on_exhausted="approval_gate"
+        autonomous=autonomous,   # Phase 37: unbounded budget; loop until a gate passes
     )
     if not result.proceed:
         raise BuildFailed(block_step.id, result.attempts, result.last_feedback)
@@ -586,7 +616,7 @@ async def _run_build_step(
     # block (result.ok is False there — on_exhausted governs that path). The flag
     # is honoured on producers only; a gate is a read-only judge run every
     # attempt, so its human_in_loop is ignored.
-    if result.ok:
+    if result.ok and not autonomous:  # Phase 37: no review pause in autonomous mode
         reviewed = [
             pid
             for pid in block_step.produce
@@ -664,6 +694,7 @@ async def _run_task_loop(
     *,
     thread_id: str,
     audit,
+    autonomous: bool = False,
 ) -> None:
     """Run the decomposed task list, one produce⇄gate build per task (Phase 56).
 
@@ -721,6 +752,7 @@ async def _run_task_loop(
             builtin_gates={"qa": _qa},
             thread_id=thread_id,
             audit=audit,
+            autonomous=autonomous,
         )
 
 
@@ -1047,13 +1079,37 @@ async def build_workflow(
         async def workflow(request: str) -> dict:
             thread_id = get_config()["configurable"]["thread_id"]
 
-            # Phase 16: cancel-check helper closed over thread_id.
-            # Called before each task; raises WorkflowCancelled if the
-            # cancel_run MCP tool has marked this thread. The except
-            # clause at the bottom of the body converts the exception
-            # into a status="cancelled" return dict.
+            # Phase 37: one resolved flag for the whole run. Read once here so
+            # every gate-suppression check below shares it.
+            autonomous = config.fully_autonomous
+            # Wall-clock budget is per-invocation (monotonic resets per process).
+            # Fine because autonomous runs don't pause mid-flight — a run is one
+            # continuous process; a resume after a crash starts a fresh budget.
+            _run_started = time.monotonic()
+
+            # Phase 16/37: cancel-check helper closed over thread_id. Called
+            # before each task (and threaded into builds as check_cancel, so it
+            # fires per producer attempt). Raises WorkflowCancelled if the
+            # cancel_run MCP tool marked this thread, OR — in autonomous mode —
+            # if the run crossed its time/cost safety ceiling. The except clause
+            # at the bottom converts either into a status="cancelled" dict.
             def _check_cancel() -> None:
                 raise_if_cancelled(thread_id)
+                if not autonomous:
+                    return
+                max_seconds = config.autonomous_max_seconds
+                if max_seconds > 0 and (time.monotonic() - _run_started) > max_seconds:
+                    raise AutonomousCeilingExceeded(thread_id, "autonomous_ceiling")
+                max_cost = config.autonomous_max_cost_usd
+                if max_cost > 0:
+                    spent = sum(
+                        cost
+                        for entries in usage_by_task.values()
+                        for u in entries
+                        if (cost := u.cost_usd()) is not None
+                    )
+                    if spent > max_cost:
+                        raise AutonomousCeilingExceeded(thread_id, "autonomous_ceiling")
 
             # Phase 24: build the audit sink once per invocation.
             # Each ainvoke() call (fresh start or resume after interrupt)
@@ -1158,7 +1214,7 @@ async def build_workflow(
                 # same inputs return their cached result without a new LLM call,
                 # so planning_task(request) on re-execution is effectively free.
                 while True:
-                    if config.workflow.planning.human_in_loop:
+                    if config.workflow.planning.human_in_loop and not autonomous:
                         emit_event(_audit, thread_id, "interrupt", payload={"kind": "plan_approval"})
                         approval = interrupt({
                             "kind": "plan_approval",
@@ -1186,7 +1242,7 @@ async def build_workflow(
                     decomposition = await _run_decompose()
 
                 # Phase 13: optional branch-creation approval gate.
-                if config.workflow.branch.human_in_loop:
+                if config.workflow.branch.human_in_loop and not autonomous:
                     emit_event(_audit, thread_id, "interrupt", payload={"kind": "branch_approval"})
                     interrupt({
                         "kind": "branch_approval",
@@ -1215,7 +1271,7 @@ async def build_workflow(
                 await _run_task_loop(
                     decomposition, manifest, plan_result, config,
                     _check_cancel, usage_by_task, _qa_holder,
-                    thread_id=thread_id, audit=_audit,
+                    thread_id=thread_id, audit=_audit, autonomous=autonomous,
                 )
 
                 # Any remaining [[steps.work]] entries (user scripts / gates / builds)
@@ -1261,6 +1317,7 @@ async def build_workflow(
                     builtin_gates={"qa": _builtin_qa},
                     thread_id=thread_id,
                     audit=_audit,
+                    autonomous=autonomous,
                 )
 
                 # Phase 56: optional final whole-diff QA after all tasks pass
@@ -1296,7 +1353,7 @@ async def build_workflow(
                     }
 
                 # Phase 13: optional gate before committing and opening PR.
-                if config.workflow.commit.human_in_loop:
+                if config.workflow.commit.human_in_loop and not autonomous:
                     emit_event(_audit, thread_id, "interrupt", payload={"kind": "pr_approval"})
                     interrupt({
                         "kind": "pr_approval",
@@ -1418,17 +1475,21 @@ async def build_workflow(
                     "usage": _usage,
                 }
 
-            except WorkflowCancelled:
+            except WorkflowCancelled as exc:
                 # Phase 16: a between-task check found the cancel flag set.
                 # Whatever was in progress has completed (the SDK doesn't
                 # interrupt mid-task); we still owe the caller a final
-                # status and the usage accumulated so far.
-                emit_event(_audit, thread_id, "cancel")
+                # status and the usage accumulated so far. Phase 37: the same
+                # path also handles a safety-ceiling trip — `reason` tells the
+                # two apart ("autonomous_ceiling" vs. a user cancel_run).
+                reason = getattr(exc, "reason", "user_cancel")
+                emit_event(_audit, thread_id, "cancel", payload={"reason": reason})
                 _usage = aggregate_usage(usage_by_task)
                 write_usage(thread_id, _usage)
                 return {
                     "status": "cancelled",
                     "thread_id": thread_id,
+                    "reason": reason,
                     "usage": _usage,
                 }
 
