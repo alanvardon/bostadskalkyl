@@ -56,6 +56,18 @@ class QaResult(BaseModel):
     usage: TaskUsage | None = None
 
 
+def _coerce_verdict(raw: object) -> Literal["PASS", "FAIL"]:
+    """Map the agent's emitted `result` onto the PASS/FAIL literal, fail-closed.
+
+    The emit tool asks for the exact string 'PASS', but an LLM can drift
+    ('pass', 'Passed', 'FAIL.'). Constructing QaResult straight from the raw
+    string would raise a pydantic ValidationError inside qa_task and escape as
+    a bare crash. Instead: only an exact (case-insensitive) 'PASS' passes;
+    anything else is a FAIL whose feedback feeds the retry loop. Mirrors the
+    gate path's `steps._coerce_passed` defensive posture."""
+    return "PASS" if str(raw).strip().upper() == "PASS" else "FAIL"
+
+
 def _build_user_message(plan: PlanResult) -> str:
     """Compose the per-run user message for the QA agent.
 
@@ -119,11 +131,12 @@ async def qa(plan: PlanResult, model: str) -> QaResult:
             "on FAIL. After calling, stop — the orchestrator takes over."
         ),
         # Schema uses plain `str` for `result` because the SDK's @tool
-        # decorator takes simple Python types; the Literal["PASS","FAIL"]
-        # validation happens at QaResult construction in the factory below.
+        # decorator takes simple Python types; the factory below maps that raw
+        # string onto the Literal["PASS","FAIL"] fail-closed via _coerce_verdict
+        # (a non-canonical string becomes FAIL, never a ValidationError crash).
         emit_tool_fields={"result": str, "failures": str},
         result_factory=lambda captured, usage: QaResult(
-            result=captured["result"],
+            result=_coerce_verdict(captured.get("result")),
             failures=(captured.get("failures") or None),
             usage=usage,
         ),
