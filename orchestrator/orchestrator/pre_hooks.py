@@ -23,7 +23,6 @@ these extensions for their hook scripts.
 import os
 import platform
 import subprocess
-import time
 from pathlib import Path
 
 from orchestrator.git_ops import REPO_ROOT, PreHookError
@@ -96,7 +95,6 @@ def run_pre_hooks(hooks_dir: str | Path, timeout: int) -> None:
         return
 
     for script in scripts:
-        start = time.monotonic()
         try:
             proc = subprocess.run(
                 [str(script)],
@@ -105,7 +103,6 @@ def run_pre_hooks(hooks_dir: str | Path, timeout: int) -> None:
                 timeout=timeout,
                 cwd=REPO_ROOT,
             )
-            _ = time.monotonic() - start
             if proc.returncode != 0:
                 raise PreHookError(
                     script=script.name,

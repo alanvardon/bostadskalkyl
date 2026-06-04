@@ -1,4 +1,5 @@
 import asyncio
+import functools
 import logging
 import time
 from contextlib import asynccontextmanager
@@ -56,6 +57,25 @@ class IncompatibleManifestError(FatalError):
             f"runs can't absorb a manifest edit — start a fresh run."
         )
 
+
+class EmptyDecompositionError(FatalError):
+    """Raised when the decomposer returns zero tasks for an approved plan.
+
+    An empty task list would make the per-task station a no-op, the tree stay
+    clean, and the run return status="no_changes" — indistinguishable from a
+    build that legitimately made no edits. That hides what is almost always a
+    decomposer (or plan) failure, so we fail loud instead. A FatalError so the
+    MCP server shapes it into a {"status": "fatal", ...} response; raised before
+    branch creation, so nothing is half-shipped.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            "decomposition produced no tasks for an approved plan. This is a "
+            "decomposer or plan failure, not an empty build — fix the plan/"
+            "decomposer and start a fresh run."
+        )
+
 # LangGraph's Functional API: @entrypoint marks the top-level workflow
 # function, @task marks a checkpointable unit of work. Together they let
 # you write a workflow as ordinary async Python and get durability,
@@ -82,7 +102,7 @@ from orchestrator.agents.summarize import summarize, SummaryResult
 from orchestrator.agents.runner import run_structured_agent
 from orchestrator.prompt_loader import load_prompt
 from orchestrator.retry_block import RetryBlock, feedback_section, run_retry_block
-from orchestrator.audit import AuditSink, NoopAuditSink, audited, build_sink, emit_event
+from orchestrator.audit import AuditSink, NoopAuditSink, build_sink, emit_event
 from orchestrator.cancellation import WorkflowCancelled, raise_if_cancelled
 from orchestrator.config import OrchestratorConfig, load_config
 from orchestrator.manifest import (
@@ -139,6 +159,58 @@ _ALLOWED_MSGPACK_MODULES = [
 _CUSTOM_SERDE = JsonPlusSerializer(
     allowed_msgpack_modules=_ALLOWED_MSGPACK_MODULES,
 )
+
+
+# Audit emission for spine @tasks. _audited_task is stacked UNDER @task so each
+# task_start/complete/failed fires only on REAL execution — a task that replays
+# from the checkpoint on resume short-circuits before the wrapper runs, so it is
+# never re-logged. (The pre-67 body-level `audited()` wrapper re-fired on every
+# resume.) The sink is rebuilt from config inside the task rather than passed in,
+# which would change the task's checkpoint cache key.
+def _build_task_audit_sink() -> AuditSink:
+    """The audit sink as seen from inside a @task.
+
+    Rebuilt from the current config (cheap — JsonlAuditSink just holds a path)
+    rather than passed in as a @task input, which would change the task's
+    checkpoint cache key. Mirrors the entrypoint body's own sink construction,
+    and reads config via this module's `load_config` so tests that patch
+    `orchestrator.workflow.load_config` reach it too.
+    """
+    cfg = load_config()
+    if not cfg.audit.enabled:
+        return NoopAuditSink()
+    return build_sink(str(find_project_root() / cfg.audit.log_path))
+
+
+def _audited_task(task_name: str):
+    """Emit task_start / task_complete / task_failed from INSIDE a spine @task.
+
+    Stacked UNDER @task (`@task` above, `@_audited_task(...)` below), so a @task
+    that REPLAYS from the checkpoint on resume short-circuits before this wrapper
+    ever runs — the events fire exactly once, for the attempt that actually
+    executed. This replaces the old body-level `audited()` wrapper, which
+    re-entered on every resume and re-logged completed tasks as if they had run
+    again (a fidelity bug for a compliance log).
+
+    The interrupt invariant still holds: interrupt() is only ever called from the
+    entrypoint body, never inside a @task, so this `except Exception` can never
+    catch a GraphInterrupt and mis-log it as task_failed.
+    """
+    def decorate(fn):
+        @functools.wraps(fn)
+        async def wrapper(*args, **kwargs):
+            thread_id = get_config()["configurable"]["thread_id"]
+            sink = _build_task_audit_sink()
+            emit_event(sink, thread_id, "task_start", task_name=task_name)
+            try:
+                result = await fn(*args, **kwargs)
+            except Exception:
+                emit_event(sink, thread_id, "task_failed", task_name=task_name)
+                raise
+            emit_event(sink, thread_id, "task_complete", task_name=task_name)
+            return result
+        return wrapper
+    return decorate
 
 
 # @task wraps an async function so LangGraph can:
@@ -649,16 +721,16 @@ async def _run_task_loop(
         )
 
         async def _impl(step_id: str, feedback: str | None, _p: str = impl_plan) -> StepResult:
-            async with audited(audit, thread_id, "implementation"):
-                result = await implementation_task(
-                    _p, feedback, config.resolved_model(config.workflow.implementation)
-                )
+            # Audit task_start/complete is emitted inside implementation_task
+            # (via @_audited_task), so it fires only on real execution, not replay.
+            result = await implementation_task(
+                _p, feedback, config.resolved_model(config.workflow.implementation)
+            )
             _record_usage(usage_by_task, "implementation", result)
             return result
 
         async def _qa(step_id: str, _qp: PlanResult = qa_plan) -> StepResult:
-            async with audited(audit, thread_id, "qa"):
-                qa_result = await qa_task(_qp, config.resolved_model(config.workflow.qa))
+            qa_result = await qa_task(_qp, config.resolved_model(config.workflow.qa))
             _record_usage(usage_by_task, "qa", qa_result)
             write_qa(thread_id, qa_result)
             qa_holder["qa"] = qa_result
@@ -697,7 +769,6 @@ async def _run_final_qa(
     qa_holder: dict,
     *,
     thread_id: str,
-    audit,
 ) -> None:
     """Optional single whole-diff acceptance check after all tasks pass.
 
@@ -712,8 +783,7 @@ async def _run_final_qa(
     for gid in gates:
         check_cancel()
         if gid == "qa" and gid not in manifest.defs:
-            async with audited(audit, thread_id, "qa"):
-                qa_result = await qa_task(plan_result, config.resolved_model(config.workflow.qa))
+            qa_result = await qa_task(plan_result, config.resolved_model(config.workflow.qa))
             _record_usage(usage_by_task, "qa", qa_result)
             write_qa(thread_id, qa_result)
             qa_holder["qa"] = qa_result
@@ -738,6 +808,7 @@ async def _run_final_qa(
 
 
 @task
+@_audited_task("planning")
 async def planning_task(request: str, model: str) -> PlanResult:
     # `model` is required — every caller resolves it via config.resolved_model(...),
     # so a default here would be dead and a drift trap.
@@ -750,6 +821,7 @@ async def planning_task(request: str, model: str) -> PlanResult:
 # allowlist), so a re-execution of the entrypoint body after the plan-approval
 # interrupt replays it for free.
 @task
+@_audited_task("decompose")
 async def decompose_task(
     plan_text: str, model: str, max_tasks: int = 0
 ) -> DecompositionResult:
@@ -768,6 +840,7 @@ async def decompose_task(
 # same pattern as DirtyTreeError from verify_clean_tree. The hook's stdout becomes
 # the displayed abort reason.
 @task
+@_audited_task("preflight")
 async def verify_clean_tree_task() -> None:
     await asyncio.to_thread(verify_clean_tree)
     _cfg = load_config()
@@ -782,6 +855,7 @@ async def verify_clean_tree_task() -> None:
 # checkpointed: on resume, we don't re-run git checkout, we read the
 # branch name back from the checkpoint and move on.
 @task
+@_audited_task("create_branch")
 async def create_branch_task(
     plan_result: PlanResult, max_slug_length: int = 50, thread_id: str = ""
 ) -> str:
@@ -840,6 +914,7 @@ async def _run_implementation_producer(
 
 
 @task
+@_audited_task("implementation")
 async def implementation_task(
     plan_text: str,
     feedback: str | None,
@@ -856,6 +931,7 @@ async def implementation_task(
 # On FAIL the build's retry loop re-runs the implementation producer with the
 # failure text as feedback.
 @task
+@_audited_task("qa")
 async def qa_task(
     plan_result: PlanResult, model: str
 ) -> QaResult:
@@ -868,6 +944,7 @@ async def qa_task(
 # that structured output). Its SummaryResult is checkpointed (on the serde
 # allowlist), so a crash before commit replays it.
 @task
+@_audited_task("summarize")
 async def summarize_task(
     plan_text: str, model: str
 ) -> SummaryResult:
@@ -882,6 +959,7 @@ async def summarize_task(
 # .orchestrator/agents/ (gitignored), so a spine step never depends on a
 # local-only file.
 @task
+@_audited_task("docs")
 async def docs_task(
     plan_text: str, model: str
 ) -> StepResult:
@@ -928,6 +1006,7 @@ async def docs_task(
 # produced a different commit), forcing those downstream tasks to run
 # fresh instead of returning stale cached results.
 @task
+@_audited_task("commit")
 async def commit_task(
     branch: str, title: str, summary: str, base_branch: str | None = None
 ) -> str:
@@ -938,6 +1017,7 @@ async def commit_task(
 
 
 @task
+@_audited_task("push")
 async def push_task(branch: str, sha: str, base_branch: str | None = None, auto_rebase: bool = True) -> None:
     """Push branch with upstream tracking. Idempotent (git push is a
     no-op when the remote is already up to date).
@@ -950,6 +1030,7 @@ async def push_task(branch: str, sha: str, base_branch: str | None = None, auto_
 
 
 @task
+@_audited_task("pr_create")
 async def pr_create_task(
     branch: str,
     title: str,
@@ -1025,20 +1106,18 @@ async def _plan_and_approve(
     """
     async def _run_planning(req: str) -> PlanResult:
         check_cancel()
-        async with audited(audit, thread_id, "planning"):
-            pr = await planning_task(req, config.resolved_model(config.workflow.planning))
+        pr = await planning_task(req, config.resolved_model(config.workflow.planning))
         _record_usage(usage_by_task, "planning", pr)
         write_plan(thread_id, pr)
         return pr
 
     async def _run_decompose(pr: PlanResult) -> DecompositionResult:
         check_cancel()
-        async with audited(audit, thread_id, "decompose"):
-            d = await decompose_task(
-                pr.plan_text,
-                config.resolved_model(config.workflow.decompose),
-                config.workflow.decompose.max_tasks,
-            )
+        d = await decompose_task(
+            pr.plan_text,
+            config.resolved_model(config.workflow.decompose),
+            config.workflow.decompose.max_tasks,
+        )
         _record_usage(usage_by_task, "decompose", d)
         write_decomposition(thread_id, d)
         return d
@@ -1071,7 +1150,6 @@ async def _ship(
     config: OrchestratorConfig,
     *,
     thread_id: str,
-    audit,
     check_cancel,
     usage_by_task: dict,
 ) -> tuple[SummaryResult, str]:
@@ -1084,40 +1162,37 @@ async def _ship(
     has landed — aborting then would leave a half-shipped branch (use git, not the
     orchestrator).
     """
+    # Each task's audit task_start/complete is emitted inside its @task (via
+    # @_audited_task), so on resume a replayed task is not re-logged.
     check_cancel()
-    async with audited(audit, thread_id, "summarize"):
-        summary_result = await summarize_task(
-            plan_result.plan_text, config.resolved_model(config.workflow.summarize)
-        )
+    summary_result = await summarize_task(
+        plan_result.plan_text, config.resolved_model(config.workflow.summarize)
+    )
     _record_usage(usage_by_task, "summarize", summary_result)
     write_summary(thread_id, summary_result)
 
     check_cancel()
-    async with audited(audit, thread_id, "docs"):
-        docs_result = await docs_task(
-            plan_result.plan_text, config.resolved_model(config.workflow.docs)
-        )
+    docs_result = await docs_task(
+        plan_result.plan_text, config.resolved_model(config.workflow.docs)
+    )
     _record_usage(usage_by_task, "docs", docs_result)
 
     check_cancel()
-    async with audited(audit, thread_id, "commit"):
-        sha = await commit_task(
-            branch_name, plan_result.title, summary_result.summary, config.pr.base_branch
-        )
-    async with audited(audit, thread_id, "push"):
-        await push_task(branch_name, sha, config.pr.base_branch, config.git.auto_rebase)
-    async with audited(audit, thread_id, "pr_create"):
-        pr_url = await pr_create_task(
-            branch_name,
-            plan_result.title,
-            summary_result.summary,
-            summary_result.test_plan,
-            sha,
-            config.pr.base_branch,
-            config.pr.draft,
-            config.pr.reviewers,
-            plan_result.type,
-        )
+    sha = await commit_task(
+        branch_name, plan_result.title, summary_result.summary, config.pr.base_branch
+    )
+    await push_task(branch_name, sha, config.pr.base_branch, config.git.auto_rebase)
+    pr_url = await pr_create_task(
+        branch_name,
+        plan_result.title,
+        summary_result.summary,
+        summary_result.test_plan,
+        sha,
+        config.pr.base_branch,
+        config.pr.draft,
+        config.pr.reviewers,
+        plan_result.type,
+    )
     return summary_result, pr_url
 
 
@@ -1234,8 +1309,10 @@ async def build_workflow(
                 manifest = await _gate_checkpoint_and_manifest()
 
                 _check_cancel()
-                async with audited(_audit, thread_id, "preflight"):
-                    await verify_clean_tree_task()
+                # Audit task events are emitted inside each @task (@_audited_task),
+                # so they fire on real execution only — a resume that replays a
+                # completed task no longer re-logs it.
+                await verify_clean_tree_task()
 
                 # Plan → decompose → approval loop (see _plan_and_approve). Returns
                 # the approved plan + its task list. Landmine #4: create_branch_task
@@ -1256,11 +1333,17 @@ async def build_workflow(
                         "ask": "Proceed with branch creation?",
                     })
 
+                # Fail loud on an empty decomposition: an approved plan that
+                # produced zero tasks would otherwise run the per-task station as a
+                # no-op and return status="no_changes", masking a decomposer/plan
+                # failure. Raised before branch creation, so nothing is shipped.
+                if not decomposition.tasks:
+                    raise EmptyDecompositionError()
+
                 _check_cancel()
-                async with audited(_audit, thread_id, "create_branch"):
-                    branch_name = await create_branch_task(
-                        plan_result, config.workflow.branch.max_slug_length, thread_id
-                    )
+                branch_name = await create_branch_task(
+                    plan_result, config.workflow.branch.max_slug_length, thread_id
+                )
                 rename_with_branch(thread_id, branch_name)
 
                 # The per-task execution station: the frozen task list is run one
@@ -1284,20 +1367,18 @@ async def build_workflow(
                 async def _builtin_implementation(
                     step_id: str, feedback: str | None
                 ) -> StepResult:
-                    async with audited(_audit, thread_id, "implementation"):
-                        result = await implementation_task(
-                            plan_result.plan_text,
-                            feedback,
-                            config.resolved_model(config.workflow.implementation),
-                        )
+                    result = await implementation_task(
+                        plan_result.plan_text,
+                        feedback,
+                        config.resolved_model(config.workflow.implementation),
+                    )
                     _record_usage(usage_by_task, "implementation", result)
                     return result
 
                 async def _builtin_qa(step_id: str) -> StepResult:
-                    async with audited(_audit, thread_id, "qa"):
-                        qa_result = await qa_task(
-                            plan_result, config.resolved_model(config.workflow.qa)
-                        )
+                    qa_result = await qa_task(
+                        plan_result, config.resolved_model(config.workflow.qa)
+                    )
                     _record_usage(usage_by_task, "qa", qa_result)
                     write_qa(thread_id, qa_result)
                     _qa_holder["qa"] = qa_result
@@ -1323,7 +1404,7 @@ async def build_workflow(
                 # QA runs per-task). A FAIL raises BuildFailed.
                 await _run_final_qa(
                     config, manifest, plan_result, _check_cancel,
-                    usage_by_task, _qa_holder, thread_id=thread_id, audit=_audit,
+                    usage_by_task, _qa_holder, thread_id=thread_id,
                 )
 
                 # The latest QA verdict (last task's per-task QA, or final_qa).
@@ -1357,7 +1438,7 @@ async def build_workflow(
                 # summarize → docs → commit → push → pr (see _ship).
                 summary_result, pr_url = await _ship(
                     plan_result, branch_name, config,
-                    thread_id=thread_id, audit=_audit,
+                    thread_id=thread_id,
                     check_cancel=_check_cancel, usage_by_task=usage_by_task,
                 )
                 return _finalize(
