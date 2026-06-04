@@ -120,6 +120,14 @@ def run_script(script: Path, timeout: int) -> ScriptResult:
 
     `subprocess.TimeoutExpired` is caught and converted to exit code 124
     (the same convention used by the POSIX `timeout(1)` utility).
+
+    `OSError` (the script passed the +x filter but can't actually exec — bad
+    shebang, +x lost between glob and run, ENOEXEC) is caught and converted to
+    exit code 126 (POSIX "command found but not executable"). Without this the
+    OSError would escape `run_qa_scripts` → `qa()` → `qa_task` as a bare crash;
+    converting it lets the existing fail-fast/failure_report path report it as
+    an ordinary scripted-QA failure (→ QaResult FAIL), the same way
+    `steps._run_script_sync` handles it.
     """
     import time
 
@@ -147,6 +155,15 @@ def run_script(script: Path, timeout: int) -> ScriptResult:
             exit_code=124,
             stdout=exc.stdout or "",
             stderr=f"Script timed out after {timeout}s",
+            duration_s=duration,
+        )
+    except OSError as exc:
+        duration = time.monotonic() - start
+        return ScriptResult(
+            script_path=str(script),
+            exit_code=126,
+            stdout="",
+            stderr=f"Script could not be executed: {exc}",
             duration_s=duration,
         )
 

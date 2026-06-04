@@ -28,9 +28,17 @@ from orchestrator.prompt_loader import load_agent_prompt
 from orchestrator.retry_block import feedback_section
 
 
-class StepError(RuntimeError):
+class StepError(FatalError):
     """Raised when an injected step fails (non-zero script exit, timeout, or
-    a missing agent file). Propagates out of the workflow and aborts it."""
+    a missing agent file).
+
+    A FatalError (not a bare RuntimeError) so it rides the structured-error
+    hierarchy: the workflow body lets it propagate, and the MCP server's
+    `except FatalError` handler shapes it into a {"status": "fatal",
+    "thread_id": ...} response with recovery guidance — instead of a raw
+    traceback escaping `ainvoke`. A mis-wired step (bad script, agent that
+    never emits) is a config problem to fix, not something to retry, which is
+    exactly FatalError's contract."""
 
 
 def _logger(step_id: str) -> logging.Logger:
