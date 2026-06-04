@@ -78,6 +78,10 @@ from orchestrator.paths import find_project_root
 ENV_APPROVE_PLAN = "ORCHESTRATOR_APPROVE_PLAN"
 ENV_MAX_RETRIES = "ORCHESTRATOR_MAX_RETRIES"
 ENV_BASE_BRANCH = "ORCHESTRATOR_BASE_BRANCH"
+# Phase 37: fully-autonomous mode + its safety rails.
+ENV_FULLY_AUTONOMOUS = "ORCHESTRATOR_FULLY_AUTONOMOUS"
+ENV_AUTONOMOUS_MAX_SECONDS = "ORCHESTRATOR_AUTONOMOUS_MAX_SECONDS"
+ENV_AUTONOMOUS_MAX_COST_USD = "ORCHESTRATOR_AUTONOMOUS_MAX_COST_USD"
 
 
 _TRUE_LITERALS = {"true", "1", "yes", "on"}
@@ -102,6 +106,15 @@ def _parse_int_env(name: str, value: str) -> int:
     except ValueError as exc:
         raise ValueError(
             f"{name}={value!r} is not a valid integer."
+        ) from exc
+
+
+def _parse_float_env(name: str, value: str) -> float:
+    try:
+        return float(value.strip())
+    except ValueError as exc:
+        raise ValueError(
+            f"{name}={value!r} is not a valid number."
         ) from exc
 
 
@@ -266,6 +279,17 @@ class OrchestratorConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     default_model: str = _DEFAULT_MODEL
     db_path: str = ".orchestrator/checkpoints.db"
+    # Phase 37: never pause for a human. Suppresses every human_in_loop gate,
+    # auto-approves approval_gate steps, and makes build retries unbounded (the
+    # produce⇄gate loop runs until a gate passes — no exhaustion). For CI /
+    # unattended runs. Per-step gate settings are bypassed at runtime, not erased.
+    fully_autonomous: bool = False
+    # Safety rails for the unbounded loop above; enforced ONLY when
+    # fully_autonomous is true. Both <= 0 mean "no ceiling" (loop until solved).
+    # A trip stops the run via the same cancel path → status="cancelled",
+    # reason="autonomous_ceiling".
+    autonomous_max_seconds: int = 0      # wall-clock budget per invocation
+    autonomous_max_cost_usd: float = 0.0  # USD spend budget for the run
     workflow: WorkflowConfig = Field(default_factory=WorkflowConfig)
     pre_hooks: PreHooksConfig = Field(default_factory=PreHooksConfig)
     qa: QaConfig = Field(default_factory=QaConfig)
@@ -364,6 +388,9 @@ def apply_overrides(
     approve_plan: bool | None = None,
     max_retries: int | None = None,
     base_branch: str | None = None,
+    fully_autonomous: bool | None = None,
+    autonomous_max_seconds: int | None = None,
+    autonomous_max_cost_usd: float | None = None,
 ) -> OrchestratorConfig:
     """Overlay per-invocation overrides on a loaded config (Phase 31).
 
@@ -381,6 +408,12 @@ def apply_overrides(
         max_retries = _parse_int_env(ENV_MAX_RETRIES, raw)
     if base_branch is None and (raw := os.environ.get(ENV_BASE_BRANCH)) is not None:
         base_branch = raw.strip() or None
+    if fully_autonomous is None and (raw := os.environ.get(ENV_FULLY_AUTONOMOUS)) is not None:
+        fully_autonomous = _parse_bool_env(ENV_FULLY_AUTONOMOUS, raw)
+    if autonomous_max_seconds is None and (raw := os.environ.get(ENV_AUTONOMOUS_MAX_SECONDS)) is not None:
+        autonomous_max_seconds = _parse_int_env(ENV_AUTONOMOUS_MAX_SECONDS, raw)
+    if autonomous_max_cost_usd is None and (raw := os.environ.get(ENV_AUTONOMOUS_MAX_COST_USD)) is not None:
+        autonomous_max_cost_usd = _parse_float_env(ENV_AUTONOMOUS_MAX_COST_USD, raw)
 
     # approve_plan and max_retries both live under config.workflow now
     # (workflow.planning.human_in_loop and workflow.qa.max_retries), so collect
@@ -400,5 +433,13 @@ def apply_overrides(
         updates["workflow"] = config.workflow.model_copy(update=workflow_updates)
     if base_branch is not None:
         updates["pr"] = config.pr.model_copy(update={"base_branch": base_branch})
+    # Phase 37: top-level autonomous knobs (no nested workflow rewrite — the flag
+    # is read at the interrupt sites, which apply_overrides can't reach anyway).
+    if fully_autonomous is not None:
+        updates["fully_autonomous"] = fully_autonomous
+    if autonomous_max_seconds is not None:
+        updates["autonomous_max_seconds"] = autonomous_max_seconds
+    if autonomous_max_cost_usd is not None:
+        updates["autonomous_max_cost_usd"] = autonomous_max_cost_usd
 
     return config.model_copy(update=updates) if updates else config

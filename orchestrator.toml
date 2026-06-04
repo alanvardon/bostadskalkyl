@@ -13,6 +13,21 @@ default_model = "claude-sonnet-4-6"
 # SQLite checkpoint database path (relative to cwd / project root).
 db_path = ".orchestrator/checkpoints.db"
 
+# Phase 37: never pause for a human. Suppresses every human_in_loop gate,
+# auto-approves approval_gate steps, and makes build retries unbounded (the
+# produce⇄gate loop runs until a gate passes; no exhaustion). For CI / unattended
+# runs. Per-step gate settings are bypassed, not erased — set back to false to
+# restore them. Env override: ORCHESTRATOR_FULLY_AUTONOMOUS.
+fully_autonomous = false
+
+# Safety rails for the unbounded loop above; enforced ONLY when fully_autonomous
+# is true. Both <= 0 mean "no ceiling" (loop until solved). A trip stops the run
+# via the same cancel path → status="cancelled", reason="autonomous_ceiling".
+# Stop a stuck run anytime with cancel_run. Env overrides:
+# ORCHESTRATOR_AUTONOMOUS_MAX_SECONDS / ORCHESTRATOR_AUTONOMOUS_MAX_COST_USD.
+autonomous_max_seconds  = 0      # wall-clock budget per invocation
+autonomous_max_cost_usd = 0.0    # USD spend budget for the run
+
 [pre_hooks]
 # Pre-flight scripts run after the clean-tree check, before any LLM spend.
 # A non-zero exit aborts the run.
