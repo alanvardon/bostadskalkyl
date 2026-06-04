@@ -1,0 +1,31 @@
+# Orchestrator workflow changelog
+
+`WORKFLOW_VERSION` (in `orchestrator/workflow.py`) is the version of the
+LangGraph `@entrypoint` **body**. It is bumped on INCOMPATIBLE changes to that
+body — reordered/removed tasks, new required tasks, or changed control flow that
+a half-finished checkpoint can't safely resume into. Pure additive changes (a new
+optional gate, a new trailing task that legacy checkpoints simply haven't reached)
+don't strictly require a bump.
+
+On every resume, the version stored at run creation is compared against the live
+constant; a mismatch refuses the resume with a clear error rather than risking a
+confusing deserialization failure mid-run.
+
+This file is the human history behind each bump. The deep design notes for each
+phase live in `.misc_notes/Done/`.
+
+| Version | Phase | Change |
+|---|---|---|
+| 1.0.0 → 1.1.0 | 33 | Body gained the manifest-hash gate and five `run_seam()` insertion points, plus new tasks (`record_manifest_hash_task` and the per-step tasks built by `_make_script_task` / `_make_ai_agent_task`). A body change → the bump makes any pre-33 checkpoint refuse to resume rather than resume into a changed task graph. (Phase 33's later refinements — per-id step task names, `after_qa` firing only on PASS, `approval_gate` abort — all landed before 1.1.0 shipped, so they fold into this version.) |
+| 1.1.0 → 1.2.0 | 41 | `docs_task` is now a permanent spine task, inserted after the `before_commit` seam and before `commit_task`. A new required task is a control-flow change → the bump refuses resume of any pre-41 run rather than resuming into a task graph that lacks the docs step. |
+| 1.2.0 → 1.3.0 | 42 | The hand-written impl↔QA retry loop is replaced by the generic retry engine (`retry_block.run_retry_block`); implementation is now a generic producer `@task` (no `ImplementationResult`); a new `summarize_task` runs after the block to derive the commit/PR summary + test_plan from the diff. New/removed task names + changed control flow = a body change. |
+| 1.3.0 → 1.4.0 | 46 | The impl↔QA loop is no longer inline in the body — it runs through `run_seam("after_branch")` as a declarative `build` step (synthesized by default; overridable in `orchestrator.toml`). The per-attempt `after_impl` and pass-only `after_qa` seams are removed (→ `after_branch` / `before_commit`); a build that exhausts its budget raises `BuildFailed` instead of returning the failed dict inline. |
+| 1.4.0 → 1.5.0 | 47 | The `after_branch` build is no longer synthesized — it is declared explicitly in `orchestrator.toml` (no `_ensure_default_build`). A run with no `after_branch` build now reaches the empty-diff guard and returns `status="no_changes"` rather than running an invisible default loop. |
+| 1.5.0 → 1.6.0 | 48 | `AiAgentStep`'s `dir` + `agent` split is merged into a single project-root-relative `agent` path. The `ai_agent` `@task` signature drops its `dir` positional and the step's hashed form changes (no `dir` key), so a pre-48 checkpoint would replay a `@task` with the wrong arity. (Config-shape change only; no control-flow reshape.) |
+| 1.6.0 → 1.7.0 | 49 | The four positional seams (`before_plan` / `after_plan` / `after_branch` / `before_commit`) collapse into one `[[steps.work]]` list that runs between branch and summarize. The `before_plan` / `after_plan` / `before_commit` dispatch points are removed and `after_branch` is renamed to `work`; `before_commit` steps now run before summarize (so they're in its diff). |
+| 1.7.0 → 1.8.0 | 51 | The build's two human pauses move off the global `[workflow.implementation]`/`[workflow.qa]` `human_in_loop` flags onto the build step's own `human_in_loop = { after_producer, on_gate_fail }`, handled inside `_run_build_step`; the interrupt kinds rename `implementation_approval` → `build_producer_pause` and `qa_failure` → `build_gate_failed`. The build step's hashed form gains a `human_in_loop` key and the body's interrupt wiring changes. |
+| 1.8.0 → 1.9.0 | 52 | The retry-block loop becomes a growable budget — under `on_exhausted="approval_gate"` a human may reply with a count at the exhaustion prompt to grant more attempts (optionally capped by `retry.max_total_attempts`). The loop structure changes (fixed range → dynamic while-loop). |
+| 1.9.0 → 1.10.0 | 55 | A new `decompose_task` runs after planning (and re-runs on plan-feedback regeneration), turning the plan into an ordered task list; the `plan_approval` interrupt payload gains a `tasks` key. A new required body task + a changed interrupt payload shape is a body change. The step is execution-inert (nothing consumes the list yet — Phase 56), but the task graph still changed, hence the bump. |
+| 1.10.0 → 1.11.0 | 56 | The single impl⇄QA build is replaced by a per-task execution station (`_run_task_loop`) that runs one produce⇄gate build per decomposed task, followed by an optional whole-diff `final_qa`. The work region's task-graph shape changes (N per-task builds instead of one, driven by the checkpointed decompose result; a new `final_qa`). The task list needs no separate hash gate — it's a checkpointed decompose result that replays deterministically, and each task's build `@task`s replay positionally (same "rely on existing guards" reasoning as Phase 42's no-new-hash). |
+| 1.11.0 (unchanged) | 58 | The entrypoint body was carved into named helpers (`_gate_checkpoint_and_manifest` / `_plan_and_approve` / `_ship` / `_finalize`) with NO change to `@task` names, count, or execution order. Task identity is position-based and calling `@task`s from module-level helpers is already established (`run_seam` / `_run_build_step`), so the task graph is byte-for-byte identical — a graph-preserving refactor needs no bump. |
+| 1.11.0 (unchanged) | 60 | DRY consolidation (shared `run_structured_completion`, `_is_abort`, `_record_usage`). Pure helper extraction — no change to `@task` names/order or checkpointed inputs. |
