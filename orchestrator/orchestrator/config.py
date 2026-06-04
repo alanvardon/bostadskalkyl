@@ -39,7 +39,7 @@ Sample orchestrator.toml (all fields optional, defaults shown):
 
     [workflow.qa]
     allowed_tools = ["Read", "Grep", "Bash"]
-    max_retries   = 3                      # impl↔QA loop budget
+    # The impl↔QA retry budget lives on [workflow.task_build].retry.max
 
     [workflow.docs]
     model = "claude-haiku-4-5-20251001"    # baked-in docs agent (Phase 41)
@@ -76,7 +76,6 @@ from orchestrator.paths import find_project_root
 # document in one place — and so docs/tests can import the constants
 # instead of re-typing the strings.
 ENV_APPROVE_PLAN = "ORCHESTRATOR_APPROVE_PLAN"
-ENV_MAX_RETRIES = "ORCHESTRATOR_MAX_RETRIES"
 ENV_BASE_BRANCH = "ORCHESTRATOR_BASE_BRANCH"
 # Phase 37: fully-autonomous mode + its safety rails.
 ENV_FULLY_AUTONOMOUS = "ORCHESTRATOR_FULLY_AUTONOMOUS"
@@ -148,10 +147,6 @@ class WorkflowBranchConfig(WorkflowStepConfig):
     max_slug_length: int = 50  # moved from the old [branch] section
 
 
-class WorkflowQaConfig(WorkflowStepConfig):
-    max_retries: int = 3  # impl↔QA loop budget; moved from the old top-level key
-
-
 class WorkflowDecomposeConfig(WorkflowStepConfig):
     # Phase 55: advisory cap on how many tasks the decomposer may emit. 0 =
     # uncapped. > 0 is passed to the decomposer as soft guidance (not a hard
@@ -219,8 +214,8 @@ class WorkflowConfig(BaseModel):
             allowed_tools=["Read", "Edit", "Write", "Bash"]
         )
     )
-    qa: WorkflowQaConfig = Field(
-        default_factory=lambda: WorkflowQaConfig(allowed_tools=["Read", "Grep", "Bash"])
+    qa: WorkflowStepConfig = Field(
+        default_factory=lambda: WorkflowStepConfig(allowed_tools=["Read", "Grep", "Bash"])
     )
     docs: WorkflowStepConfig = Field(
         default_factory=lambda: WorkflowStepConfig(
@@ -349,6 +344,25 @@ def _merge_builtin_frontmatter(
     return config.model_copy(update={"workflow": new_workflow})
 
 
+_MAX_RETRIES_MIGRATION = (
+    "`max_retries` has been removed. The impl⇄QA retry budget now lives on the "
+    "per-task station: set [workflow.task_build].retry.max instead "
+    "(ORCHESTRATOR_MAX_RETRIES is gone too)."
+)
+
+
+def _reject_removed_max_retries(data: dict) -> None:
+    """Fail loud if a config still sets the removed `max_retries` knob.
+
+    Covers both historical homes: the top-level key and [workflow.qa].
+    """
+    if "max_retries" in data:
+        raise ValueError(_MAX_RETRIES_MIGRATION)
+    qa = (data.get("workflow") or {}).get("qa")
+    if isinstance(qa, dict) and "max_retries" in qa:
+        raise ValueError(_MAX_RETRIES_MIGRATION)
+
+
 def load_config(path: Path | None = None) -> OrchestratorConfig:
     """Load config from orchestrator.toml; return defaults if file is missing."""
     if path is None:
@@ -363,6 +377,13 @@ def load_config(path: Path | None = None) -> OrchestratorConfig:
         # extra="forbid" can guard the config keys without rejecting the manifest
         # table that shares this file.
         data.pop("steps", None)
+        # The old impl⇄QA retry budget (top-level `max_retries`, relocated to
+        # [workflow.qa].max_retries in Phase 40) was superseded by the build
+        # step's retry.max in Phase 47 and removed entirely here. Fail loud with
+        # a migration message rather than letting extra="forbid" emit a generic
+        # "unexpected key" — the single source of truth is now
+        # [workflow.task_build].retry.max.
+        _reject_removed_max_retries(data)
         config = OrchestratorConfig.model_validate(data)
         raw_workflow = data.get("workflow") or {}
     # Phase 51: the build's human pauses moved onto the build step's own
@@ -386,7 +407,6 @@ def apply_overrides(
     config: OrchestratorConfig,
     *,
     approve_plan: bool | None = None,
-    max_retries: int | None = None,
     base_branch: str | None = None,
     fully_autonomous: bool | None = None,
     autonomous_max_seconds: int | None = None,
@@ -404,8 +424,6 @@ def apply_overrides(
     """
     if approve_plan is None and (raw := os.environ.get(ENV_APPROVE_PLAN)) is not None:
         approve_plan = _parse_bool_env(ENV_APPROVE_PLAN, raw)
-    if max_retries is None and (raw := os.environ.get(ENV_MAX_RETRIES)) is not None:
-        max_retries = _parse_int_env(ENV_MAX_RETRIES, raw)
     if base_branch is None and (raw := os.environ.get(ENV_BASE_BRANCH)) is not None:
         base_branch = raw.strip() or None
     if fully_autonomous is None and (raw := os.environ.get(ENV_FULLY_AUTONOMOUS)) is not None:
@@ -415,17 +433,13 @@ def apply_overrides(
     if autonomous_max_cost_usd is None and (raw := os.environ.get(ENV_AUTONOMOUS_MAX_COST_USD)) is not None:
         autonomous_max_cost_usd = _parse_float_env(ENV_AUTONOMOUS_MAX_COST_USD, raw)
 
-    # approve_plan and max_retries both live under config.workflow now
-    # (workflow.planning.human_in_loop and workflow.qa.max_retries), so collect
-    # their nested updates and apply them to ONE workflow copy.
+    # approve_plan lives under config.workflow now
+    # (workflow.planning.human_in_loop), so collect its nested update and apply
+    # it to a workflow copy.
     workflow_updates: dict = {}
     if approve_plan is not None:
         workflow_updates["planning"] = config.workflow.planning.model_copy(
             update={"human_in_loop": approve_plan}
-        )
-    if max_retries is not None:
-        workflow_updates["qa"] = config.workflow.qa.model_copy(
-            update={"max_retries": max_retries}
         )
 
     updates: dict = {}

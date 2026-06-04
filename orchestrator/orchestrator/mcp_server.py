@@ -248,7 +248,6 @@ async def _fetch_existing_state(thread_id: str) -> dict:
 async def implement_feature(
     request: str,
     approve_plan: bool | None = None,
-    max_retries: int | None = None,
     base_branch: str | None = None,
     idempotency_key: str | None = None,
     ctx: Context | None = None,
@@ -287,7 +286,6 @@ async def implement_feature(
             None = use `orchestrator.toml` / env var. False = skip the
             approval pause and run straight through to PR. True = require
             approval regardless of config.
-        max_retries: Per-invocation override for the impl/QA retry count.
         base_branch: Per-invocation override for the PR base branch.
         idempotency_key: Optional caller-supplied key. Reusing a key
             returns the existing run instead of starting a new one.
@@ -314,7 +312,6 @@ async def implement_feature(
     effective_config = apply_overrides(
         load_config(),
         approve_plan=approve_plan,
-        max_retries=max_retries,
         base_branch=base_branch,
     )
     # Phase 19: stream via run_with_progress so the MCP client sees

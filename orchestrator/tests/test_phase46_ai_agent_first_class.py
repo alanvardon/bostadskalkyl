@@ -8,7 +8,7 @@ the role default applies (read-only as a gate, write tools as a producer).
 import pytest
 
 from orchestrator.manifest import AiAgentStep, load_manifest
-from orchestrator.steps import execute_ai_agent
+from orchestrator.steps import StepError, execute_ai_agent
 
 
 def _write_agent(tmp_path, name="impl.md", body="You are an agent."):
@@ -43,6 +43,15 @@ async def test_custom_tools_and_timeout_threaded(monkeypatch, tmp_path):
     assert captured["allowed_tools"] == ["Read", "Bash"]
     assert captured["disallowed_tools"] == ["Write"]
     assert captured["timeout"] == 42
+
+
+@pytest.mark.asyncio
+async def test_missing_agent_file_raises_step_error(tmp_path):
+    # The unified loader raises FileNotFoundError; execute_ai_agent re-wraps it
+    # as StepError so the step's single failure type is preserved.
+    step = AiAgentStep(id="x", agent=".orchestrator/agents/missing.md")
+    with pytest.raises(StepError, match="agent file not found"):
+        await execute_ai_agent(step, tmp_path, "plan")
 
 
 @pytest.mark.asyncio

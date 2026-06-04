@@ -53,9 +53,8 @@ default_model = "claude-sonnet-4-6"
 human_in_loop = true   # pause for plan review before any code is written
                        # (this is the old `after_plan` sign-off)
 
-[workflow.qa]
-max_retries = 3        # superseded by the build step's retry.max (section 1);
-                       # kept for back-compat
+# The impl⇄QA retry budget lives on the build step's retry.max (section 1) —
+# the single source of truth.
 
 
 # --- Pre-flight (the old `before_plan` use case) -----------------------------
