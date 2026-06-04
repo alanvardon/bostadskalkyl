@@ -69,8 +69,12 @@ _ENTRYPOINT_NAME = "workflow"
 _NEXT_STAGE = {
     None: "verify_clean_tree",
     "verify_clean_tree": "planning",
+    "planning": "decompose",
+    "decompose": "create_branch",
     "create_branch": "implementation",
     "implementation": "qa",
+    "summarize": "docs",
+    "docs": "commit",
     "commit": "push",
     "push": "pr_create",
     "pr_create": "finishing",

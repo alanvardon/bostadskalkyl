@@ -208,7 +208,10 @@ def _patch(stubs, monkeypatch, tmp_path):
     monkeypatch.setattr("orchestrator.workflow.ensure_on_main", stubs.ensure_on_main)
     monkeypatch.setattr("orchestrator.workflow.plan", stubs.plan)
     monkeypatch.setattr("orchestrator.workflow.create_branch", stubs.create_branch)
-    monkeypatch.setattr("orchestrator.workflow.implementation_task", stubs.implementation_task)
+    # Stub the underlying producer (NOT the implementation_task @task itself), so
+    # the decorated @task still runs and emits its audit events — consistent with
+    # how plan/qa/commit/... are stubbed at the underlying-callable level.
+    monkeypatch.setattr("orchestrator.workflow._run_implementation_producer", stubs.implementation_task)
     monkeypatch.setattr("orchestrator.workflow.qa", stubs.qa)
     monkeypatch.setattr("orchestrator.workflow.commit", stubs.commit)
     monkeypatch.setattr("orchestrator.workflow.push", stubs.push)
