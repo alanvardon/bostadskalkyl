@@ -72,7 +72,8 @@ def test_push_main_not_moved(monkeypatch):
 
 
 def test_push_auto_rebase_when_main_moved(monkeypatch):
-    """When origin/main moved, auto_rebase=True triggers a rebase."""
+    """When origin/main moved, auto_rebase=True triggers a rebase and uses
+    --force-with-lease on the push (Phase 65: rebase rewrites history)."""
     call_count = {"rev-list": 0}
 
     def fake_run(args):
@@ -86,7 +87,7 @@ def test_push_auto_rebase_when_main_moved(monkeypatch):
             return _completed(stdout="2\n")  # 2 new commits on main
         if "git rebase origin/main" in joined:
             return _completed()
-        if "git push -u origin feature/test" in joined:
+        if "git push" in joined and "feature/test" in joined:
             return _completed()
         raise AssertionError(f"unexpected: {joined!r}")
 
