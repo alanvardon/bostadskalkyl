@@ -1,7 +1,7 @@
 """Phase 40 — [workflow.*] config schema consolidation tests.
 
 Covers the new schema (per-step [workflow.<step>] tables, default_model
-inheritance), the fail-loud extra="forbid" guard, the max_retries relocation,
+inheritance), the fail-loud extra="forbid" guard, the removed max_retries knob,
 the auto-derived PR label, the runner's wall-clock timeout, and the removal of
 tool_profile.py. All LLM-free.
 """
@@ -15,7 +15,7 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 
-from orchestrator.config import OrchestratorConfig, apply_overrides, load_config
+from orchestrator.config import OrchestratorConfig, load_config
 
 
 # --------------------------- schema round-trip ---------------------------
@@ -46,7 +46,6 @@ def test_workflow_defaults_when_absent(tmp_path):
     assert cfg.workflow.planning.human_in_loop is True
     assert "Edit" in cfg.workflow.implementation.allowed_tools
     assert cfg.workflow.qa.allowed_tools == ["Read", "Grep", "Bash"]
-    assert cfg.workflow.qa.max_retries == 3
 
 
 def test_default_model_inheritance(tmp_path):
@@ -115,29 +114,24 @@ def test_steps_table_does_not_break_config(tmp_path):
     assert cfg.default_model == "claude-sonnet-4-6"
 
 
-# --------------------------- max_retries relocation ---------------------------
+# --------------------------- max_retries removed ---------------------------
 
 
 def test_top_level_max_retries_rejected(tmp_path):
-    # Relocated to [workflow.qa]; a stray top-level key must fail loud so two
-    # sources can't silently coexist.
+    # The knob is gone; a stray top-level key fails loud with a migration
+    # message (not a generic extra="forbid" error) pointing at the new home.
     p = tmp_path / "orchestrator.toml"
     p.write_text("max_retries = 5\n")
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValueError, match="task_build].retry.max"):
         load_config(p)
 
 
-def test_workflow_qa_max_retries_roundtrip(tmp_path):
+def test_workflow_qa_max_retries_rejected(tmp_path):
+    # Its old relocated home ([workflow.qa]) is rejected too.
     p = tmp_path / "orchestrator.toml"
     p.write_text("[workflow.qa]\nmax_retries = 7\n")
-    assert load_config(p).workflow.qa.max_retries == 7
-
-
-def test_env_override_targets_nested_max_retries(monkeypatch):
-    # ORCHESTRATOR_MAX_RETRIES still resolves, now onto config.workflow.qa.
-    monkeypatch.setenv("ORCHESTRATOR_MAX_RETRIES", "9")
-    cfg = apply_overrides(OrchestratorConfig())
-    assert cfg.workflow.qa.max_retries == 9
+    with pytest.raises(ValueError, match="task_build].retry.max"):
+        load_config(p)
 
 
 # --------------------------- auto-derived PR label ---------------------------

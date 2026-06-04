@@ -203,7 +203,7 @@ Four MCP tools are available in Claude Code:
 
 | Tool | What it does |
 |---|---|
-| `implement_feature(request, approve_plan?, max_retries?, base_branch?)` | Start a run; pauses at plan approval. Optional per-invocation overrides for the approval gate, retry count, and PR base branch. |
+| `implement_feature(request, approve_plan?, base_branch?)` | Start a run; pauses at plan approval. Optional per-invocation overrides for the approval gate and PR base branch. |
 | `approve_plan(thread_id, response)` | `"yes"` to proceed, or feedback text to revise the plan and loop again |
 | `resume_run(thread_id, force?)` | Continue a failed run after fixing the underlying issue. Pass `force=True` to clear a prior `cancel_run` and resume anyway. |
 | `cancel_run(thread_id)` | Signal a graceful stop at the next task boundary; resume later with `resume_run(..., force=True)` |

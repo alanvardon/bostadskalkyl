@@ -99,11 +99,8 @@ disallowed_tools = []
 # human_in_loop here is now an error at load time.
 allowed_tools    = ["Read", "Grep", "Bash"]
 disallowed_tools = []
-# Phase 56: the impl⇄QA retry budget now lives on the per-task station's
+# The impl⇄QA retry budget lives on the per-task station's
 # [workflow.task_build].retry.max above — the single, visible source of truth.
-# This field (and ORCHESTRATOR_MAX_RETRIES) is retained for back-compat but no
-# longer drives the loop; set the budget on [workflow.task_build].retry instead.
-max_retries      = 3
 
 [workflow.docs]
 # Baked-in docs agent (Phase 41). Haiku by default — a read-diff / edit-md task.

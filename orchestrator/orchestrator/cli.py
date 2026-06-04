@@ -296,12 +296,6 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         help="Skip the plan-approval pause for this run.",
     )
     parser.add_argument(
-        "--max-retries",
-        type=int,
-        default=None,
-        help="Override max impl/QA retry attempts for this run.",
-    )
-    parser.add_argument(
         "--base-branch",
         type=str,
         default=None,
@@ -326,7 +320,6 @@ async def run() -> None:
     effective_config = apply_overrides(
         load_config(),
         approve_plan=args.approve_plan,
-        max_retries=args.max_retries,
         base_branch=args.base_branch,
     )
 

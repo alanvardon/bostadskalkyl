@@ -27,7 +27,8 @@ from orchestrator.manifest import (
     WorkflowManifest,
     load_manifest,
 )
-from orchestrator.steps import StepError, _strip_frontmatter, execute_script
+from orchestrator.prompt_loader import load_agent_prompt
+from orchestrator.steps import StepError, execute_script
 from orchestrator.workflow import IncompatibleManifestError
 
 from tests.conftest import with_standard_build
@@ -72,7 +73,7 @@ ask = "ok?"
 
 
 def test_no_steps_table_is_empty(tmp_path):
-    _write(tmp_path / "orchestrator.toml", "max_retries = 3\n")
+    _write(tmp_path / "orchestrator.toml", 'default_model = "claude-sonnet-4-6"\n')
     m = load_manifest(project_root=tmp_path)
     assert m.is_empty()
 
@@ -133,11 +134,18 @@ def test_manifest_hash_changes_with_steps():
     ).manifest_hash()
 
 
-def test_strip_frontmatter():
-    md = "---\nname: docs\nmodel: x\n---\nYou are an agent.\n"
-    assert _strip_frontmatter(md) == "You are an agent.\n"
-    plain = "No frontmatter here."
-    assert _strip_frontmatter(plain) == plain
+def test_load_agent_prompt_strips_frontmatter(tmp_path):
+    # The generic ai_agent loader reads a project-root-relative file and returns
+    # the body with any leading `---` frontmatter stripped (shared kernel).
+    (tmp_path / "fm.md").write_text("---\nname: docs\nmodel: x\n---\nYou are an agent.\n")
+    assert load_agent_prompt(tmp_path, "fm.md") == "You are an agent.\n"
+    (tmp_path / "plain.md").write_text("No frontmatter here.")
+    assert load_agent_prompt(tmp_path, "plain.md") == "No frontmatter here."
+
+
+def test_load_agent_prompt_missing_file_raises():
+    with pytest.raises(FileNotFoundError):
+        load_agent_prompt(Path("/nonexistent"), "nope.md")
 
 
 # --------------------------- execute_script ---------------------------

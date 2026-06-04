@@ -9,8 +9,8 @@ import pytest
 
 from orchestrator.config import (
     ENV_APPROVE_PLAN,
+    ENV_AUTONOMOUS_MAX_SECONDS,
     ENV_BASE_BRANCH,
-    ENV_MAX_RETRIES,
     OrchestratorConfig,
     apply_overrides,
 )
@@ -28,11 +28,6 @@ def _base() -> OrchestratorConfig:
 def test_kwarg_overrides_approve_plan():
     cfg = apply_overrides(_base(), approve_plan=False)
     assert cfg.workflow.planning.human_in_loop is False
-
-
-def test_kwarg_overrides_max_retries():
-    cfg = apply_overrides(_base(), max_retries=7)
-    assert cfg.workflow.qa.max_retries == 7
 
 
 def test_kwarg_overrides_base_branch():
@@ -63,12 +58,6 @@ def test_env_var_approve_plan_accepted_values(monkeypatch, value, expected):
     assert cfg.workflow.planning.human_in_loop is expected
 
 
-def test_env_var_max_retries(monkeypatch):
-    monkeypatch.setenv(ENV_MAX_RETRIES, "5")
-    cfg = apply_overrides(_base())
-    assert cfg.workflow.qa.max_retries == 5
-
-
 def test_env_var_base_branch(monkeypatch):
     monkeypatch.setenv(ENV_BASE_BRANCH, "develop")
     cfg = apply_overrides(_base())
@@ -76,13 +65,11 @@ def test_env_var_base_branch(monkeypatch):
 
 
 def test_env_var_used_when_kwarg_is_none(monkeypatch):
-    # All three env vars set; no kwargs passed; all should apply.
+    # Both env vars set; no kwargs passed; both should apply.
     monkeypatch.setenv(ENV_APPROVE_PLAN, "false")
-    monkeypatch.setenv(ENV_MAX_RETRIES, "9")
     monkeypatch.setenv(ENV_BASE_BRANCH, "trunk")
     cfg = apply_overrides(_base())
     assert cfg.workflow.planning.human_in_loop is False
-    assert cfg.workflow.qa.max_retries == 9
     assert cfg.pr.base_branch == "trunk"
 
 
@@ -94,7 +81,6 @@ def test_env_var_used_when_kwarg_is_none(monkeypatch):
 def test_no_kwargs_no_env_returns_config_unchanged(monkeypatch):
     # Defensive: ensure env vars from the test runner aren't leaking in.
     monkeypatch.delenv(ENV_APPROVE_PLAN, raising=False)
-    monkeypatch.delenv(ENV_MAX_RETRIES, raising=False)
     monkeypatch.delenv(ENV_BASE_BRANCH, raising=False)
     original = _base()
     result = apply_overrides(original)
@@ -104,9 +90,8 @@ def test_no_kwargs_no_env_returns_config_unchanged(monkeypatch):
 
 def test_input_config_not_mutated(monkeypatch):
     original = _base()
-    apply_overrides(original, approve_plan=False, max_retries=99, base_branch="x")
+    apply_overrides(original, approve_plan=False, base_branch="x")
     assert original.workflow.planning.human_in_loop is True
-    assert original.workflow.qa.max_retries == 3
     assert original.pr.base_branch == "main"
 
 
@@ -122,8 +107,8 @@ def test_invalid_bool_env_raises(monkeypatch):
 
 
 def test_invalid_int_env_raises(monkeypatch):
-    monkeypatch.setenv(ENV_MAX_RETRIES, "two")
-    with pytest.raises(ValueError, match=ENV_MAX_RETRIES):
+    monkeypatch.setenv(ENV_AUTONOMOUS_MAX_SECONDS, "two")
+    with pytest.raises(ValueError, match=ENV_AUTONOMOUS_MAX_SECONDS):
         apply_overrides(_base())
 
 

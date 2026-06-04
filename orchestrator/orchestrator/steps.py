@@ -21,10 +21,10 @@ import logging
 import subprocess
 from pathlib import Path
 
-from orchestrator.agent_frontmatter import split_frontmatter
 from orchestrator.agents.runner import run_structured_agent
 from orchestrator.errors import FatalError
 from orchestrator.manifest import AiAgentStep, ScriptStep, StepResult
+from orchestrator.prompt_loader import load_agent_prompt
 from orchestrator.retry_block import feedback_section
 
 
@@ -107,30 +107,6 @@ async def execute_script(
     return await asyncio.to_thread(_run_script_sync, step, repo_root, as_gate=as_gate)
 
 
-def _load_agent_prompt(project_root: Path, agent: str) -> str:
-    """Read the agent's markdown file, returning the prompt body.
-
-    The body is the system prompt; a leading `---` YAML block is the agent's
-    frontmatter, parsed for config (model/tools) at manifest load time (see
-    manifest._resolve_agent_frontmatter) and stripped here so it never leaks
-    into the prompt.
-
-    `agent` (AiAgentStep.agent) is the prompt file's path relative to the
-    project root, full filename included, so the prompt file is <agent>.
-    Mirrors manifest._agent_file so load-time validation and runtime loading
-    resolve the same path.
-    """
-    path = project_root / agent
-    if not path.exists():
-        raise StepError(f"agent file not found at {agent}")
-    return _strip_frontmatter(path.read_text(encoding="utf-8"))
-
-
-def _strip_frontmatter(text: str) -> str:
-    """Return the prompt body with any leading `---` frontmatter removed."""
-    return split_frontmatter(text)[1]
-
-
 def _coerce_passed(raw: object) -> bool:
     """Interpret the gate agent's emitted `passed` as a bool.
 
@@ -168,7 +144,13 @@ async def execute_ai_agent(
       AiAgentStep.allowed_tools: this is NOT strictly read-only.
     """
     log = _logger(step.id)
-    system_prompt = _load_agent_prompt(project_root, step.agent)
+    # The prompt body comes from the shared loader (one "file on disk → body"
+    # path for built-in and generic agents); a missing file becomes a StepError
+    # so this module keeps its single failure type.
+    try:
+        system_prompt = load_agent_prompt(project_root, step.agent)
+    except FileNotFoundError as exc:
+        raise StepError(f"agent file not found at {step.agent}") from exc
 
     parts = ["## Plan", "", plan_text]
     if feedback:
