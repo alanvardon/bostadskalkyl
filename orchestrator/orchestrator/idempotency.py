@@ -9,9 +9,13 @@ instead of starting a fresh workflow. Useful when:
 
 Store: a directory `.orchestrator/idempotency/<key>` where each file
 contains the thread_id that claimed the key. The atomic primitive is
-`os.open(..., O_CREAT|O_EXCL)` — a single syscall that either creates
-the file (we win the race) or raises FileExistsError (someone else
-won; we read their thread_id and return it).
+write-then-`os.link`: the thread_id is written to a private temp file,
+then hard-linked onto the key path. `os.link` fails closed
+(FileExistsError) if the key already exists — so exactly one of two
+concurrent callers wins — and the published entry is content-complete
+before it ever appears at the key path, so a loser always reads a full
+thread_id (never an empty file, the flaw in the earlier create-empty-
+then-write approach).
 
 Why filesystem and not a SQLite table — same reason as the cancel
 markers in `cancellation.py`. The LangGraph AsyncSqliteSaver holds a
@@ -31,6 +35,7 @@ import os
 import re
 import time
 from pathlib import Path
+from uuid import uuid4
 
 from orchestrator.config import load_config
 from orchestrator.paths import find_project_root
@@ -96,22 +101,35 @@ def reserve(
     — the caller should use that thread_id instead of starting a new
     workflow.
 
-    Race semantics: O_CREAT|O_EXCL is a single syscall that either
-    creates the file or fails atomically. Two concurrent callers will
-    see exactly one None and one existing-thread-id result.
+    Race semantics: write-then-atomically-publish. The thread_id is written
+    to a private temp file FIRST, then `os.link` hard-links it onto the key
+    path. `os.link` fails closed (FileExistsError) if the key already exists,
+    so exactly one of two concurrent callers wins (None) and the other reads
+    the winner's id — and because the published entry is already
+    content-complete, a losing caller can NEVER read a half-written (empty)
+    file. (The old `O_CREAT|O_EXCL` created the key file empty and wrote the
+    id in a second step, so a loser racing between the two could read "".)
     """
     path = _entry_path(key, base_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
+    # Hidden + uniquely named (pid + uuid) so concurrent reservers never collide
+    # on the temp, and `purge_older_than` / lookups never mistake it for an entry.
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{uuid4().hex}.tmp")
     try:
-        fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL)
-    except FileExistsError:
-        # Race lost (or duplicate retry). Read the existing thread_id.
-        # The file is written atomically below, so by the time we read
-        # it the winner has already flushed.
-        return path.read_text().strip()
-    with os.fdopen(fd, "w") as f:
-        f.write(thread_id)
-    return None
+        tmp.write_text(thread_id)
+        try:
+            # Atomic publish: links the fully-written temp onto the key path, or
+            # fails because someone already claimed it.
+            os.link(str(tmp), str(path))
+        except FileExistsError:
+            # Race lost (or duplicate retry). The winner's entry is already
+            # complete, so this read never sees an empty file.
+            return path.read_text().strip()
+        return None
+    finally:
+        # On the win path the content lives on at `path` (a second hard link);
+        # on the lose path it was never published. Either way the temp goes.
+        tmp.unlink(missing_ok=True)
 
 
 def lookup(key: str, base_dir: Path | None = None) -> str | None:
