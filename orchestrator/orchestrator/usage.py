@@ -20,6 +20,12 @@ except ImportError:
 # USD per million tokens. Keys are the exact model IDs passed to the API.
 # cache_read / cache_write are prompt-caching tier prices.
 PRICES_USD_PER_MTOKEN: dict[str, dict[str, float]] = {
+    "claude-opus-4-8": {
+        "input": 15.0,
+        "output": 75.0,
+        "cache_read": 1.50,
+        "cache_write": 18.75,
+    },
     "claude-opus-4-7": {
         "input": 15.0,
         "output": 75.0,

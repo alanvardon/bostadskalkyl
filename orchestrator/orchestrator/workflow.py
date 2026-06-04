@@ -1255,6 +1255,8 @@ async def build_workflow(
             # this thread, OR — in autonomous mode — if the run crossed its
             # time/cost safety ceiling. The except clause at the bottom converts
             # either into a status="cancelled" dict.
+            _warned_unpriced_models: set[str] = set()
+
             def _check_cancel() -> None:
                 raise_if_cancelled(thread_id)
                 if not autonomous:
@@ -1264,12 +1266,20 @@ async def build_workflow(
                     raise AutonomousCeilingExceeded(thread_id, "autonomous_ceiling")
                 max_cost = config.autonomous_max_cost_usd
                 if max_cost > 0:
-                    spent = sum(
-                        cost
-                        for entries in usage_by_task.values()
-                        for u in entries
-                        if (cost := u.cost_usd()) is not None
-                    )
+                    spent = 0.0
+                    for entries in usage_by_task.values():
+                        for u in entries:
+                            c = u.cost_usd()
+                            if c is not None:
+                                spent += c
+                            elif u.model not in _warned_unpriced_models:
+                                logger.warning(
+                                    "autonomous cost ceiling is set but model %r has "
+                                    "no known price — the ceiling cannot account for "
+                                    "its usage; relying on the time ceiling if set",
+                                    u.model,
+                                )
+                                _warned_unpriced_models.add(u.model)
                     if spent > max_cost:
                         raise AutonomousCeilingExceeded(thread_id, "autonomous_ceiling")
 
