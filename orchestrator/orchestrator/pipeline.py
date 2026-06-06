@@ -118,9 +118,10 @@ class PartSpec(BaseModel):
     type: str | None = None
     path: str | None = None
     model: str | None = None
-    tools: list[str] | None = None
+    tools: list[str] | None = None        # alias for allowed_tools (TOML ergonomics)
     allowed_tools: list[str] | None = None
     disallowed_tools: list[str] = Field(default_factory=list)
+    timeout: int | None = None            # agent-loop / script wall-clock seconds
 
 
 @dataclass(frozen=True)
@@ -174,6 +175,7 @@ def build_pipeline(data: dict) -> Pipeline:
     flow = parse_flow(data["flow"])
 
     stages = _parse_stages(data)
+    _supply_builtin_stage_defaults(flow, stages)
     parts = _parse_parts(data)
 
     _validate_flow_coverage(flow, stages)
@@ -181,6 +183,27 @@ def build_pipeline(data: dict) -> Pipeline:
 
     ordered = tuple(stages[sid] for sid in flow.ordered_ids())
     return Pipeline(flow=flow, stages=ordered, parts=parts)
+
+
+def assert_shippable(pipeline: Pipeline) -> None:
+    """Reject a pipeline that can never produce a commit/PR summary.
+
+    Every run ships — the commit / push / open-pr git rails are implicit and
+    always run — and shipping needs the summary the `summarize` stage produces.
+    So a pipeline without a `summarize` stage is fail-loud at load; there is no
+    silent fallback (Phase 68b, decision Q4).
+
+    Kept OUT of build_pipeline (which is the pure schema validator) so unit tests
+    can still build minimal, non-shipping pipelines. config.load_config calls
+    this after build_pipeline, which is the real fail-loud-at-load point.
+    """
+    if not any(s.id == "summarize" for s in pipeline.stages):
+        raise PipelineError(
+            "the pipeline has no `summarize` stage, but every run ships (commit / "
+            "push / open-pr) and needs the commit/PR summary it produces. Add "
+            "`summarize` to the flow and a [stage.builtin.summarize] table — see "
+            "orchestrator.v2.example.toml."
+        )
 
 
 def _parse_stages(data: dict) -> dict[str, StageSpec]:
@@ -205,6 +228,31 @@ def _parse_stages(data: dict) -> dict[str, StageSpec]:
             except ValidationError as exc:
                 raise PipelineError(f"[stage.{namespace}.{sid}]: {exc}") from exc
     return out
+
+
+# Default bodies for built-in stages auto-supplied when named in `flow` without a
+# table. Only `task-build` needs more than an empty body (its produce/gate recipe);
+# the rest infer everything (type from BUILTIN_STAGE_TYPES, model from default).
+_BUILTIN_STAGE_DEFAULT_BODY: dict[str, dict] = {
+    "task-build": {
+        "produce": ["builtin:implementation"],
+        "gate": ["builtin:qa"],
+        "retry": {"max": 3, "on_exhausted": "approval_gate"},
+    },
+}
+
+
+def _supply_builtin_stage_defaults(
+    flow: FlowGraph, stages: dict[str, StageSpec]
+) -> None:
+    """A flow id naming a known built-in stage with no [stage.builtin.<id>] table
+    gets a default StageSpec, so a config can list a built-in in `flow` and
+    override only the stages it cares about (or none — `flow` alone suffices)."""
+    for sid in flow.ordered_ids():
+        if sid in stages or sid not in BUILTIN_STAGE_TYPES:
+            continue
+        body = _BUILTIN_STAGE_DEFAULT_BODY.get(sid, {})
+        stages[sid] = StageSpec(id=sid, namespace="builtin", **body)
 
 
 def _parse_parts(data: dict) -> dict[str, PartSpec]:

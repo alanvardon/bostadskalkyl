@@ -1,9 +1,9 @@
-"""Phase 40 — [workflow.*] config schema consolidation tests.
+"""Phase 40 — config schema tests (v2 pipeline form, Phase 68b).
 
-Covers the new schema (per-step [workflow.<step>] tables, default_model
-inheritance), the fail-loud extra="forbid" guard, the removed max_retries knob,
-the auto-derived PR label, the runner's wall-clock timeout, and the removal of
-tool_profile.py. All LLM-free.
+Covers v2 config loading (stage/part round-trip, default_model inheritance), the
+fail-loud guards (unknown top-level key, v1 [workflow.*]/[steps.*] rejected with a
+migration message, a pipeline missing its flow), the auto-derived PR label, the
+runner's wall-clock timeout, and the removal of tool_profile.py. All LLM-free.
 """
 
 import asyncio
@@ -13,124 +13,115 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from pydantic import ValidationError
 
 from orchestrator.config import OrchestratorConfig, load_config
+from orchestrator.pipeline import PipelineError
 
 
-# --------------------------- schema round-trip ---------------------------
+# --------------------------- v2 schema round-trip ---------------------------
 
 
-def test_workflow_implementation_roundtrip(tmp_path):
+def test_part_roundtrip(tmp_path):
     p = tmp_path / "orchestrator.toml"
     p.write_text(
-        "[workflow.implementation]\n"
-        'model = "claude-opus-4-7"\n'
-        # human_in_loop on implementation/qa is rejected at load (Phase 51) —
-        # the build's pauses live on the build step. Other fields still round-trip.
-        "human_in_loop = false\n"
+        "flow = "
+        '"plan >> decompose >> task-build >> docs >> summarize"\n'
+        "[builtin.implementation]\n"
         'allowed_tools = ["Read", "Bash"]\n'
         'disallowed_tools = ["Write"]\n'
     )
-    impl = load_config(p).workflow.implementation
-    assert impl.model == "claude-opus-4-7"
-    assert impl.human_in_loop is False
+    impl = load_config(p).part("builtin:implementation")
     assert impl.allowed_tools == ["Read", "Bash"]
     assert impl.disallowed_tools == ["Write"]
 
 
-def test_workflow_defaults_when_absent(tmp_path):
+def test_defaults_when_infra_only(tmp_path):
+    # An infra-only config (no flow / pipeline tables) keeps the default pipeline.
     p = tmp_path / "orchestrator.toml"
-    p.write_text('db_path = ".x/y.db"\n')  # unrelated valid key; no [workflow]
+    p.write_text('db_path = ".x/y.db"\n')
     cfg = load_config(p)
-    assert cfg.workflow.planning.human_in_loop is True
-    assert "Edit" in cfg.workflow.implementation.allowed_tools
-    assert cfg.workflow.qa.allowed_tools == ["Read", "Grep", "Bash"]
+    assert cfg.stage("plan").human_in_loop is True
+    assert "Edit" in cfg.part("builtin:implementation").allowed_tools
+    assert [s.id for s in cfg.pipeline.stages][:3] == ["plan", "decompose", "task-build"]
 
 
 def test_default_model_inheritance(tmp_path):
     p = tmp_path / "orchestrator.toml"
     p.write_text(
         'default_model = "claude-opus-4-7"\n'
-        "[workflow.qa]\n"
+        "flow = "
+        '"plan >> decompose >> task-build >> docs >> summarize"\n'
+        "[stage.builtin.docs]\n"
+        'type = "ai_agent"\n'
         'model = "claude-haiku-4-5"\n'
     )
     cfg = load_config(p)
-    # planning has no model → inherits default_model
-    assert cfg.resolved_model(cfg.workflow.planning) == "claude-opus-4-7"
-    # qa sets its own → overrides
-    assert cfg.resolved_model(cfg.workflow.qa) == "claude-haiku-4-5"
+    # plan has no model → inherits default_model
+    assert cfg.resolved_model(cfg.stage("plan").model) == "claude-opus-4-7"
+    # docs sets its own → overrides
+    assert cfg.resolved_model(cfg.stage("docs").model) == "claude-haiku-4-5"
 
 
-def test_agents_dir_key_rejected(tmp_path):
-    # The global agents_dir was removed — each ai_agent step now carries its own
-    # `dir`. A stray top-level agents_dir must fail loud (extra="forbid").
-    p = tmp_path / "orchestrator.toml"
-    p.write_text('agents_dir = ".custom/agents"\n')
-    with pytest.raises(ValidationError):
-        load_config(p)
-
-
-def test_workflow_docs_defaults_and_roundtrip(tmp_path):
+def test_stage_roundtrip(tmp_path):
     cfg = OrchestratorConfig()
-    assert cfg.workflow.docs.model == "claude-haiku-4-5-20251001"
-    assert cfg.workflow.docs.timeout == 120
+    assert cfg.stage("docs").model == "claude-haiku-4-5-20251001"
+    assert cfg.stage("docs").timeout == 120
 
     p = tmp_path / "orchestrator.toml"
-    p.write_text('[workflow.docs]\nmodel = "claude-sonnet-4-6"\ntimeout = 300\n')
-    docs = load_config(p).workflow.docs
+    p.write_text(
+        "flow = "
+        '"plan >> decompose >> task-build >> docs >> summarize"\n'
+        '[stage.builtin.docs]\ntype = "ai_agent"\nmodel = "claude-sonnet-4-6"\ntimeout = 300\n'
+    )
+    docs = load_config(p).stage("docs")
     assert docs.model == "claude-sonnet-4-6"
     assert docs.timeout == 300
 
 
-# --------------------------- fail-loud (extra="forbid") ---------------------------
+# --------------------------- fail-loud guards ---------------------------
 
 
 def test_unknown_top_level_key_rejected(tmp_path):
     p = tmp_path / "orchestrator.toml"
     p.write_text('bogus_key = "x"\n')
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValueError, match="unknown top-level key"):
         load_config(p)
 
 
-def test_unknown_workflow_step_key_rejected(tmp_path):
-    p = tmp_path / "orchestrator.toml"
-    p.write_text("[workflow.implementation]\nnot_a_field = 1\n")
-    with pytest.raises(ValidationError):
-        load_config(p)
-
-
-def test_steps_table_does_not_break_config(tmp_path):
-    # [steps.*] is the manifest namespace; load_config must drop it before the
-    # extra="forbid" check, not reject it.
+def test_unknown_stage_key_rejected(tmp_path):
     p = tmp_path / "orchestrator.toml"
     p.write_text(
-        'default_model = "claude-sonnet-4-6"\n'
-        "[[steps.work]]\n"
-        'id = "x"\n'
-        'type = "approval_gate"\n'
+        "flow = "
+        '"plan >> decompose >> task-build >> docs >> summarize"\n'
+        "[stage.builtin.plan]\nnot_a_field = 1\n"
     )
-    cfg = load_config(p)
-    assert cfg.default_model == "claude-sonnet-4-6"
-
-
-# --------------------------- max_retries removed ---------------------------
-
-
-def test_top_level_max_retries_rejected(tmp_path):
-    # The knob is gone; a stray top-level key fails loud with a migration
-    # message (not a generic extra="forbid" error) pointing at the new home.
-    p = tmp_path / "orchestrator.toml"
-    p.write_text("max_retries = 5\n")
-    with pytest.raises(ValueError, match="task_build].retry.max"):
+    with pytest.raises(PipelineError):
         load_config(p)
 
 
-def test_workflow_qa_max_retries_rejected(tmp_path):
-    # Its old relocated home ([workflow.qa]) is rejected too.
+def test_pipeline_missing_flow_rejected(tmp_path):
+    # A stage table without a flow line is a malformed pipeline → fail loud.
+    p = tmp_path / "orchestrator.toml"
+    p.write_text('[stage.builtin.plan]\ntype = "ai_agent"\n')
+    with pytest.raises(PipelineError, match="flow"):
+        load_config(p)
+
+
+# --------------------------- v1 config rejected (migration) ---------------------------
+
+
+def test_v1_workflow_table_rejected(tmp_path):
+    # The whole v1 [workflow.*] dialect is rejected with a migration message.
     p = tmp_path / "orchestrator.toml"
     p.write_text("[workflow.qa]\nmax_retries = 7\n")
-    with pytest.raises(ValueError, match="task_build].retry.max"):
+    with pytest.raises(ValueError, match="v1 orchestrator.toml"):
+        load_config(p)
+
+
+def test_v1_steps_table_rejected(tmp_path):
+    p = tmp_path / "orchestrator.toml"
+    p.write_text('[[steps.work]]\nid = "x"\ntype = "approval_gate"\n')
+    with pytest.raises(ValueError, match="v1 orchestrator.toml"):
         load_config(p)
 
 

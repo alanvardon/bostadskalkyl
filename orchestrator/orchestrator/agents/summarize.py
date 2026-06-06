@@ -40,10 +40,13 @@ async def summarize(
     """Run the read-only summarizer agent and return its structured result.
 
     Reads the plan (in the user message) and the working-tree diff (via Bash),
-    then emits {summary, test_plan}. Tools/timeout come from [workflow.summarize];
-    the tool set is read-only — no Edit/Write.
+    then emits {summary, test_plan}. Tools/timeout come from the v2
+    [stage.builtin.summarize] stage; the tool set is read-only — no Edit/Write.
     """
-    _cfg = load_config().workflow.summarize
+    _cfg = load_config().stage("summarize")
+    _allowed = (_cfg.allowed_tools if _cfg else None) or ["Read", "Bash", "Grep"]
+    _disallowed = (_cfg.disallowed_tools if _cfg else None) or []
+    _timeout = _cfg.timeout if _cfg else None
     return await run_structured_agent(
         # Package-shipped prompt (orchestrator/prompts/summarize.md), loaded via
         # the same loader as planning/implementation/qa — so it inherits the
@@ -52,12 +55,12 @@ async def summarize(
         system_prompt=load_prompt("summarize"),
         user_message="\n".join(["## Plan", "", plan_text]),
         model=model,
-        allowed_tools=_cfg.allowed_tools,
-        disallowed_tools=_cfg.disallowed_tools,
+        allowed_tools=_allowed,
+        disallowed_tools=_disallowed,
         # Same repo root as implementation/QA — the agent runs `git diff HEAD`
         # against the target repo's tree, not the orchestrator/ subdirectory.
         cwd=REPO_ROOT,
-        timeout=_cfg.timeout,
+        timeout=_timeout,
         emit_tool_name="emit_summary",
         emit_tool_description=(
             "Emit the commit/PR summary and test plan. Call this exactly once "

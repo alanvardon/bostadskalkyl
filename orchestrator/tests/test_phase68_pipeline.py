@@ -16,6 +16,7 @@ from orchestrator.pipeline import (
     Pipeline,
     PipelineError,
     StageSpec,
+    assert_shippable,
     build_pipeline,
 )
 
@@ -62,6 +63,19 @@ def test_effective_type_inferred_for_builtins():
     assert p.stage("plan").effective_type == "ai_agent"
 
 
+def test_builtin_stages_in_flow_are_auto_supplied_without_tables():
+    # A flow naming built-in stages with NO [stage.builtin.*] tables builds a full
+    # default pipeline (override only what you want).
+    p = build_pipeline({"flow": "plan >> decompose >> task-build >> docs >> summarize"})
+    assert [s.id for s in p.stages] == [
+        "plan", "decompose", "task-build", "docs", "summarize",
+    ]
+    tb = p.stage("task-build")
+    assert tb.produce == ["builtin:implementation"]
+    assert tb.gate == ["builtin:qa"]
+    assert tb.retry.on_exhausted == "approval_gate"
+
+
 def test_user_stage_with_type_and_path():
     d = _base()
     d["flow"] = "plan >> decompose >> task-build >> qa >> gitleaks"
@@ -80,7 +94,7 @@ def test_user_stage_placing_a_part_via_uses():
 
 
 def test_real_v2_example_parses():
-    path = find_project_root() / "orchestrator.v2.example.toml"
+    path = find_project_root() / "orchestrator.example.toml"
     with path.open("rb") as f:
         data = tomllib.load(f)
     p = build_pipeline(data)
@@ -224,3 +238,20 @@ def test_extra_key_on_stage_rejected():
     d["stage"]["builtin"]["plan"]["bogus"] = 1
     with pytest.raises(PipelineError):
         build_pipeline(d)
+
+
+# ── shippability (require a summarize stage) ──────────────────────────────────
+
+def test_assert_shippable_rejects_pipeline_without_summarize():
+    # _base() has no summarize stage — build_pipeline (pure validator) accepts it,
+    # but assert_shippable (the load-time guard) rejects it.
+    p = build_pipeline(_base())
+    with pytest.raises(PipelineError, match="summarize"):
+        assert_shippable(p)
+
+
+def test_assert_shippable_passes_with_summarize():
+    d = _base()
+    d["flow"] = "plan >> decompose >> task-build >> summarize >> qa"
+    d["stage"]["builtin"]["summarize"] = {"type": "ai_agent"}
+    assert_shippable(build_pipeline(d))  # must not raise

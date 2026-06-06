@@ -60,11 +60,13 @@ human_in_loop = { after_producer = true, typo = true }
 
 
 @pytest.mark.parametrize("table", ["implementation", "qa"])
-def test_global_human_in_loop_flag_rejected(tmp_path, table):
-    # The old global flags no longer drive anything — load_config fails loud.
+def test_v1_workflow_table_rejected(tmp_path, table):
+    # The whole v1 [workflow.*] dialect (incl. its human_in_loop flags) is gone —
+    # load_config fails loud with a migration message. The build's pauses now live
+    # on the task-build stage's human_in_loop = { after_producer, on_gate_fail }.
     _write(
         tmp_path / "orchestrator.toml",
         f"[workflow.{table}]\nhuman_in_loop = true\n",
     )
-    with pytest.raises(ValueError, match="no longer control"):
+    with pytest.raises(ValueError, match="v1 orchestrator.toml"):
         load_config(tmp_path / "orchestrator.toml")

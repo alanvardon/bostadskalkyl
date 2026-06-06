@@ -109,20 +109,31 @@ async def qa(plan: PlanResult, model: str) -> QaResult:
     # in-process emit tool, the fail-closed guard, and usage extraction all
     # live in run_structured_agent. The pinned MCP tool (emit_qa_result) is
     # appended to allowed_tools by the runner.
-    _qa = _config.workflow.qa  # tools/timeout from [workflow.qa]
+    #
+    # The QA agent's tools/timeout come from the v2 [builtin.qa] part (the per-task
+    # gate); a pipeline with no [builtin.qa] table falls back to the whole-diff
+    # [stage.builtin.qa] stage, then to the read-only role default. (`tools` is the
+    # PartSpec alias for allowed_tools.) The separate scripted gate above reads the
+    # independent [qa] table (config.qa) — unchanged.
+    _qa = _config.part("builtin:qa") or _config.stage("qa")
+    _qa_allowed = (
+        (getattr(_qa, "allowed_tools", None) or getattr(_qa, "tools", None))
+        if _qa else None
+    ) or ["Read", "Grep", "Bash"]
+    _qa_disallowed = (getattr(_qa, "disallowed_tools", None) if _qa else None) or []
+    _qa_timeout = getattr(_qa, "timeout", None) if _qa else None
     return await run_structured_agent(
         system_prompt=_QA_SYSTEM_PROMPT,
         user_message=_build_user_message(plan),
         model=model,
-        # Read-only tools from [workflow.qa]. The project's
-        # .claude/settings.json deny rules (via setting_sources=["project"],
-        # set in the runner) still apply.
-        allowed_tools=_qa.allowed_tools,
-        disallowed_tools=_qa.disallowed_tools,
+        # Read-only tools. The project's .claude/settings.json deny rules (via
+        # setting_sources=["project"], set in the runner) still apply.
+        allowed_tools=_qa_allowed,
+        disallowed_tools=_qa_disallowed,
         # Same repo root as implementation — QA reviews changes in the
         # target repo's tree, not the orchestrator/ subdirectory.
         cwd=REPO_ROOT,
-        timeout=_qa.timeout,
+        timeout=_qa_timeout,
         emit_tool_name="emit_qa_result",
         emit_tool_description=(
             "Emit the final QA verdict. Call this exactly once when review is "

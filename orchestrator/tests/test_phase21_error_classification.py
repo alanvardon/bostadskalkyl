@@ -16,7 +16,7 @@ import pytest
 from orchestrator.errors import FatalError, OrchestratorError, RetriableError, UserActionError
 from orchestrator.git_ops import BranchCreationError, CommitAndPrError, DirtyTreeError, PreHookError
 from orchestrator.manifest import ManifestError
-from orchestrator.workflow import IncompatibleCheckpointError, IncompatibleManifestError
+from orchestrator.workflow import IncompatibleCheckpointError, IncompatiblePipelineError
 
 
 # ---------------------------------------------------------------------------
@@ -54,8 +54,8 @@ class TestErrorHierarchy:
     def test_incompatible_checkpoint_is_fatal(self):
         assert issubclass(IncompatibleCheckpointError, FatalError)
 
-    def test_incompatible_manifest_is_fatal(self):
-        assert issubclass(IncompatibleManifestError, FatalError)
+    def test_incompatible_pipeline_is_fatal(self):
+        assert issubclass(IncompatiblePipelineError, FatalError)
 
 
 class TestUserActionErrorAction:
