@@ -118,9 +118,10 @@ class PartSpec(BaseModel):
     type: str | None = None
     path: str | None = None
     model: str | None = None
-    tools: list[str] | None = None
+    tools: list[str] | None = None        # alias for allowed_tools (TOML ergonomics)
     allowed_tools: list[str] | None = None
     disallowed_tools: list[str] = Field(default_factory=list)
+    timeout: int | None = None            # agent-loop / script wall-clock seconds
 
 
 @dataclass(frozen=True)

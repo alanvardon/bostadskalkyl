@@ -47,7 +47,7 @@ from orchestrator.run_log import append_run
 from orchestrator.workflow import (
     build_workflow,
     IncompatibleCheckpointError,
-    IncompatibleManifestError,
+    IncompatiblePipelineError,
 )
 
 
@@ -81,23 +81,23 @@ def _incompatible_checkpoint(
     }
 
 
-def _incompatible_manifest(
-    thread_id: str, exc: IncompatibleManifestError
+def _incompatible_pipeline(
+    thread_id: str, exc: IncompatiblePipelineError
 ) -> dict:
-    """Shape an IncompatibleManifestError into a structured response.
+    """Shape an IncompatiblePipelineError into a structured response.
 
-    The step manifest in orchestrator.toml changed since the run started.
+    The v2 pipeline in orchestrator.toml changed since the run started.
     Surface both hashes so the chat can explain why a resume was refused.
     """
     return {
-        "status": "incompatible_manifest",
+        "status": "incompatible_pipeline",
         "thread_id": thread_id,
         "stored_hash": exc.stored_hash,
         "current_hash": exc.current_hash,
         "next": (
-            "The injected-step manifest in orchestrator.toml changed since "
-            "this run started, so it can't be resumed. Revert the [steps] "
-            "change to resume, or start a fresh implement_feature."
+            "The pipeline in orchestrator.toml (flow / stages / referenced "
+            "parts) changed since this run started, so it can't be resumed. "
+            "Revert the change to resume, or start a fresh implement_feature."
         ),
     }
 
@@ -137,7 +137,7 @@ def _fatal_error(thread_id: str, exc: FatalError) -> dict:
 
     Non-retriable. Fix the root cause and start a fresh implement_feature.
     The specific subclasses IncompatibleCheckpointError and
-    IncompatibleManifestError still have their own handlers above so they
+    IncompatiblePipelineError still have their own handlers above so they
     can surface extra structured fields (version numbers, hash values).
     """
     return {
@@ -320,11 +320,11 @@ async def implement_feature(
     try:
         async with build_workflow(config=effective_config) as workflow:
             result = await run_with_progress(workflow, request, config, ctx)
-    except (IncompatibleCheckpointError, IncompatibleManifestError) as exc:
+    except (IncompatibleCheckpointError, IncompatiblePipelineError) as exc:
         # These FatalError subclasses get their own handlers for structured fields.
         if isinstance(exc, IncompatibleCheckpointError):
             return _incompatible_checkpoint(thread_id, exc)
-        return _incompatible_manifest(thread_id, exc)
+        return _incompatible_pipeline(thread_id, exc)
     except UserActionError as exc:
         return _user_action_required(thread_id, exc)
     except RetriableError as exc:
@@ -402,10 +402,10 @@ async def resume_run(
     try:
         async with build_workflow() as workflow:
             result = await run_with_progress(workflow, None, config, ctx)
-    except (IncompatibleCheckpointError, IncompatibleManifestError) as exc:
+    except (IncompatibleCheckpointError, IncompatiblePipelineError) as exc:
         if isinstance(exc, IncompatibleCheckpointError):
             return _incompatible_checkpoint(thread_id, exc)
-        return _incompatible_manifest(thread_id, exc)
+        return _incompatible_pipeline(thread_id, exc)
     except UserActionError as exc:
         return _user_action_required(thread_id, exc)
     except RetriableError as exc:
@@ -506,10 +506,10 @@ async def approve_plan(
             result = await run_with_progress(
                 workflow, Command(resume=response), config, ctx
             )
-    except (IncompatibleCheckpointError, IncompatibleManifestError) as exc:
+    except (IncompatibleCheckpointError, IncompatiblePipelineError) as exc:
         if isinstance(exc, IncompatibleCheckpointError):
             return _incompatible_checkpoint(thread_id, exc)
-        return _incompatible_manifest(thread_id, exc)
+        return _incompatible_pipeline(thread_id, exc)
     except UserActionError as exc:
         return _user_action_required(thread_id, exc)
     except RetriableError as exc:
