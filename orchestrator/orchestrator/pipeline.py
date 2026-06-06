@@ -183,6 +183,27 @@ def build_pipeline(data: dict) -> Pipeline:
     return Pipeline(flow=flow, stages=ordered, parts=parts)
 
 
+def assert_shippable(pipeline: Pipeline) -> None:
+    """Reject a pipeline that can never produce a commit/PR summary.
+
+    Every run ships — the commit / push / open-pr git rails are implicit and
+    always run — and shipping needs the summary the `summarize` stage produces.
+    So a pipeline without a `summarize` stage is fail-loud at load; there is no
+    silent fallback (Phase 68b, decision Q4).
+
+    Kept OUT of build_pipeline (which is the pure schema validator) so unit tests
+    can still build minimal, non-shipping pipelines. config.load_config calls
+    this after build_pipeline, which is the real fail-loud-at-load point.
+    """
+    if not any(s.id == "summarize" for s in pipeline.stages):
+        raise PipelineError(
+            "the pipeline has no `summarize` stage, but every run ships (commit / "
+            "push / open-pr) and needs the commit/PR summary it produces. Add "
+            "`summarize` to the flow and a [stage.builtin.summarize] table — see "
+            "orchestrator.v2.example.toml."
+        )
+
+
 def _parse_stages(data: dict) -> dict[str, StageSpec]:
     stage_root = data.get("stage", {})
     if not isinstance(stage_root, dict):

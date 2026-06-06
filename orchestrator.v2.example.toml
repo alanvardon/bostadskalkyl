@@ -147,7 +147,7 @@ timeout = 30
 
 [audit]
 enabled         = true
-path            = ".orchestrator/audit.log"
+log_path        = ".orchestrator/audit.log"
 include_content = false            # true = also log prompt/result bodies (verbose)
 
 

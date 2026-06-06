@@ -16,6 +16,7 @@ from orchestrator.pipeline import (
     Pipeline,
     PipelineError,
     StageSpec,
+    assert_shippable,
     build_pipeline,
 )
 
@@ -224,3 +225,20 @@ def test_extra_key_on_stage_rejected():
     d["stage"]["builtin"]["plan"]["bogus"] = 1
     with pytest.raises(PipelineError):
         build_pipeline(d)
+
+
+# ── shippability (require a summarize stage) ──────────────────────────────────
+
+def test_assert_shippable_rejects_pipeline_without_summarize():
+    # _base() has no summarize stage — build_pipeline (pure validator) accepts it,
+    # but assert_shippable (the load-time guard) rejects it.
+    p = build_pipeline(_base())
+    with pytest.raises(PipelineError, match="summarize"):
+        assert_shippable(p)
+
+
+def test_assert_shippable_passes_with_summarize():
+    d = _base()
+    d["flow"] = "plan >> decompose >> task-build >> summarize >> qa"
+    d["stage"]["builtin"]["summarize"] = {"type": "ai_agent"}
+    assert_shippable(build_pipeline(d))  # must not raise
