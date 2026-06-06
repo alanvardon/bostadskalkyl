@@ -222,9 +222,17 @@ def load_config(path: Path | None = None) -> OrchestratorConfig:
         data = tomllib.load(f)
     _reject_v1(data)
 
-    pipeline = build_pipeline(data)
-    pipeline = _merge_builtin_frontmatter(pipeline)
-    assert_shippable(pipeline)  # every run ships → require a summarize stage (Q4)
+    # An infra-only config (no `flow` and no pipeline tables) keeps the default
+    # pipeline — a user tweaking only [git]/[pr]/[pre_hooks]/[audit] needn't
+    # restate the whole pipeline. A `flow` line (or stray [stage.*]/[builtin.*]/
+    # [defs.*] without one) goes through build_pipeline, which fails loud on a
+    # missing flow.
+    if "flow" not in data and not any(k in data for k in ("stage", "builtin", "defs")):
+        pipeline = _merge_builtin_frontmatter(default_pipeline())
+    else:
+        pipeline = build_pipeline(data)
+        pipeline = _merge_builtin_frontmatter(pipeline)
+        assert_shippable(pipeline)  # every run ships → require a summarize stage (Q4)
 
     fields: dict = {"pipeline": pipeline}
     for key in ("default_model", "db_path", "fully_autonomous",
