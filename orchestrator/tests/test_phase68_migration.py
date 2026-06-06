@@ -168,6 +168,8 @@ def test_real_in_repo_orchestrator_toml_migrates_to_valid_v2():
         pytest.skip("no in-repo orchestrator.toml")
     with path.open("rb") as f:
         v1 = tomllib.load(f)
+    if "workflow" not in v1 and "steps" not in v1:
+        pytest.skip("in-repo orchestrator.toml is already v2 (Phase 68b cutover)")
     v2, notes = migrate_v1_to_v2(v1)
     build_pipeline(v2)            # must not raise
     # and the rendered form must re-parse + re-validate

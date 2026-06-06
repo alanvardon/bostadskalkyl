@@ -1,233 +1,183 @@
 # =============================================================================
-# orchestrator.example.toml — the `work` list (Phase 33; reshaped Phase 49)
+# orchestrator.example.toml — the v2 declarative pipeline, fully annotated.
+# Copy to orchestrator.toml and edit. Every field is optional; this shows the
+# shape and the override points. The in-repo orchestrator.toml is the trimmed,
+# default-mirroring version of this.
 # =============================================================================
+# Two axes describe everything:
 #
-# A COMPLETE, annotated example showing how to declare your own steps in the
-# workflow without editing any Python. To use it:
+#   IN THE FLOW?              BUILT-IN?            TABLE
+#   ----------------------------------------------------------------------------
+#   yes (a pipeline stage)   built-in             [stage.builtin.<id>]
+#   yes (a pipeline stage)   yours                [stage.user.<id>]
+#   no  (a reusable part)    built-in             [builtin.<id>]
+#   no  (a reusable part)    yours                [defs.<id>]
 #
-#   1. Copy the blocks below into your real orchestrator.toml (at the project
-#      root — the same directory you run the CLI from).
-#   2. Create the support files this example references (their contents are
-#      shown inline in comments below each step).
-#   3. Run a feature as usual. Your steps run in the order you list them.
+#   - A STAGE is a node in the pipeline. Its id IS the last header segment —
+#     there is no `id` field. For a [stage.builtin.*] stage the key is also the
+#     built-in's name, so no `uses` is needed.
+#   - A REUSABLE PART (a producer or gate) is referenced from a stage's
+#     `produce` / `gate` by a prefixed id: `builtin:<id>` or `defs:<id>`.
 #
-# The spine never changes:
-#   verify_clean_tree → plan → branch → [work] → summarize → docs → commit → push → pr
+#   - `type` is a VALIDATED label: the loader checks it matches the slot's known
+#     type and errors on a mismatch. It documents a slot; it never changes one.
+#   - `path` names a prompt/script file. On a built-in stage it is an OPTIONAL
+#     prompt override (omit = run the shipped default); your prompt must still
+#     honour the slot's output contract. On your own stages/defs it is REQUIRED.
 #
-# Setup (verify → plan → branch) and shipping (summarize → docs → commit → push
-# → pr) are fixed spine — you TUNE them via the [workflow.*] / [pre_hooks] / [pr]
-# tables, you don't list them. The one project-specific region is the `work`
-# list: an ordered `[[steps.work]]` array that runs AFTER the branch is made and
-# BEFORE summarize. The impl ⇄ qa retry loop is itself a `build` step in this
-# list (section 1). summarize + docs are built-in agents.
-#
-# Steps run in declared (list) order. The whole work region is pre-commit, so a
-# step can never leave a half-shipped state on cancel. Because work runs before
-# summarize, every step's output is included in the commit/PR summary's diff.
-#
-# Phase 49 collapsed the four old positional seams into this one list:
-#   before_plan   → use [pre_hooks] (scripts run after the clean-tree check,
-#                   before planning — see "Pre-flight" below)
-#   after_plan    → plan sign-off is [workflow.planning].human_in_loop
-#   after_branch  → this is now [[steps.work]] (same place in the spine)
-#   before_commit → put the step in [[steps.work]] (it runs before summarize)
-# The loader raises a migration error pointing here if your TOML still names an
-# old seam (or the pre-46 `after_impl` / `after_qa`).
-#
-# Validation: the manifest is checked at the start of every run (before any LLM
-# spend) — unknown seam, duplicate id, missing script, unknown agent, and (for
-# build steps) unresolved produce/gate references all fail loudly. The resolved
-# manifest is snapshotted per run, so editing it while a run is paused refuses
-# the resume rather than silently changing the graph. `id` is a step's resume
-# identity — don't rename it mid-run.
-# =============================================================================
+# ORDER comes ONLY from the `flow` line (TOML tables are unordered). The git
+# rails (verify-clean-tree · branch · commit · push · open-pr) are implicit and
+# LOCKED — never listed, never reordered; your flow is auto-wrapped between them.
+# -----------------------------------------------------------------------------
 
-
-# --- Standard config (shown for a complete file) -----------------------------
-# Phase 40: per-agent settings live under [workflow.<step>] — one table per
-# spine step. `default_model` is inherited by any step that omits its `model`.
-
+# Default model for any stage whose `model` is unset.
 default_model = "claude-sonnet-4-6"
-
-[workflow.planning]
-human_in_loop = true   # pause for plan review before any code is written
-                       # (this is the old `after_plan` sign-off)
-
-# The impl⇄QA retry budget lives on the build step's retry.max (section 1) —
-# the single source of truth.
+# SQLite checkpoint DB (relative to project root).
+db_path       = ".orchestrator/checkpoints.db"
 
 
-# --- Pre-flight (the old `before_plan` use case) -----------------------------
-# [pre_hooks] runs every executable in `dir` (sorted) after the clean-tree check
-# and BEFORE planning — so you never pay for a plan when the repo isn't in a fit
-# state. A non-zero exit aborts the run immediately.
-#
-#   Create .orchestrator/pre-hooks/preflight.sh (chmod +x):
-#
-#     #!/bin/sh
-#     # Refuse to start if there are merge-conflict markers lying around.
-#     if git grep -nE '^(<<<<<<<|=======|>>>>>>>)' -- ':!orchestrator.toml'; then
-#       echo "merge-conflict markers present; resolve before running"
-#       exit 1
-#     fi
-#     exit 0
+# =============================================================================
+# THE PIPELINE  —  one flow line orders the stages below
+# =============================================================================
+flow = "plan >> decompose >> task-build >> docs >> summarize >> gitleaks >> qa"
+
+
+# ── Built-in stages: header is stage.builtin.<id>; the key is the id. ─────────
+# `type` is an informational, validated label. Set `path` (commented on each) to
+# override that slot's prompt — but your prompt must still honour the slot's
+# OUTPUT CONTRACT (decompose still emits a task list, plan a valid plan, …):
+# you swap how the slot thinks, not its wiring.
+[stage.builtin.plan]
+type          = "ai_agent"           # validated label — informational only
+model         = "claude-opus-4-7"    # optional; omit to inherit default_model
+human_in_loop = true                 # human gate: review the plan + task list
+# path        = ".orchestrator/prompts/plan.md"        # optional prompt override
+
+[stage.builtin.decompose]
+type      = "ai_agent"
+max_tasks = 0                        # 0 = uncapped; >0 = advisory soft cap
+# path    = ".orchestrator/prompts/decompose.md"       # optional prompt override
+
+# The per-task STATION — not a single agent, so it has no `type`/`path` of its
+# own. produce/gate/retry ARE the per-task recipe, run once per decomposed task
+# (the implement<->gate auto-fix retry runs per task). To change the agents it
+# uses, edit its produce/gate ids — not a prompt path here.
+[stage.builtin.task-build]
+produce = ["builtin:implementation"]
+gate    = ["defs:lint", "defs:strict-review", "defs:tests"]  # first to fail → retry
+retry   = { max = 3, on_exhausted = "approval_gate" }        # or "abort"
+# Per-task human pauses (off by default):
+# human_in_loop = { after_producer = false, on_gate_fail = false }
+
+[stage.builtin.docs]
+type    = "ai_agent"
+model   = "claude-haiku-4-5-20251001"
+timeout = 120
+# path  = ".orchestrator/prompts/docs.md"              # optional prompt override
+
+[stage.builtin.summarize]
+type          = "ai_agent"
+model         = "claude-haiku-4-5-20251001"
+allowed_tools = ["Read", "Bash", "Grep"]
+timeout       = 120
+# path        = ".orchestrator/prompts/summarize.md"   # optional prompt override
+
+
+# ── Your stages in the flow: header is stage.user.<id>. `path` is REQUIRED. ──
+[stage.user.gitleaks]
+type = "script"
+path = ".orchestrator/checks/gitleaks.sh"
+
+# The final whole-diff QA stage (built-in). Runs once over the full diff after
+# the per-task gates; a FAIL aborts the run (no commit, no PR). This is the
+# thorough judge in the cost-shaped pattern — the per-task gates above stay cheap.
+[stage.builtin.qa]
+type          = "ai_agent"
+model         = "claude-haiku-4-5-20251001"
+allowed_tools = ["Read", "Bash", "Grep"]
+# path        = ".orchestrator/prompts/qa.md"          # optional prompt override
+
+
+# =============================================================================
+# REUSABLE PARTS  —  referenced from a stage's produce / gate (not in the flow)
+# =============================================================================
+
+# ── Built-in producers / gates: [builtin.<id>], referenced as `builtin:<id>`. ─
+[builtin.implementation]
+allowed_tools    = ["Read", "Edit", "Write", "Bash"]
+disallowed_tools = []
+# timeout        = 0                 # 0/unset = no wall-clock limit
+
+# ── Your producers / gates: [defs.<id>], referenced as `defs:<id>`. ──────────
+[defs.lint]
+type = "script"
+path = ".orchestrator/checks/lint.sh"
+
+[defs.strict-review]
+type  = "ai_agent"
+path  = ".orchestrator/agents/strict-review.md"   # project-root-relative
+model = "claude-sonnet-4-6"
+tools = ["Read", "Grep", "Bash"]                  # read-only gate
+
+
+[defs.tests]
+type = "script"
+path = ".orchestrator/checks/tests.sh"   # e.g. runs `node --test calc.test.js`
+
+
+# =============================================================================
+# LOCKED RAILS — config only (you can't reorder/remove them)
+# =============================================================================
+[branch]
+max_slug_length = 50               # kebab-case slug length in the branch name
+
+[git]
+auto_rebase = true                 # rebase onto origin/<base> before push if it moved
+
+[pr]
+base_branch = "main"
+draft       = false
+reviewers   = []                   # GitHub usernames; [] = none
+# PR label is auto-derived from the plan type (feature/bug/refactor/chore).
+
+
+# =============================================================================
+# INFRASTRUCTURE
+# =============================================================================
 [pre_hooks]
-dir     = ".orchestrator/pre-hooks"
+dir     = ".orchestrator/pre-hooks" # DIRECTORY of scripts; run after clean-tree, before LLM spend
 timeout = 30
 
+[audit]
+enabled         = true
+log_path        = ".orchestrator/audit.log"
+include_content = false            # true = also log prompt/result bodies (verbose)
+
 
 # =============================================================================
-# The work list — runs after branch, before summarize, in declared order
+# OVERRIDE COOKBOOK  (copy-paste, all commented)
 # =============================================================================
-
-# ---------------------------------------------------------------------------
-# 1) build — the impl ⇄ qa loop, declared explicitly (Phase 47).
-#    The spine's core "write code, then check it" loop is a build step. It is
-#    NOT synthesized for you — you declare it, so what runs is exactly what's in
-#    the file. A build re-runs its PRODUCER step(s) until its GATE step(s) pass,
-#    or the retry budget runs out; on each gate failure the gate's output is
-#    injected into the next producer attempt as feedback (under a
-#    "## Previous attempt feedback" heading).
 #
-#    `implementation` and `qa` are BUILT-IN ids: a build may reference them with
-#    no [steps.defs.*] entry, and they resolve to the spine's own agents
-#    (configured under [workflow.implementation] / [workflow.qa]). To swap
-#    either, declare your own def under that id, or change produce/gate to your
-#    own ids — e.g. produce=["my-coder"], gate=["my-qa"] — to drive a non-Claude
-#    coder or replace QA. `ungated = true` opts out of gating entirely (e.g. dbt:
-#    the producer runs once, no gate).
+# --- Run a security scan in PARALLEL with docs, then join --------------------
+# flow = "plan >> decompose >> task-build >> [docs, gitleaks] >> summarize >> final-qa"
 #
-#    Human pauses are per-build (Phase 51) via
-#    human_in_loop = { after_producer, on_gate_fail } (both default off):
-#      after_producer — pause after the producer, before the gate, every attempt
-#      on_gate_fail   — pause on a gate FAIL; reply 'abort' to stop, else retry
-#    They work for any producer/gate, not just the built-in implementation/qa.
+# --- Point a built-in stage at your own prompt (must honour its contract) ----
+# [stage.builtin.plan]
+# type          = "ai_agent"
+# path          = ".orchestrator/prompts/my-plan.md"
+# human_in_loop = true
 #
-#    Remove this block and a run passes through producing nothing →
-#    status="no_changes" (no commit, no PR).
-[[steps.work]]
-id      = "build"
-type    = "build"
-produce = ["implementation"]        # built-in producer (the coder agent)
-gate    = ["qa"]                    # built-in gate (the QA agent)
-retry   = { max = 3, on_exhausted = "abort" }   # abort | approval_gate | proceed
-
-
-# ---------------------------------------------------------------------------
-# 2) build — a second self-correcting loop, runs ONCE the impl ⇄ qa build above
-#    has passed (list order). Here lint-fix (an agent) tries to satisfy
-#    lint-check (a script), up to 3×. Same engine as section 1.
+# --- Place a built-in PART as a renamed stage (uses) -------------------------
+# # A reusable part (builtin:qa / defs:*) can be placed as your own stage via
+# # `uses`; then list that stage id in `flow`. e.g. run the built-in QA agent as
+# # a whole-diff stage called `final-qa`:
+# [stage.user.final-qa]
+# uses = "builtin:qa"
+# # flow = "... >> summarize >> final-qa"
 #
-#    Gate contract — a gate must be one of:
-#      - a `script`: exit 0 = pass; non-zero = fail, and its output becomes the
-#        feedback (it does NOT abort the run the way a plain script step does);
-#      - an `ai_agent`: run READ-ONLY with an emit tool that requires a `passed`
-#        boolean (the verdict) and a `detail` string (the feedback).
-#    A producer mutates the tree; a gate only judges it. No id may be both.
-#    Gates run in declared order; the FIRST to fail short-circuits and retries.
-#
-#    retry = { max, on_exhausted }; on_exhausted when the budget runs out:
-#      "abort"         — fail the run (default; nothing committed — pre-commit)
-#      "approval_gate" — ask whether to proceed or abort
-#      "proceed"       — continue anyway (use with care)
-#    retry.max must be >= 1. Omit `gate` and set `ungated = true` to run the
-#    producer once with no gate.
-#
-#    A producer ai_agent may set human_in_loop = true: when the block SUCCEEDS
-#    the workflow pauses once to review that producer's final output (abort word
-#    stops, anything else proceeds). It never pauses on a failed attempt; an
-#    exhausted block is governed by on_exhausted. Ignored on a gate def.
-#
-#    Create .orchestrator/scripts/lint.sh (chmod +x):
-#      #!/bin/sh
-#      npx eslint .          # exit 0 = pass; non-zero = fail (output = feedback)
-#
-#    Create .orchestrator/agents/lint-fixer.md:
-#      ---
-#      name: lint-fixer
-#      model: claude-haiku-4-5-20251001
-#      ---
-#      You fix lint errors. If a "## Previous attempt feedback" section is
-#      present it holds the lint output — fix exactly those errors and nothing
-#      else. Edit only the offending source files. When done, call
-#      emit_step_result with a one-line summary.
-[[steps.work]]
-id      = "lint-loop"
-type    = "build"
-produce = ["lint-fix"]              # producer id(s), defined in [steps.defs.*]
-gate    = ["lint-check"]            # gate id(s); first to fail triggers a retry
-retry   = { max = 3, on_exhausted = "abort" }
-
-
-# ---------------------------------------------------------------------------
-# 3) ai_agent — generate a changelog entry, ONCE, on the final code.
-#    ai_agent steps run a markdown-defined agent loaded from `agent`, a single
-#    project-root-relative path with the full filename. The agent is given the
-#    plan and runs `git diff` itself; it edits files in the working tree, which
-#    the spine then commits. Because it sits in the work list (before summarize),
-#    its edits are included in the commit/PR diff.
-#
-#    Set human_in_loop = true on a work ai_agent to pause for review AFTER it
-#    runs (the agent's output is surfaced; reply with an abort word —
-#    'abort'/'no'/'stop' — to stop, anything else to proceed). Omitted = false.
-#
-#    Create .orchestrator/agents/changelog.md:
-#      ---
-#      name: changelog
-#      model: claude-sonnet-4-6
-#      ---
-#      You maintain CHANGELOG.md for this project. Read CLAUDE.md, run
-#      `git diff HEAD` to see what changed, and add a single concise entry
-#      under an "Unreleased" heading describing the change in user terms.
-#      Edit only CHANGELOG.md. When done, call emit_step_result with a
-#      one-line summary.
-[[steps.work]]
-id            = "changelog"
-type          = "ai_agent"
-agent         = ".orchestrator/agents/changelog.md"  # project-root-relative path
-model         = "claude-sonnet-4-6"
-human_in_loop = false               # true = pause to review the agent's output
-
-
-# ---------------------------------------------------------------------------
-# 4) script — run the test suite once on the final code, as a hard gate.
-#    A non-zero exit aborts the run — the final code must pass. (To re-test on
-#    EVERY implementation attempt instead, make this script a gate of a build
-#    step, like lint-check in section 2.)
-#
-#    Create .orchestrator/scripts/run-tests.sh (chmod +x):
-#      #!/bin/sh
-#      node --test calc.test.js
-[[steps.work]]
-id      = "unit-tests"
-type    = "script"
-path    = ".orchestrator/scripts/run-tests.sh"
-timeout = 300
-
-
-# ---------------------------------------------------------------------------
-# 5) approval_gate — a final human sign-off on the built code, ONCE.
-#    Pauses the workflow here (after the build + checks, before summarize/commit).
-#    Resume it — via approve_plan(thread_id, "<reply>") over MCP, or by replying
-#    at the CLI prompt. Reply 'abort' (or 'no'/'stop') to stop the run cleanly
-#    (nothing is committed — the whole work list is pre-commit); any other reply
-#    proceeds. (No support file needed.)
-[[steps.work]]
-id   = "ship-signoff"
-type = "approval_gate"
-ask  = "Build + checks passed. Ship it?"
-
-
-# ---------------------------------------------------------------------------
-# [steps.defs.*] — definitions referenced by build steps' produce/gate. These
-# are NOT work steps themselves; they run only when a build references them.
-[steps.defs.lint-fix]
-type          = "ai_agent"
-agent         = ".orchestrator/agents/lint-fixer.md"  # project-root-relative path
-model         = "claude-haiku-4-5-20251001"
-human_in_loop = false               # true = review the fix once lint-check passes
-
-[steps.defs.lint-check]
-type    = "script"
-path    = ".orchestrator/scripts/lint.sh"
-timeout = 60
+# --- Drop the per-task gate to a cheap script, do thorough QA once at the end -
+# [stage.builtin.task-build]
+# produce = ["builtin:implementation"]
+# gate    = ["defs:lint"]                  # cheap per-task check
+# retry   = { max = 3, on_exhausted = "abort" }
+# # ...and keep `final-qa` in the flow for the one whole-diff QA pass.

@@ -94,7 +94,7 @@ def test_user_stage_placing_a_part_via_uses():
 
 
 def test_real_v2_example_parses():
-    path = find_project_root() / "orchestrator.v2.example.toml"
+    path = find_project_root() / "orchestrator.example.toml"
     with path.open("rb") as f:
         data = tomllib.load(f)
     p = build_pipeline(data)
