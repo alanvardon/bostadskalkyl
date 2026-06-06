@@ -1,14 +1,15 @@
 """Phase 54 — a downloaded agent's frontmatter drives the BUILT-IN spine agents.
 
-Phase 53 made frontmatter drive generic [steps.defs.*]/seam ai_agents. This
-extends the same plug-and-play rule to the built-ins (planning/implementation/
-qa/docs/summarize): drop a prompt into .orchestrator/prompts/<step>.md and its
-frontmatter `model`/`tools` become that built-in's defaults, with an explicit
-[workflow.<step>] key still overriding. No frontmatter → today's defaults.
+Phase 53 made frontmatter drive generic [defs.*] ai_agents. This extends the
+same plug-and-play rule to the built-ins (plan/implementation/qa/docs/summarize):
+drop a prompt into .orchestrator/prompts/<name>.md and its frontmatter
+`model`/`tools` become that built-in stage/part's defaults, with an explicit key
+in the user's orchestrator.toml still overriding. No frontmatter → today's
+defaults (Phase 68b: v2 stage/part form).
 
 The merge lives in config.load_config, so every consumer (which resolves model
-via config.resolved_model and reads tools via load_config().workflow.<step>)
-picks it up. branch/commit run no agent, so they're untouched.
+via config.resolved_model and reads tools off config.stage(...) / config.part(...))
+picks it up.
 """
 
 from pathlib import Path
@@ -61,43 +62,49 @@ def test_bundled_prompts_have_no_frontmatter(at_root):
 # --------------------------- merge into built-in config ---------------------------
 
 
+_FLOW = 'flow = "plan >> decompose >> task-build >> docs >> summarize"\n'
+
+
 def test_dropped_in_qa_drives_model_and_tools(at_root):
     toml = _repo(
         at_root,
         prompts={"qa": "---\nname: strict\nmodel: opus\ntools: Read, Grep\n---\nQA prompt.\n"},
-        toml="",  # empty toml → only frontmatter speaks
+        toml="",  # empty toml → default pipeline; only frontmatter speaks
     )
     cfg = load_config(path=toml)
-    assert cfg.resolved_model(cfg.workflow.qa) == "claude-opus-4-8"
-    assert cfg.workflow.qa.allowed_tools == ["Read", "Grep"]
+    qa = cfg.part("builtin:qa")
+    assert qa.allowed_tools == ["Read", "Grep"]
+    assert cfg.resolved_model(qa.model) == "claude-opus-4-8"
 
 
 def test_no_toml_file_still_applies_frontmatter(at_root):
     # A repo with a dropped-in agent but no orchestrator.toml at all.
     _repo(at_root, prompts={"implementation": "---\nmodel: opus\n---\nImpl.\n"})
     cfg = load_config(path=at_root / "orchestrator.toml")  # file does not exist
-    assert cfg.resolved_model(cfg.workflow.implementation) == "claude-opus-4-8"
-    # tools the frontmatter didn't set keep their code default.
-    assert cfg.workflow.implementation.allowed_tools == ["Read", "Edit", "Write", "Bash"]
+    impl = cfg.part("builtin:implementation")
+    assert cfg.resolved_model(impl.model) == "claude-opus-4-8"
+    # tools the frontmatter didn't set keep their default.
+    assert impl.allowed_tools == ["Read", "Edit", "Write", "Bash"]
 
 
-def test_workflow_toml_overrides_frontmatter(at_root):
+def test_toml_overrides_frontmatter(at_root):
     toml = _repo(
         at_root,
         prompts={"qa": "---\nmodel: opus\ntools: Read, Grep\n---\nQA.\n"},
-        toml='[workflow.qa]\nmodel = "claude-sonnet-4-6"\n',
+        toml=_FLOW + '[builtin.qa]\nmodel = "claude-sonnet-4-6"\n',
     )
     cfg = load_config(path=toml)
-    assert cfg.resolved_model(cfg.workflow.qa) == "claude-sonnet-4-6"  # TOML wins
-    assert cfg.workflow.qa.allowed_tools == ["Read", "Grep"]           # tools still frontmatter
+    qa = cfg.part("builtin:qa")
+    assert cfg.resolved_model(qa.model) == "claude-sonnet-4-6"  # TOML wins
+    assert qa.allowed_tools == ["Read", "Grep"]                 # tools still frontmatter
 
 
 def test_no_frontmatter_keeps_defaults(at_root):
     toml = _repo(at_root, prompts={"qa": "Just a QA prompt, no frontmatter.\n"}, toml="")
     cfg = load_config(path=toml)
-    # Untouched WorkflowQaConfig defaults.
-    assert cfg.workflow.qa.allowed_tools == ["Read", "Grep", "Bash"]
-    assert cfg.resolved_model(cfg.workflow.qa) == cfg.default_model
+    qa = cfg.part("builtin:qa")
+    assert qa.allowed_tools == ["Read", "Grep", "Bash"]
+    assert cfg.resolved_model(qa.model) == cfg.default_model
 
 
 def test_docs_and_summarize_models_overridable_by_frontmatter(at_root):
@@ -110,24 +117,27 @@ def test_docs_and_summarize_models_overridable_by_frontmatter(at_root):
         toml="",
     )
     cfg = load_config(path=toml)
-    assert cfg.resolved_model(cfg.workflow.docs) == "claude-opus-4-8"
-    assert cfg.resolved_model(cfg.workflow.summarize) == "claude-sonnet-4-6"
+    assert cfg.resolved_model(cfg.stage("docs").model) == "claude-opus-4-8"
+    assert cfg.resolved_model(cfg.stage("summarize").model) == "claude-sonnet-4-6"
 
 
 def test_frontmatter_human_in_loop_is_ignored_for_builtins(at_root):
-    # human_in_loop is NOT a built-in frontmatter dial — so a dropped-in qa agent
-    # carrying it must NOT trip the Phase 51 guard or change the flag.
+    # human_in_loop is NOT a built-in frontmatter dial — a dropped-in qa agent
+    # carrying it must NOT error or change anything (it's simply ignored).
     toml = _repo(
         at_root,
         prompts={"qa": "---\nmodel: opus\nhuman_in_loop: true\n---\nQA.\n"},
         toml="",
     )
-    cfg = load_config(path=toml)  # no ValueError
-    assert cfg.workflow.qa.human_in_loop is False
+    cfg = load_config(path=toml)  # no error
+    assert cfg.resolved_model(cfg.part("builtin:qa").model) == "claude-opus-4-8"
 
 
-def test_explicit_workflow_human_in_loop_still_guarded(at_root):
-    # The Phase 51 guard is unaffected by the merge.
-    toml = _repo(at_root, toml="[workflow.qa]\nhuman_in_loop = true\n")
-    with pytest.raises(ValueError, match="human_in_loop"):
+def test_human_in_loop_on_a_part_rejected(at_root):
+    # human_in_loop is a STAGE dial, not a part field — setting it on [builtin.qa]
+    # is fail-loud (PartSpec extra="forbid").
+    from orchestrator.pipeline import PipelineError
+
+    toml = _repo(at_root, toml=_FLOW + "[builtin.qa]\nhuman_in_loop = true\n")
+    with pytest.raises(PipelineError):
         load_config(path=toml)

@@ -211,16 +211,43 @@ def _reject_v1(data: dict) -> None:
         raise ValueError(_V1_MIGRATION)
 
 
+# Every key allowed at the top level of orchestrator.toml: the scalar dials, the
+# pipeline-shaping tables (owned by pipeline.build_pipeline), and the infra/rail
+# tables. Anything else is a typo — fail loud at load (the v2 extra="forbid").
+_ALLOWED_TOP_LEVEL: frozenset[str] = frozenset({
+    "default_model", "db_path", "fully_autonomous",
+    "autonomous_max_seconds", "autonomous_max_cost_usd",
+    "flow", "stage", "builtin", "defs",
+    "branch", "pre_hooks", "qa", "git", "pr", "audit",
+})
+
+
+def _reject_unknown_top_level(data: dict) -> None:
+    unknown = sorted(set(data) - _ALLOWED_TOP_LEVEL)
+    if unknown:
+        raise ValueError(
+            f"unknown top-level key(s) in orchestrator.toml: {unknown}. "
+            f"Allowed: {sorted(_ALLOWED_TOP_LEVEL)}."
+        )
+
+
 def load_config(path: Path | None = None) -> OrchestratorConfig:
-    """Load v2 config from orchestrator.toml; defaults if the file is missing."""
+    """Load v2 config from orchestrator.toml; defaults if the file is missing.
+
+    Even with no file, a dropped-in prompt's frontmatter still drives the
+    built-ins (see _merge_builtin_frontmatter), so the no-file path is handled as
+    an empty config rather than short-circuited.
+    """
     if path is None:
         path = find_project_root() / "orchestrator.toml"
-    if not path.exists():
-        return OrchestratorConfig()
 
-    with path.open("rb") as f:
-        data = tomllib.load(f)
+    if path.exists():
+        with path.open("rb") as f:
+            data = tomllib.load(f)
+    else:
+        data = {}
     _reject_v1(data)
+    _reject_unknown_top_level(data)
 
     # An infra-only config (no `flow` and no pipeline tables) keeps the default
     # pipeline — a user tweaking only [git]/[pr]/[pre_hooks]/[audit] needn't
@@ -228,11 +255,12 @@ def load_config(path: Path | None = None) -> OrchestratorConfig:
     # [defs.*] without one) goes through build_pipeline, which fails loud on a
     # missing flow.
     if "flow" not in data and not any(k in data for k in ("stage", "builtin", "defs")):
-        pipeline = _merge_builtin_frontmatter(default_pipeline())
+        pipeline = default_pipeline()
     else:
         pipeline = build_pipeline(data)
-        pipeline = _merge_builtin_frontmatter(pipeline)
         assert_shippable(pipeline)  # every run ships → require a summarize stage (Q4)
+    # Prompt frontmatter fills built-in model/tools the user didn't set in TOML.
+    pipeline = _merge_builtin_frontmatter(pipeline, data)
 
     fields: dict = {"pipeline": pipeline}
     for key in ("default_model", "db_path", "fully_autonomous",
@@ -254,10 +282,21 @@ def load_config(path: Path | None = None) -> OrchestratorConfig:
     return OrchestratorConfig(**fields)
 
 
-def _merge_builtin_frontmatter(pipeline: Pipeline) -> Pipeline:
-    """Let a built-in stage/part's prompt frontmatter supply model/tools, unless
-    the stage/part already set them explicitly (an explicit value wins)."""
+def _merge_builtin_frontmatter(pipeline: Pipeline, data: dict) -> Pipeline:
+    """Let a built-in stage/part's prompt frontmatter supply its model/tools.
+
+    A prompt dropped into .orchestrator/prompts/<name>.md drives the built-in the
+    same way frontmatter drives a [defs.*] agent: frontmatter is the default; an
+    explicit key in the user's TOML overrides it. "Explicit" means the user wrote
+    the key in orchestrator.toml — a code/built-in default does NOT count — so the
+    raw `data` is consulted for the user-set keys, not the resolved value (which
+    already carries defaults). A built-in named in `flow` without a table has no
+    user keys, so frontmatter drives it fully.
+    """
     from orchestrator.prompt_loader import load_prompt_frontmatter
+
+    stage_tables = (data.get("stage") or {}).get("builtin") or {}
+    part_tables = data.get("builtin") or {}
 
     new_stages = []
     changed = False
@@ -267,10 +306,14 @@ def _merge_builtin_frontmatter(pipeline: Pipeline) -> Pipeline:
             new_stages.append(s)
             continue
         fm = load_prompt_frontmatter(prompt)
+        user_keys = set((stage_tables.get(s.id) or {}).keys())
         updates = {}
         for field in _FRONTMATTER_FIELDS:
-            if getattr(s, field, None) in (None, []) and getattr(fm, field, None) is not None:
-                updates[field] = getattr(fm, field)
+            if field in user_keys:
+                continue  # an explicit TOML value wins
+            value = getattr(fm, field, None)
+            if value is not None:
+                updates[field] = value
         if updates:
             new_stages.append(s.model_copy(update=updates))
             changed = True
@@ -283,18 +326,24 @@ def _merge_builtin_frontmatter(pipeline: Pipeline) -> Pipeline:
         if p is None or p.namespace != "builtin":
             continue
         fm = load_prompt_frontmatter(prompt)
+        pid = ref.split(":", 1)[1]
+        user_keys = set((part_tables.get(pid) or {}).keys())
+        if "tools" in user_keys:
+            user_keys.add("allowed_tools")  # `tools` is the PartSpec alias
         updates = {}
-        for field in ("model", "allowed_tools", "disallowed_tools"):
-            if getattr(p, field, None) in (None, []) and getattr(fm, field, None) is not None:
-                updates[field] = getattr(fm, field)
+        for field in _FRONTMATTER_FIELDS:
+            if field in user_keys:
+                continue
+            value = getattr(fm, field, None)
+            if value is not None:
+                updates[field] = value
         if updates:
             new_parts[ref] = p.model_copy(update=updates)
             changed = True
 
     if not changed:
         return pipeline
-    from orchestrator.pipeline import Pipeline as _P
-    return _P(flow=pipeline.flow, stages=tuple(new_stages), parts=new_parts)
+    return Pipeline(flow=pipeline.flow, stages=tuple(new_stages), parts=new_parts)
 
 
 def apply_overrides(

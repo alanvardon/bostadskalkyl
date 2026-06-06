@@ -72,32 +72,10 @@ async def test_autonomous_via_env_var(monkeypatch, tmp_path):
     assert "__interrupt__" not in result
 
 
-@pytest.mark.asyncio
-async def test_approval_gate_auto_proceeds_and_is_audited(monkeypatch, tmp_path):
-    # A [[steps.work]] approval_gate would normally pause. Autonomous mode
-    # auto-proceeds (treat as approved) and records an auto_approved audit event.
-    stubs = _Stubs(n_tasks=1)
-    _patch(stubs, monkeypatch)
-    monkeypatch.setattr(
-        "orchestrator.workflow.load_manifest",
-        lambda *a, **k: WorkflowManifest(
-            steps={"work": [ApprovalGateStep(id="gate1", ask="Proceed?")]}
-        ),
-    )
-    from orchestrator.workflow import build_workflow
-
-    audit_log = tmp_path / "audit.log"
-    base = OrchestratorConfig()
-    cfg = _auto(audit=base.audit.model_copy(update={"log_path": str(audit_log)}))
-
-    async with build_workflow(db_path=str(tmp_path / "ckpt.db"), config=cfg) as wf:
-        result = await wf.ainvoke("req", config=_cfg())
-
-    assert result["status"] == "succeeded"
-    assert "__interrupt__" not in result  # the gate did NOT pause the run
-    events = [json.loads(line) for line in audit_log.read_text().splitlines()]
-    auto = [e for e in events if e["event_type"] == "auto_approved"]
-    assert auto and auto[0]["payload"]["step_id"] == "gate1"
+# NOTE (Phase 68b): test_approval_gate_auto_proceeds_and_is_audited was removed —
+# [[steps.work]] approval_gate steps no longer exist (v2 has no approval_gate stage
+# type). Autonomous suppression of the surviving human gates (plan / branch / pr) is
+# covered by test_autonomous_run_skips_plan_approval above.
 
 
 # ---------------------------------------------------------------------------

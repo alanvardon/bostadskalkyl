@@ -63,6 +63,19 @@ def test_effective_type_inferred_for_builtins():
     assert p.stage("plan").effective_type == "ai_agent"
 
 
+def test_builtin_stages_in_flow_are_auto_supplied_without_tables():
+    # A flow naming built-in stages with NO [stage.builtin.*] tables builds a full
+    # default pipeline (override only what you want).
+    p = build_pipeline({"flow": "plan >> decompose >> task-build >> docs >> summarize"})
+    assert [s.id for s in p.stages] == [
+        "plan", "decompose", "task-build", "docs", "summarize",
+    ]
+    tb = p.stage("task-build")
+    assert tb.produce == ["builtin:implementation"]
+    assert tb.gate == ["builtin:qa"]
+    assert tb.retry.on_exhausted == "approval_gate"
+
+
 def test_user_stage_with_type_and_path():
     d = _base()
     d["flow"] = "plan >> decompose >> task-build >> qa >> gitleaks"

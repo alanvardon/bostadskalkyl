@@ -18,12 +18,14 @@ import uuid
 import pytest
 from langgraph.types import Command
 
-from orchestrator.manifest import RetryConfig, StepResult, WorkflowManifest
+from orchestrator.manifest import RetryConfig, StepResult
 from orchestrator.retry_block import (
     RetryBlock,
     _parse_extend,
     run_retry_block,
 )
+
+from tests.conftest import task_build_config
 
 
 # --------------------------- engine-level fakes ---------------------------
@@ -293,136 +295,77 @@ def test_retry_config_max_total_attempts_defaults_unbounded():
 
 
 # =========================== integration (real interrupts) ===========================
+#
+# Phase 68b: the extend-from-exhaustion behaviour is driven through the per-task
+# `task-build` station (on_exhausted="approval_gate"), not a v1 [[steps.work]]
+# build. The engine-level tests above cover the extend grammar / budget / clamp
+# exhaustively; these two integration tests prove the WORKFLOW wires the engine's
+# exhaustion interrupt through and resumes across an extension. (The proceed-as-is
+# and max_total_attempts-clamp variants are covered at the engine level above:
+# test_extend_then_proceed_ships_as_is / test_max_total_attempts_clamps_*.)
 
 
-def _approval_block_manifest(max_retries=2, max_total_attempts=None) -> WorkflowManifest:
-    from orchestrator.manifest import BuildStep, ScriptStep
+async def _drive_task_build(monkeypatch, tmp_path, *, qa_verdicts, max_retries, replies):
+    """Drive the per-task station through plan approval + each exhaustion interrupt.
 
-    return WorkflowManifest(
-        steps={
-            "work": [
-                BuildStep(
-                    id="loop",
-                    produce=["fix"],
-                    gate=["check"],
-                    retry=RetryConfig(
-                        max=max_retries,
-                        on_exhausted="approval_gate",
-                        max_total_attempts=max_total_attempts,
-                    ),
-                )
-            ]
-        },
-        defs={
-            "fix": ScriptStep(id="fix", path="fix.sh"),
-            "check": ScriptStep(id="check", path="check.sh"),
-        },
-    )
-
-
-async def _drive(monkeypatch, tmp_path, manifest, fake, replies, *, reopen=False):
-    """Drive a declared build through plan approval + each exhaustion interrupt.
-
-    `replies` is fed one per pause (first is the plan-approval 'yes'). With
-    reopen=True every step runs in a FRESH workflow context off the same
-    checkpoint db — exercising cross-process resume (replay of prior @tasks)."""
-    from tests.conftest import with_standard_build
-    from tests.test_phase42_declarative_blocks import _Stubs, _patch_spine
+    Each ainvoke off the same checkpoint db is a resume — so prior attempts replay
+    rather than re-run. `replies` is fed one per pause (first is plan-approval)."""
+    from tests.test_phase56_per_task_loop import _Stubs, _patch, _cfg
     from orchestrator.workflow import build_workflow
 
-    stubs = _Stubs()
-    _patch_spine(stubs, monkeypatch)
-    monkeypatch.setattr(
-        "orchestrator.workflow.load_manifest",
-        lambda *a, **k: with_standard_build(manifest),
-    )
-    monkeypatch.setattr("orchestrator.workflow.execute_script", fake)
+    stubs = _Stubs(n_tasks=1, qa_verdicts=qa_verdicts)
+    _patch(stubs, monkeypatch)
+    oc = task_build_config(on_exhausted="approval_gate", max_retries=max_retries)
 
-    config = {"configurable": {"thread_id": f"test-{uuid.uuid4().hex[:8]}"}}
     db = str(tmp_path / "ckpt.db")
+    config = _cfg()
     inputs = ["req"] + [Command(resume=r) for r in replies]
 
     result, interrupts = None, []
-    if reopen:
+    async with build_workflow(db_path=db, config=oc) as wf:
         for inp in inputs:
-            async with build_workflow(db_path=db) as wf:
-                result = await wf.ainvoke(inp, config=config)
+            result = await wf.ainvoke(inp, config=config)
             if "__interrupt__" in result:
                 interrupts.append(result["__interrupt__"][0].value)
-    else:
-        async with build_workflow(db_path=db) as wf:
-            for inp in inputs:
-                result = await wf.ainvoke(inp, config=config)
-                if "__interrupt__" in result:
-                    interrupts.append(result["__interrupt__"][0].value)
-    return result, interrupts
+    return result, interrupts, stubs
 
 
 @pytest.mark.asyncio
 async def test_integration_extend_then_pass_resumes_across_extend(monkeypatch, tmp_path):
-    from tests.test_phase42_declarative_blocks import _fake_execute_script_factory
+    from orchestrator.agents.qa import QaResult
 
-    # gate passes on the 4th run: budget 2 exhausts → grant 2 → attempts 3,4 →
-    # pass. reopen=True so the granted attempts replay prior ones from checkpoint.
-    fake, calls = _fake_execute_script_factory(gate_passes_on_attempt=4)
-    result, interrupts = await _drive(
-        monkeypatch, tmp_path, _approval_block_manifest(max_retries=2),
-        fake, replies=["yes", "2"], reopen=True,
+    # budget 2 exhausts (QA fails attempts 1,2) → grant 2 → attempts 3,4 → pass on 4.
+    result, interrupts, stubs = await _drive_task_build(
+        monkeypatch, tmp_path,
+        qa_verdicts=[QaResult(result="FAIL", failures=f"f{i}") for i in (1, 2, 3)]
+        + [QaResult(result="PASS")],
+        max_retries=2, replies=["yes", "2"],
     )
     assert result["status"] == "succeeded"
     # Plan approval, then the exhaustion prompt advertising the number option.
     assert interrupts[-1]["kind"] == "retry_exhausted"
     assert "number" in interrupts[-1]["ask"]
-    # Prior attempts replayed (no re-spend): producer + gate each ran 4 times total.
-    assert sum(1 for c in calls if c == ("fix", False)) == 4
-    assert sum(1 for c in calls if c == ("check", True)) == 4
+    # Prior attempts replayed (no re-spend): 4 producer + 4 QA calls total.
+    assert len(stubs.impl_plans) == 4
+    assert stubs.qa_calls == 4
 
 
 @pytest.mark.asyncio
 async def test_integration_extend_exhaust_then_abort(monkeypatch, tmp_path):
-    from tests.test_phase42_declarative_blocks import _fake_execute_script_factory
+    from orchestrator.agents.qa import QaResult
 
-    fake, calls = _fake_execute_script_factory(gate_passes_on_attempt=None)
-    result, interrupts = await _drive(
-        monkeypatch, tmp_path, _approval_block_manifest(max_retries=1),
-        fake, replies=["yes", "1", "abort"],
+    # budget 1 exhausts → grant 1 → exhausts again → abort → failed run.
+    result, interrupts, stubs = await _drive_task_build(
+        monkeypatch, tmp_path,
+        qa_verdicts=[QaResult(result="FAIL", failures="lint failed") for _ in range(2)],
+        max_retries=1, replies=["yes", "1", "abort"],
     )
     assert result["status"] == "failed"
+    assert result["failed_task_id"] == "task:t1"
     assert result["qa_failures"] == "lint failed"
     assert "pr_url" not in result
     # Two exhaustion prompts (initial + after the extension), then abort.
     assert [i["kind"] for i in interrupts] == [
         "plan_approval", "retry_exhausted", "retry_exhausted",
     ]
-    assert sum(1 for c in calls if c == ("fix", False)) == 2
-
-
-@pytest.mark.asyncio
-async def test_integration_extend_then_proceed_ships(monkeypatch, tmp_path):
-    from tests.test_phase42_declarative_blocks import _fake_execute_script_factory
-
-    fake, calls = _fake_execute_script_factory(gate_passes_on_attempt=None)
-    result, _ = await _drive(
-        monkeypatch, tmp_path, _approval_block_manifest(max_retries=1),
-        fake, replies=["yes", "1", "proceed"],
-    )
-    assert result["status"] == "succeeded"          # ships the failed-gate code
-    assert sum(1 for c in calls if c == ("fix", False)) == 2
-
-
-@pytest.mark.asyncio
-async def test_integration_max_total_attempts_clamps(monkeypatch, tmp_path):
-    from tests.test_phase42_declarative_blocks import _fake_execute_script_factory
-
-    fake, calls = _fake_execute_script_factory(gate_passes_on_attempt=None)
-    # cap=3, budget=2: exhaust → grant "5" clamps to 1 → attempt 3 at the cap →
-    # a numeric reply can no longer extend → proceed.
-    result, interrupts = await _drive(
-        monkeypatch, tmp_path,
-        _approval_block_manifest(max_retries=2, max_total_attempts=3),
-        fake, replies=["yes", "5", "2"],
-    )
-    assert result["status"] == "succeeded"
-    assert interrupts[1]["remaining"] == 1
-    assert interrupts[2]["remaining"] == 0
-    assert sum(1 for c in calls if c == ("fix", False)) == 3   # clamped to the cap
+    assert len(stubs.impl_plans) == 2

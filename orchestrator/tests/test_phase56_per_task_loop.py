@@ -181,29 +181,35 @@ async def test_task_failure_aborts_with_failed_task_id(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_final_qa_runs_once_and_can_fail(monkeypatch, tmp_path):
-    # Per-task gate OFF (ungated tasks); a final whole-diff QA gate runs ONCE after
-    # the loop. A FAIL there aborts the run with failed_task_id="final_qa".
+async def test_whole_diff_qa_stage_runs_once_and_can_fail(monkeypatch, tmp_path):
+    # The v2 way to do the old "final_qa": run task-build UNGATED (no per-task QA),
+    # then a whole-diff `qa` STAGE after the loop. A FAIL there aborts the run with
+    # failed_task_id="qa".
+    from orchestrator.config import OrchestratorConfig
+    from orchestrator.pipeline import build_pipeline
+
     stubs = _Stubs(n_tasks=2, qa_verdicts=[QaResult(result="FAIL", failures="cross-task bug")])
     _patch(stubs, monkeypatch)
     from orchestrator.workflow import build_workflow
 
-    base = task_build_config(gate=[], on_exhausted="abort")  # tasks run ungated
-    oc = base.model_copy(
-        update={"workflow": base.workflow.model_copy(
-            update={"final_qa": base.workflow.final_qa.model_copy(update={"gate": ["qa"]})}
-        )}
-    )
+    pipeline = build_pipeline({
+        "flow": "plan >> decompose >> task-build >> docs >> summarize >> qa",
+        "stage": {"builtin": {
+            "task-build": {"produce": ["builtin:implementation"], "gate": [], "ungated": True},
+            "qa": {"type": "ai_agent"},
+        }},
+    })
+    oc = OrchestratorConfig(pipeline=pipeline)
     async with build_workflow(db_path=str(tmp_path / "ckpt.db"), config=oc) as workflow:
         await workflow.ainvoke("req", config=(c := _cfg()))
         result = await workflow.ainvoke(Command(resume="yes"), config=c)
 
     assert result["status"] == "failed"
-    assert result["failed_task_id"] == "final_qa"
-    # Both tasks' producers ran (ungated, no per-task QA), then ONE final QA fired.
+    assert result["failed_task_id"] == "qa"
+    # Both tasks' producers ran (ungated, no per-task QA), then ONE whole-diff QA fired.
     assert len(stubs.impl_plans) == 2
     assert stubs.qa_calls == 1
-    # The final QA judged the WHOLE plan (not a single task).
+    # The whole-diff QA judged the WHOLE plan (not a single task).
     assert "Evaluate ONLY this task" not in stubs.qa_plans[0]
 
 
