@@ -1,5 +1,6 @@
 import asyncio
 import functools
+import hashlib
 import logging
 import time
 from contextlib import asynccontextmanager
@@ -21,7 +22,13 @@ logger = logging.getLogger(__name__)
 # the post-branch stages from config.pipeline (the v2 `flow`) instead of the
 # hard-coded spine + v1 [[steps.work]] seam; the manifest-hash resume gate became
 # a pipeline-hash gate. An incompatible bump — old 1.x checkpoints cannot resume.
-WORKFLOW_VERSION = "2.0.0"
+#
+# 2.1.0 (Phase 72): the per-task station gained a run-once `test_author_task`
+# (gated on config.tdd) before each task's implement loop — a new checkpointed
+# @task in the body's task graph, so a half-finished 2.0.0 checkpoint can't safely
+# resume into it. With tdd off (the default) the task is never called and the
+# graph is identical to 2.0.0, but the body now CAN emit it, so the bump.
+WORKFLOW_VERSION = "2.1.0"
 
 
 from orchestrator.errors import FatalError
@@ -105,6 +112,7 @@ from orchestrator.agents.decompose import decompose, DecompositionResult
 from orchestrator.agents.planning import plan, PlanResult
 from orchestrator.agents.qa import qa, QaResult
 from orchestrator.agents.summarize import summarize, SummaryResult
+from orchestrator.agents.test_author import author_tests, TestAuthorResult
 from orchestrator.agents.runner import run_structured_agent
 from orchestrator.prompt_loader import load_prompt
 from orchestrator.retry_block import RetryBlock, feedback_section, run_retry_block
@@ -154,6 +162,9 @@ _ALLOWED_MSGPACK_MODULES = [
     # The summarizer's commit/PR summary + test_plan.
     ("orchestrator.agents.summarize", "SummaryResult"),
     ("orchestrator.agents.qa", "QaResult"),
+    # The test-author's per-task verdict (Phase 72). Checkpointed so a resume
+    # replays the authored result rather than re-authoring the tests.
+    ("orchestrator.agents.test_author", "TestAuthorResult"),
     ("orchestrator.usage", "TaskUsage"),
     # One registered type for ALL injected steps, so the allowlist stays closed
     # however many steps users add.
@@ -655,6 +666,182 @@ def _build_hil(spec) -> HumanInLoopConfig:
     return spec.human_in_loop if isinstance(spec.human_in_loop, HumanInLoopConfig) else HumanInLoopConfig()
 
 
+# ---------------------------------------------------------------------------
+# Phase 72 — TDD / red-green test-author station.
+#
+# Three layers of separation, all required (see CHANGELOG / phase docs):
+#   ROLE  — a distinct test-author (test_author_task) writes the tests; the
+#           implementation producer never authors them.
+#   WRITE — the implementer mechanically cannot change the tests, enforced by the
+#           diff-gate (perms are coarse, not path-scoped), ordered FIRST.
+#   ONCE  — tests are authored once per task, BEFORE the retry loop (run_retry_block
+#           re-runs all producers each attempt), and replayed (not regenerated) on
+#           resume because test_author_task is a checkpointed @task.
+#
+# All of this is gated on config.tdd; with it off the per-task station is byte-for-
+# byte the classic implement→qa loop. Graceful-degrade: a task the author judges
+# untestable (or a born-green / no-script-gate situation) returns testable=False
+# and runs the classic path — TDD never wedges a run.
+# ---------------------------------------------------------------------------
+
+
+def _test_author_model(config) -> str:
+    """Resolved model for the test-author: default_model in the core slice (a
+    dedicated [builtin.test-author] override is a later enhancement)."""
+    return config.resolved_model(None)
+
+
+def _script_gate_steps(config, gate_refs):
+    """The ScriptStep for each SCRIPT-type part referenced in a build's gate.
+
+    The deterministic suite the red-confirm runs: LLM gates (e.g. builtin:qa) are
+    skipped — only scripts give a cheap, exit-code green/red signal. An empty list
+    means there is no deterministic test gate, so the transition can't be proven."""
+    steps = []
+    for ref in gate_refs:
+        part = config.part(ref)
+        if part is not None and part.type == "script":
+            steps.append(_part_to_step(part, config))
+    return steps
+
+
+async def _run_script_gates(steps, repo_root: str):
+    """Run the resolved script gates; return (all_green, failing_output).
+
+    Each runs as a gate (a non-zero exit is a FAIL verdict, not an abort), so a
+    red suite yields its output as feedback rather than raising."""
+    green = True
+    failures = []
+    for step in steps:
+        result = await execute_script(step, Path(repo_root), as_gate=True)
+        if not result.passed:
+            green = False
+            failures.append(f"### {step.id}\n{result.detail}")
+    return green, "\n\n".join(failures)
+
+
+def _hash_test_paths(test_paths, repo_root: str) -> str:
+    """A content+membership hash of every file matching the test_paths globset.
+
+    The diff-gate's frozen baseline: any edit, deletion, or sneaked-in test file
+    changes the hash. Patterns are project-root-relative; `**` recurses."""
+    root = Path(repo_root)
+    matched = set()
+    for pattern in test_paths:
+        for p in root.glob(pattern):
+            if p.is_file():
+                matched.add(p)
+    h = hashlib.sha256()
+    for p in sorted(matched):
+        h.update(str(p.relative_to(root)).encode())
+        h.update(b"\0")
+        h.update(p.read_bytes())
+        h.update(b"\0")
+    return h.hexdigest()
+
+
+def _make_diff_gate(test_paths, snapshot: str, repo_root: str):
+    """A gate callable that FAILS if the frozen test files changed since authoring.
+
+    Closes over the per-task snapshot; re-hashes test_paths each attempt and
+    asserts byte-identity (content + set membership). Ordered FIRST in the gate
+    list, so a 'green' suite is only ever trusted against pristine tests."""
+    async def _diff_gate(gid: str) -> StepResult:
+        current = _hash_test_paths(test_paths, repo_root)
+        ok = current == snapshot
+        return StepResult(
+            step_id="diff-gate",
+            kind="script",
+            ok=True,
+            passed=ok,
+            detail="" if ok else (
+                "The test files are frozen after authoring and must not change, "
+                "but they were modified during implementation. Revert every edit, "
+                "addition, and deletion to the test files; make the failing tests "
+                "pass by changing the implementation only."
+            ),
+        )
+
+    return _diff_gate
+
+
+async def _run_test_author(
+    plan_text: str, model: str, test_paths: list[str], gate_refs: list[str]
+) -> TestAuthorResult:
+    """Author tests for one task and confirm the green→red transition.
+
+    The supervised red-green core:
+      1. the deterministic suite must be GREEN before authoring — else we can't
+         prove the new tests are what turn it red (classic fallback);
+      2. the test-author writes failing tests, or emits UNTESTABLE (classic
+         fallback);
+      3. the suite must now be RED — a still-green suite is a born-green no-op that
+         proves nothing (classic fallback).
+    On success it snapshots the test_paths globset (the diff-gate's frozen
+    baseline). A testable=False return routes the task to the classic implement→qa
+    path; this function never wedges the run. Factored out of test_author_task so
+    the @task stays a pure checkpoint boundary (tests patch this inner fn)."""
+    config = load_config()
+    repo_root = str(find_project_root())
+
+    scripts = _script_gate_steps(config, gate_refs)
+    if not scripts:
+        logger.warning(
+            "TDD: no script gate in the task-build gate list, so a green→red "
+            "transition can't be confirmed; classic fallback for this task."
+        )
+        return TestAuthorResult(testable=False, summary="no deterministic test gate")
+
+    green_before, _ = await _run_script_gates(scripts, repo_root)
+    if not green_before:
+        logger.warning(
+            "TDD: the suite is not green before authoring, so a green→red "
+            "transition can't be proven; classic fallback for this task."
+        )
+        return TestAuthorResult(testable=False, summary="suite not green before authoring")
+
+    verdict = await author_tests(plan_text, model)
+    if not verdict.testable:
+        logger.info("TDD: task judged untestable (%s); classic fallback.", verdict.summary)
+        return verdict
+
+    green_after, red_output = await _run_script_gates(scripts, repo_root)
+    if green_after:
+        logger.warning(
+            "TDD: the authored tests did not turn the suite red (born-green); the "
+            "test proves nothing, so classic fallback for this task."
+        )
+        return TestAuthorResult(
+            testable=False,
+            summary="authored tests did not fail (born-green)",
+            usage=verdict.usage,
+        )
+
+    snapshot = _hash_test_paths(test_paths, repo_root)
+    return TestAuthorResult(
+        testable=True,
+        summary=verdict.summary,
+        snapshot=snapshot,
+        red_output=red_output,
+        usage=verdict.usage,
+    )
+
+
+@task
+@_audited_task("test_author")
+async def test_author_task(
+    plan_text: str, model: str, test_paths: list[str], gate_refs: list[str]
+) -> TestAuthorResult:
+    # Runs ONCE per task, BEFORE the implement loop (kept out of run_retry_block,
+    # which re-runs all producers each attempt). The @task wrapper checkpoints the
+    # result so a mid-run resume REPLAYS the authored verdict — the tests are not
+    # regenerated. The authored test files persist in the working tree across
+    # resume, the same side-effect model as implementation_task. config /
+    # repo_root are read inside _run_test_author (not @task inputs), so the
+    # checkpoint cache key stays stable.
+    return await _run_test_author(plan_text, model, test_paths, gate_refs)
+
+
 async def _run_task_loop(
     stage,
     decomposition,
@@ -690,11 +877,32 @@ async def _run_task_loop(
             config, plan_result, usage_by_task, qa_holder, thread_id,
             impl_plan=impl_plan, qa_plan=qa_plan,
         )
+        gate_refs = list(stage.gate)
+        # TDD red-green (Phase 72): author tests ONCE before the implement loop,
+        # confirm the green→red transition, then freeze them with the diff-gate
+        # (prepended so a 'green' is only trusted against pristine tests). Gated on
+        # config.tdd; a testable=False verdict (untestable / born-green / no script
+        # gate) leaves gate_refs untouched → the classic implement→qa path.
+        if config.tdd:
+            ta = await test_author_task(
+                impl_plan, _test_author_model(config),
+                list(config.test_paths), gate_refs,
+            )
+            _record_usage(usage_by_task, "test_author", ta)
+            if ta.testable:
+                repo_root = str(find_project_root())
+                gates = {
+                    **gates,
+                    "builtin:diff-gate": _make_diff_gate(
+                        list(config.test_paths), ta.snapshot, repo_root
+                    ),
+                }
+                gate_refs = ["builtin:diff-gate", *gate_refs]
         synthetic = BuildStep(
             id=f"task:{task.id}",
             produce=list(stage.produce),
-            gate=list(stage.gate),
-            ungated=stage.ungated or (not stage.gate),  # gate=[] → producer runs once
+            gate=gate_refs,
+            ungated=stage.ungated or (not gate_refs),  # gate=[] → producer runs once
             retry=stage.retry,
             human_in_loop=hil,
         )
@@ -1344,6 +1552,7 @@ async def build_workflow(
             usage_by_task: dict[str, list[TaskUsage]] = {
                 "planning": [],
                 "decompose": [],
+                "test_author": [],
                 "implementation": [],
                 "qa": [],
                 "summarize": [],
