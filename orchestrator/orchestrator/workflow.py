@@ -691,6 +691,19 @@ def _test_author_model(config) -> str:
     return config.resolved_model(None)
 
 
+def _test_author_prompt(config) -> str:
+    """The test-author's system prompt.
+
+    config.test_author_path (project-root-relative) points the author at an
+    arbitrary prompt file; the emit-tool footer is appended by load_prompt either
+    way. Unset → the convention/bundled default (.orchestrator/prompts/
+    test-author.md → bundled), today's behaviour."""
+    if config.test_author_path:
+        path = find_project_root() / config.test_author_path
+        return load_prompt("test-author", path_override=path)
+    return load_prompt("test-author")
+
+
 def _script_gate_steps(config, gate_refs):
     """The ScriptStep for each SCRIPT-type part referenced in a build's gate.
 
@@ -800,7 +813,7 @@ async def _run_test_author(
         )
         return TestAuthorResult(testable=False, summary="suite not green before authoring")
 
-    verdict = await author_tests(plan_text, model)
+    verdict = await author_tests(plan_text, model, _test_author_prompt(config))
     if not verdict.testable:
         logger.info("TDD: task judged untestable (%s); classic fallback.", verdict.summary)
         return verdict
