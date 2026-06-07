@@ -72,10 +72,27 @@ class TestAuthorResult(BaseModel):
     usage: TaskUsage | None = None
 
 
-def _build_user_message(plan_text: str) -> str:
+def _build_user_message(plan_text: str, feedback: str | None = None) -> str:
     """The per-task message for the author: the overall plan + this task's slice
-    + acceptance criteria (composed upstream by _compose_task_plan)."""
-    return "\n".join(["## Plan", "", plan_text])
+    + acceptance criteria (composed upstream by _compose_task_plan).
+
+    On a re-author (Phase 72b red-review escape) `feedback` carries the human's
+    notes on why the previous tests were rejected; it is appended so the author
+    revises its OWN tests accordingly. Revise the existing test files; do not add
+    a parallel set."""
+    parts = ["## Plan", "", plan_text]
+    if feedback:
+        parts += [
+            "",
+            "## Re-author feedback",
+            "",
+            "A human reviewed your previous tests for this task and asked for "
+            "changes. Revise the test file(s) you wrote (do not leave the old "
+            "versions alongside new ones) to address this:",
+            "",
+            feedback,
+        ]
+    return "\n".join(parts)
 
 
 async def author_tests(
@@ -84,6 +101,7 @@ async def author_tests(
     system_prompt: str | None = None,
     allowed_tools: list[str] | None = None,
     disallowed_tools: list[str] | None = None,
+    feedback: str | None = None,
 ) -> TestAuthorResult:
     """Run the test-author agent and return its verdict.
 
@@ -97,10 +115,12 @@ async def author_tests(
     `allowed_tools` / `disallowed_tools`: None → the author-role defaults
     (`_DEFAULT_TOOLS` / none); the workflow passes the prompt frontmatter's tools
     when it sets any.
+    `feedback`: on a re-author (Phase 72b red-review escape), the human's notes on
+    why the prior tests were rejected — appended to the user message.
     """
     return await run_structured_agent(
         system_prompt=system_prompt if system_prompt is not None else _TEST_AUTHOR_SYSTEM_PROMPT,
-        user_message=_build_user_message(plan_text),
+        user_message=_build_user_message(plan_text, feedback),
         model=model,
         allowed_tools=allowed_tools if allowed_tools is not None else _DEFAULT_TOOLS,
         disallowed_tools=disallowed_tools if disallowed_tools is not None else [],

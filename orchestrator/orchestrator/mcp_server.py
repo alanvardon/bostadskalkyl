@@ -171,6 +171,17 @@ def _awaiting_approval(thread_id: str, result: dict, hint: str) -> dict:
             "'abort' (or 'no'/'stop') stops the run cleanly; any other reply "
             "proceeds past the gate."
         )
+    elif kind == "red_review":
+        # TDD red-green (Phase 72b): the test-author wrote failing tests for this
+        # task; the human reviews the RED suite before implementation. Show the
+        # reviewer `red_output` (the failing output) and `summary`, then resume.
+        hint = (
+            "TDD red-review: a separate test-author wrote FAILING tests for task "
+            f"{interrupt_val.get('task_id')!r} (see `red_output`/`summary`). Call "
+            "approve_plan with this thread_id and the user's reply: 'yes' to "
+            "implement against these tests, 'abort' (or 'no'/'stop') to stop the "
+            "run, or feedback text to re-author the tests."
+        )
     return {
         "status": "awaiting_approval",
         "thread_id": thread_id,
@@ -180,6 +191,11 @@ def _awaiting_approval(thread_id: str, result: dict, hint: str) -> dict:
         "tasks": interrupt_val.get("tasks"),
         "kind": kind,
         "ask": interrupt_val.get("ask"),
+        # red_review interrupts carry the task's failing-test output + author's
+        # one-line summary so the chat can show the RED suite for review. None else.
+        "task_id": interrupt_val.get("task_id"),
+        "red_output": interrupt_val.get("red_output"),
+        "summary": interrupt_val.get("summary"),
         "next": hint,
     }
 
@@ -211,11 +227,17 @@ async def _fetch_existing_state(thread_id: str) -> dict:
         return {
             "status": "awaiting_approval",
             "thread_id": thread_id,
+            "kind": interrupt_val.get("kind"),
             "plan": interrupt_val.get("plan"),
             "tasks": interrupt_val.get("tasks"),  # decomposed task list
+            # red_review (Phase 72b) carries the failing-test output for review.
+            "task_id": interrupt_val.get("task_id"),
+            "red_output": interrupt_val.get("red_output"),
+            "summary": interrupt_val.get("summary"),
             "next": (
-                "Replayed from idempotency key. Show the plan to the user "
-                "and call approve_plan with this thread_id."
+                "Replayed from idempotency key. Show the plan (or, for a "
+                "red_review pause, the red_output) to the user and call "
+                "approve_plan with this thread_id."
             ),
             "replayed": True,
         }
