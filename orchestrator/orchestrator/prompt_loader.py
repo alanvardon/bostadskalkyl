@@ -85,9 +85,21 @@ Call `emit_qa_result` exactly once with:
 This call is how the orchestrator captures your verdict. If you don't call it, the workflow has nothing to record and will fail. Do not modify any files — your only output is the `emit_qa_result` call.
 """
 
+_TEST_AUTHOR_FOOTER = """\
+## When done
+
+Call `emit_test_author_result` exactly once with:
+
+- `testable`: `true` if you wrote one or more FAILING tests that exercise this task's behaviour through its public interface; `false` if the behaviour is not unit-testable or the criteria are too vague to pin down (do NOT write an empty or always-passing test — emit `false` instead).
+- `reason`: on `true`, a one-line note on what behaviour the tests cover; on `false`, the one-line UNTESTABLE reason.
+
+Before emitting `true`, make sure you actually ran the suite and saw your new tests FAIL (red). This call is how the orchestrator captures your output. If you don't call it, the workflow has nothing to record and will fail. Write test files only — do not implement the feature, and do not edit source files to make your own tests pass.
+"""
+
 _FOOTERS: dict[str, str] = {
     "implementation": _IMPLEMENTATION_FOOTER,
     "qa": _QA_FOOTER,
+    "test-author": _TEST_AUTHOR_FOOTER,
 }
 
 

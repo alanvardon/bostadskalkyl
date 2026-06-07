@@ -16,7 +16,7 @@ import os
 import tomllib
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from orchestrator.paths import find_project_root
 from orchestrator.pipeline import (
@@ -159,6 +159,15 @@ class OrchestratorConfig(BaseModel):
     autonomous_max_seconds: int = 0
     autonomous_max_cost_usd: float = 0.0
 
+    # TDD / red-green station (Phase 72). When tdd is true, the per-task station
+    # authors tests with a separate agent BEFORE the implement loop, confirms the
+    # green→red transition, and freezes the tests so the implementer can't edit
+    # them (the diff-gate). test_paths is the globset (project-root-relative) the
+    # diff-gate hashes — without it there is nothing to freeze, so it is required
+    # when tdd is on. Both default off → classic implement→qa pipeline unchanged.
+    tdd: bool = False
+    test_paths: list[str] = Field(default_factory=list)
+
     pipeline: Pipeline = Field(default_factory=default_pipeline)
     branch: BranchConfig = Field(default_factory=BranchConfig)
     pre_hooks: PreHooksConfig = Field(default_factory=PreHooksConfig)
@@ -180,6 +189,34 @@ class OrchestratorConfig(BaseModel):
     def part(self, ref: str):
         """A reusable part ([builtin.*]/[defs.*]) by prefixed ref, or None."""
         return self.pipeline.parts.get(ref)
+
+    @model_validator(mode="after")
+    def _validate_tdd(self) -> "OrchestratorConfig":
+        """TDD invariants (Phase 72).
+
+        (A) tdd + fully_autonomous is forbidden: supervised TDD's guard is the
+        human (red-review / re-author), which fully_autonomous suppresses while
+        also unbounding retries — a wrong frozen test would loop to the ceiling.
+        Autonomous TDD is Phase 76; until then the combo is refused at load.
+
+        test_paths is required when tdd is on — it is the globset the diff-gate
+        freezes; with nothing to freeze the write-separation guarantee is empty.
+        """
+        if self.tdd and self.fully_autonomous:
+            raise ValueError(
+                "tdd = true is incompatible with fully_autonomous = true: "
+                "supervised TDD relies on the human red-review / re-author guard, "
+                "which fully_autonomous suppresses (and unbounded retries would "
+                "loop a wrong frozen test to the safety ceiling). Autonomous TDD "
+                "is Phase 76. Disable one of them."
+            )
+        if self.tdd and not self.test_paths:
+            raise ValueError(
+                "tdd = true requires test_paths (the globset the diff-gate "
+                "freezes, e.g. test_paths = [\"**/*.test.js\"]). Without it there "
+                "are no tests to freeze. Set test_paths or disable tdd."
+            )
+        return self
 
 
 # v2 stage ids / part ids whose model/tools may be supplied by a prompt file's
@@ -216,6 +253,7 @@ def _reject_v1(data: dict) -> None:
 _ALLOWED_TOP_LEVEL: frozenset[str] = frozenset({
     "default_model", "db_path", "fully_autonomous",
     "autonomous_max_seconds", "autonomous_max_cost_usd",
+    "tdd", "test_paths",
     "flow", "stage", "builtin", "defs",
     "branch", "pre_hooks", "qa", "git", "pr", "audit",
 })
@@ -263,7 +301,8 @@ def load_config(path: Path | None = None) -> OrchestratorConfig:
 
     fields: dict = {"pipeline": pipeline}
     for key in ("default_model", "db_path", "fully_autonomous",
-                "autonomous_max_seconds", "autonomous_max_cost_usd"):
+                "autonomous_max_seconds", "autonomous_max_cost_usd",
+                "tdd", "test_paths"):
         if key in data:
             fields[key] = data[key]
     if "branch" in data:
