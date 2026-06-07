@@ -115,16 +115,27 @@ def read_prompt_body(path: Path) -> str:
     return split_frontmatter(path.read_text(encoding="utf-8"))[1]
 
 
-def load_prompt(name: str) -> str:
+def load_prompt(name: str, path_override: Path | None = None) -> str:
     """Return the full prompt for a built-in agent `name` ('planning', 'qa', …).
 
     Loads the body from the target repo override or the bundled default,
     then appends the tool-call footer for agents that require one.
     Raises FileNotFoundError if neither source exists (broken package).
+
+    `path_override`: load the body from this exact path instead of the
+    override-then-bundled search (used by config.test_author_path to point an
+    agent at an arbitrary prompt file). The footer for `name` is still appended,
+    so the structured-output contract holds wherever the body came from. Raises
+    FileNotFoundError if the given path does not exist.
     """
-    path = _resolve_prompt_path(name)
-    if path is None:
-        raise FileNotFoundError(f"no prompt found for {name!r} (override or bundled)")
+    if path_override is not None:
+        if not path_override.exists():
+            raise FileNotFoundError(f"prompt path override not found: {path_override}")
+        path = path_override
+    else:
+        path = _resolve_prompt_path(name)
+        if path is None:
+            raise FileNotFoundError(f"no prompt found for {name!r} (override or bundled)")
     body = read_prompt_body(path)
 
     footer = _FOOTERS.get(name, "")

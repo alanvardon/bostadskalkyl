@@ -167,6 +167,12 @@ class OrchestratorConfig(BaseModel):
     # when tdd is on. Both default off → classic implement→qa pipeline unchanged.
     tdd: bool = False
     test_paths: list[str] = Field(default_factory=list)
+    # Optional project-root-relative path to the test-author's prompt. When unset,
+    # the test-author falls back to the convention (.orchestrator/prompts/
+    # test-author.md → bundled default). Lets you point the author at an arbitrary
+    # prompt file; the emit-tool footer is appended either way. Only consulted when
+    # tdd is on, so it is harmless (a no-op) otherwise.
+    test_author_path: str | None = None
 
     pipeline: Pipeline = Field(default_factory=default_pipeline)
     branch: BranchConfig = Field(default_factory=BranchConfig)
@@ -253,7 +259,7 @@ def _reject_v1(data: dict) -> None:
 _ALLOWED_TOP_LEVEL: frozenset[str] = frozenset({
     "default_model", "db_path", "fully_autonomous",
     "autonomous_max_seconds", "autonomous_max_cost_usd",
-    "tdd", "test_paths",
+    "tdd", "test_paths", "test_author_path",
     "flow", "stage", "builtin", "defs",
     "branch", "pre_hooks", "qa", "git", "pr", "audit",
 })
@@ -302,7 +308,7 @@ def load_config(path: Path | None = None) -> OrchestratorConfig:
     fields: dict = {"pipeline": pipeline}
     for key in ("default_model", "db_path", "fully_autonomous",
                 "autonomous_max_seconds", "autonomous_max_cost_usd",
-                "tdd", "test_paths"):
+                "tdd", "test_paths", "test_author_path"):
         if key in data:
             fields[key] = data[key]
     if "branch" in data:

@@ -78,7 +78,9 @@ def _build_user_message(plan_text: str) -> str:
     return "\n".join(["## Plan", "", plan_text])
 
 
-async def author_tests(plan_text: str, model: str) -> TestAuthorResult:
+async def author_tests(
+    plan_text: str, model: str, system_prompt: str | None = None
+) -> TestAuthorResult:
     """Run the test-author agent and return its verdict.
 
     The agent writes test file(s) for the task and emits `testable` + a `reason`.
@@ -86,9 +88,13 @@ async def author_tests(plan_text: str, model: str) -> TestAuthorResult:
     (it owns the green→red transition and the freeze). Tools are the author-role
     default (a [builtin.test-author] override is a later enhancement); the model
     is resolved by the caller.
+
+    `system_prompt`: the resolved prompt body+footer. None falls back to the
+    bundled/convention default (`_TEST_AUTHOR_SYSTEM_PROMPT`); the workflow passes
+    a config.test_author_path override when one is set.
     """
     return await run_structured_agent(
-        system_prompt=_TEST_AUTHOR_SYSTEM_PROMPT,
+        system_prompt=system_prompt if system_prompt is not None else _TEST_AUTHOR_SYSTEM_PROMPT,
         user_message=_build_user_message(plan_text),
         model=model,
         allowed_tools=_DEFAULT_TOOLS,
