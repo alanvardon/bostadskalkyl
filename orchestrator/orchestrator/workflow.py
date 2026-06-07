@@ -147,6 +147,7 @@ from orchestrator.run_artifacts import (
     write_plan,
     write_qa,
     write_summary,
+    write_test_author,
     write_usage,
 )
 
@@ -613,6 +614,31 @@ def _compose_task_qa(plan_text: str, task) -> str:
     return "\n".join(parts)
 
 
+def _compose_red_green(plan_text: str, red_output: str) -> str:
+    """Append the failing-test (RED) output to the implementer's plan (Phase 72b).
+
+    On a TDD task the test-author has already written failing tests; injecting
+    their output gives the implementer's FIRST attempt the exact spec it must turn
+    green (before any gate has run to feed it back). The tests are frozen by the
+    diff-gate, so the note tells the implementer to change implementation only.
+    Empty red_output → the plan is returned unchanged."""
+    if not red_output:
+        return plan_text
+    return "\n".join([
+        plan_text,
+        "",
+        "## Failing tests to make pass (RED)",
+        "",
+        "A separate test-author wrote tests for this task; they currently FAIL and "
+        "are FROZEN — you must not edit them. Make them pass by changing the "
+        "implementation only. The failing output:",
+        "",
+        "```",
+        red_output.strip(),
+        "```",
+    ])
+
+
 def _impl_model(config) -> str:
     """Resolved model for the built-in implementation producer ([builtin.implementation])."""
     part = config.part("builtin:implementation")
@@ -910,37 +936,45 @@ async def _run_task_loop(
     Runs in the entrypoint body so its interrupt()s are reachable."""
     hil = _build_hil(stage)
     for task in decomposition.tasks:
-        impl_plan = _compose_task_plan(plan_result.plan_text, task)
+        task_plan = _compose_task_plan(plan_result.plan_text, task)
         qa_plan = PlanResult(
             title=plan_result.title,
             type=plan_result.type,
             plan_text=_compose_task_qa(plan_result.plan_text, task),
         )
-        producers, gates = _builtin_build_callables(
-            config, plan_result, usage_by_task, qa_holder, thread_id,
-            impl_plan=impl_plan, qa_plan=qa_plan,
-        )
         gate_refs = list(stage.gate)
+        diff_gate: dict = {}
+        impl_plan = task_plan  # the implementer's plan; gains the RED output below
         # TDD red-green (Phase 72): author tests ONCE before the implement loop,
         # confirm the green→red transition, then freeze them with the diff-gate
         # (prepended so a 'green' is only trusted against pristine tests). Gated on
         # config.tdd; a testable=False verdict (untestable / born-green / no script
         # gate) leaves gate_refs untouched → the classic implement→qa path.
+        # The test-author always sees the clean task_plan, so its @task cache key is
+        # stable across resumes; the RED output is injected only into impl_plan.
         if config.tdd:
             ta = await test_author_task(
-                impl_plan, _test_author_model(config),
+                task_plan, _test_author_model(config),
                 list(config.test_paths), gate_refs,
             )
             _record_usage(usage_by_task, "test_author", ta)
             if ta.testable:
                 repo_root = str(find_project_root())
-                gates = {
-                    **gates,
+                diff_gate = {
                     "builtin:diff-gate": _make_diff_gate(
                         list(config.test_paths), ta.snapshot, repo_root
                     ),
                 }
                 gate_refs = ["builtin:diff-gate", *gate_refs]
+                # Phase 72b: give the implementer's first attempt the failing tests,
+                # and persist the red→green record for the run.
+                impl_plan = _compose_red_green(task_plan, ta.red_output)
+                write_test_author(thread_id, task.id, ta)
+        producers, gates = _builtin_build_callables(
+            config, plan_result, usage_by_task, qa_holder, thread_id,
+            impl_plan=impl_plan, qa_plan=qa_plan,
+        )
+        gates = {**gates, **diff_gate}
         synthetic = BuildStep(
             id=f"task:{task.id}",
             produce=list(stage.produce),

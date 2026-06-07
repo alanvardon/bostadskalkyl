@@ -24,6 +24,7 @@ from orchestrator.agents.decompose import DecompositionResult
 from orchestrator.agents.planning import PlanResult
 from orchestrator.agents.qa import QaResult
 from orchestrator.agents.summarize import SummaryResult
+from orchestrator.agents.test_author import TestAuthorResult
 from orchestrator.paths import find_project_root
 
 def _runs_dir() -> Path:
@@ -107,6 +108,34 @@ def write_qa(thread_id: str, qa: QaResult) -> None:
         )
         content = f"# QA Result: {qa.result}{failures_section}\n"
         (d / "qa.md").write_text(content, encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _safe_id(task_id: str) -> str:
+    """A filesystem-safe fragment from a task id (ids are slugs, but be defensive)."""
+    return "".join(c if c.isalnum() or c in "-_" else "-" for c in task_id) or "task"
+
+
+def write_test_author(thread_id: str, task_id: str, ta: TestAuthorResult) -> None:
+    """Write test-author-<task_id>.md — the red→green record for one TDD task.
+
+    Captures the author's verdict, the frozen-test snapshot, and the failing
+    (RED) suite output observed at red-confirm, so the red→green transition is
+    auditable after the fact. Best-effort; the checkpointed TestAuthorResult is
+    the source of truth. Only written for testable tasks (the caller gates this)."""
+    try:
+        d = _run_dir(thread_id)
+        d.mkdir(parents=True, exist_ok=True)
+        snap = f"\n**Frozen snapshot:** `{ta.snapshot}`\n" if ta.snapshot else ""
+        red = f"\n## Red output\n\n```\n{ta.red_output}\n```\n" if ta.red_output else ""
+        content = (
+            f"# Test author — {task_id}\n\n"
+            f"**Testable:** {ta.testable}\n\n"
+            f"{ta.summary}\n"
+            f"{snap}{red}"
+        )
+        (d / f"test-author-{_safe_id(task_id)}.md").write_text(content, encoding="utf-8")
     except OSError:
         pass
 
