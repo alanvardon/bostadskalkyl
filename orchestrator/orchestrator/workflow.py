@@ -28,7 +28,18 @@ logger = logging.getLogger(__name__)
 # @task in the body's task graph, so a half-finished 2.0.0 checkpoint can't safely
 # resume into it. With tdd off (the default) the task is never called and the
 # graph is identical to 2.0.0, but the body now CAN emit it, so the bump.
-WORKFLOW_VERSION = "2.1.0"
+#
+# 2.2.0 (Phase 72b): Task.acceptance_criteria became REQUIRED (was optional). The
+# DecompositionResult is checkpointed; a pre-2.2.0 checkpoint may carry a task with
+# no criteria, which now fails to deserialize — the version gate refuses that
+# resume cleanly instead of a confusing mid-run ValidationError.
+#
+# 2.3.0 (Phase 72b): the supervised red-review pause + re-author escape. The per-
+# task station now runs `_author_with_review`, which can emit a new `red_review`
+# interrupt after red-confirm and loop `test_author_task` (with feedback/attempt) to
+# re-author. New control flow + interrupt the body can reach → a half-finished 2.2.0
+# checkpoint can't safely resume into it. Gated on config.tdd_red_review (default on).
+WORKFLOW_VERSION = "2.3.0"
 
 
 from orchestrator.errors import FatalError
@@ -147,6 +158,7 @@ from orchestrator.run_artifacts import (
     write_plan,
     write_qa,
     write_summary,
+    write_test_author,
     write_usage,
 )
 
@@ -613,6 +625,31 @@ def _compose_task_qa(plan_text: str, task) -> str:
     return "\n".join(parts)
 
 
+def _compose_red_green(plan_text: str, red_output: str) -> str:
+    """Append the failing-test (RED) output to the implementer's plan (Phase 72b).
+
+    On a TDD task the test-author has already written failing tests; injecting
+    their output gives the implementer's FIRST attempt the exact spec it must turn
+    green (before any gate has run to feed it back). The tests are frozen by the
+    diff-gate, so the note tells the implementer to change implementation only.
+    Empty red_output → the plan is returned unchanged."""
+    if not red_output:
+        return plan_text
+    return "\n".join([
+        plan_text,
+        "",
+        "## Failing tests to make pass (RED)",
+        "",
+        "A separate test-author wrote tests for this task; they currently FAIL and "
+        "are FROZEN — you must not edit them. Make them pass by changing the "
+        "implementation only. The failing output:",
+        "",
+        "```",
+        red_output.strip(),
+        "```",
+    ])
+
+
 def _impl_model(config) -> str:
     """Resolved model for the built-in implementation producer ([builtin.implementation])."""
     part = config.part("builtin:implementation")
@@ -806,7 +843,8 @@ def _make_diff_gate(test_paths, snapshot: str, repo_root: str):
 
 
 async def _run_test_author(
-    plan_text: str, model: str, test_paths: list[str], gate_refs: list[str]
+    plan_text: str, model: str, test_paths: list[str], gate_refs: list[str],
+    feedback: str | None = None,
 ) -> TestAuthorResult:
     """Author tests for one task and confirm the green→red transition.
 
@@ -820,9 +858,15 @@ async def _run_test_author(
     On success it snapshots the test_paths globset (the diff-gate's frozen
     baseline). A testable=False return routes the task to the classic implement→qa
     path; this function never wedges the run. Factored out of test_author_task so
-    the @task stays a pure checkpoint boundary (tests patch this inner fn)."""
+    the @task stays a pure checkpoint boundary (tests patch this inner fn).
+
+    `feedback` set → a RE-AUTHOR (Phase 72b red-review escape): the prior author's
+    failing tests are already in the tree, so the green-before precondition cannot
+    hold and is SKIPPED — the author revises its tests and red-after is re-confirmed
+    against the revised suite."""
     config = load_config()
     repo_root = str(find_project_root())
+    reauthor = feedback is not None
 
     scripts = _script_gate_steps(config, gate_refs)
     if not scripts:
@@ -832,17 +876,19 @@ async def _run_test_author(
         )
         return TestAuthorResult(testable=False, summary="no deterministic test gate")
 
-    green_before, _ = await _run_script_gates(scripts, repo_root)
-    if not green_before:
-        logger.warning(
-            "TDD: the suite is not green before authoring, so a green→red "
-            "transition can't be proven; classic fallback for this task."
-        )
-        return TestAuthorResult(testable=False, summary="suite not green before authoring")
+    if not reauthor:
+        green_before, _ = await _run_script_gates(scripts, repo_root)
+        if not green_before:
+            logger.warning(
+                "TDD: the suite is not green before authoring, so a green→red "
+                "transition can't be proven; classic fallback for this task."
+            )
+            return TestAuthorResult(testable=False, summary="suite not green before authoring")
 
     allowed, disallowed = _test_author_tools(config)
     verdict = await author_tests(
-        plan_text, model, _test_author_prompt(config), allowed, disallowed
+        plan_text, model, _test_author_prompt(config), allowed, disallowed,
+        feedback=feedback,
     )
     if not verdict.testable:
         logger.info("TDD: task judged untestable (%s); classic fallback.", verdict.summary)
@@ -873,16 +919,81 @@ async def _run_test_author(
 @task
 @_audited_task("test_author")
 async def test_author_task(
-    plan_text: str, model: str, test_paths: list[str], gate_refs: list[str]
+    plan_text: str, model: str, test_paths: list[str], gate_refs: list[str],
+    feedback: str | None = None, attempt: int = 0,
 ) -> TestAuthorResult:
-    # Runs ONCE per task, BEFORE the implement loop (kept out of run_retry_block,
-    # which re-runs all producers each attempt). The @task wrapper checkpoints the
-    # result so a mid-run resume REPLAYS the authored verdict — the tests are not
-    # regenerated. The authored test files persist in the working tree across
-    # resume, the same side-effect model as implementation_task. config /
-    # repo_root are read inside _run_test_author (not @task inputs), so the
-    # checkpoint cache key stays stable.
-    return await _run_test_author(plan_text, model, test_paths, gate_refs)
+    # Runs ONCE per task (or once per re-author iteration), BEFORE the implement
+    # loop (kept out of run_retry_block, which re-runs all producers each attempt).
+    # The @task wrapper checkpoints the result so a mid-run resume REPLAYS the
+    # authored verdict — the tests are not regenerated. The authored test files
+    # persist in the working tree across resume, the same side-effect model as
+    # implementation_task. config / repo_root are read inside _run_test_author (not
+    # @task inputs), so the checkpoint cache key stays stable. `attempt` is a
+    # cache-key discriminator only: each re-author (Phase 72b) is a distinct @task
+    # invocation, so a resume replays the right iteration rather than collapsing them.
+    return await _run_test_author(plan_text, model, test_paths, gate_refs, feedback)
+
+
+# Resume words at the red-review pause that mean "implement against these tests".
+# Anything that is neither an approve word nor an abort word is treated as
+# re-author feedback.
+_RED_REVIEW_APPROVE_WORDS = frozenset({"yes", "y", "approve", "ok", "lgtm", "go", "proceed"})
+
+
+def _is_red_review_approve(decision) -> bool:
+    return isinstance(decision, str) and decision.strip().lower() in _RED_REVIEW_APPROVE_WORDS
+
+
+async def _author_with_review(
+    task, task_plan: str, config, usage_by_task: dict, gate_refs: list[str], *,
+    thread_id: str, audit, autonomous: bool,
+) -> TestAuthorResult:
+    """Author tests for one task with the supervised red-review pause + re-author
+    escape (Phase 72b).
+
+    Loops: author → if testable, PAUSE for a human to review the RED tests →
+      - an approve word ('yes'/…)  → return the verdict; the implement loop runs;
+      - 'abort'/'no'/'stop'        → raise BuildFailed → clean status="failed";
+      - anything else              → treat as feedback and RE-AUTHOR the tests.
+    An untestable verdict returns immediately (classic fallback — nothing to
+    review). The pause is default-on (config.tdd_red_review); it is suppressed when
+    tdd_red_review is false or the run is fully_autonomous. Runs in the entrypoint
+    frame (called from _run_task_loop) so interrupt() is reachable; each re-author
+    is a distinct test_author_task @task (via `attempt`) so resume replays cleanly.
+    This is the escape machinery Phase 74's coverage critic reuses."""
+    feedback: str | None = None
+    attempt = 0
+    while True:
+        ta = await test_author_task(
+            task_plan, _test_author_model(config),
+            list(config.test_paths), gate_refs, feedback, attempt,
+        )
+        _record_usage(usage_by_task, "test_author", ta)
+        if not ta.testable or autonomous or not config.tdd_red_review:
+            return ta
+        if audit is not None:
+            emit_event(audit, thread_id, "interrupt",
+                       payload={"kind": "red_review", "step_id": f"task:{task.id}"})
+        decision = interrupt({
+            "kind": "red_review",
+            "task_id": task.id,
+            "summary": ta.summary,
+            "red_output": ta.red_output,
+            "ask": (
+                "Review the failing tests for this task. Reply 'yes' to implement "
+                "against them, 'abort' to stop the run, or describe what to change "
+                "to re-author the tests."
+            ),
+        })
+        if _is_abort(decision):
+            raise BuildFailed(
+                f"task:{task.id}", attempt,
+                "Aborted at red-review: the reviewer rejected the failing tests.",
+            )
+        if _is_red_review_approve(decision):
+            return ta
+        feedback = decision if isinstance(decision, str) and decision.strip() else None
+        attempt += 1
 
 
 async def _run_task_loop(
@@ -910,37 +1021,44 @@ async def _run_task_loop(
     Runs in the entrypoint body so its interrupt()s are reachable."""
     hil = _build_hil(stage)
     for task in decomposition.tasks:
-        impl_plan = _compose_task_plan(plan_result.plan_text, task)
+        task_plan = _compose_task_plan(plan_result.plan_text, task)
         qa_plan = PlanResult(
             title=plan_result.title,
             type=plan_result.type,
             plan_text=_compose_task_qa(plan_result.plan_text, task),
         )
-        producers, gates = _builtin_build_callables(
-            config, plan_result, usage_by_task, qa_holder, thread_id,
-            impl_plan=impl_plan, qa_plan=qa_plan,
-        )
         gate_refs = list(stage.gate)
+        diff_gate: dict = {}
+        impl_plan = task_plan  # the implementer's plan; gains the RED output below
         # TDD red-green (Phase 72): author tests ONCE before the implement loop,
         # confirm the green→red transition, then freeze them with the diff-gate
         # (prepended so a 'green' is only trusted against pristine tests). Gated on
         # config.tdd; a testable=False verdict (untestable / born-green / no script
         # gate) leaves gate_refs untouched → the classic implement→qa path.
+        # The test-author always sees the clean task_plan, so its @task cache key is
+        # stable across resumes; the RED output is injected only into impl_plan.
         if config.tdd:
-            ta = await test_author_task(
-                impl_plan, _test_author_model(config),
-                list(config.test_paths), gate_refs,
+            ta = await _author_with_review(
+                task, task_plan, config, usage_by_task, gate_refs,
+                thread_id=thread_id, audit=audit, autonomous=autonomous,
             )
-            _record_usage(usage_by_task, "test_author", ta)
             if ta.testable:
                 repo_root = str(find_project_root())
-                gates = {
-                    **gates,
+                diff_gate = {
                     "builtin:diff-gate": _make_diff_gate(
                         list(config.test_paths), ta.snapshot, repo_root
                     ),
                 }
                 gate_refs = ["builtin:diff-gate", *gate_refs]
+                # Phase 72b: give the implementer's first attempt the failing tests,
+                # and persist the red→green record for the run.
+                impl_plan = _compose_red_green(task_plan, ta.red_output)
+                write_test_author(thread_id, task.id, ta)
+        producers, gates = _builtin_build_callables(
+            config, plan_result, usage_by_task, qa_holder, thread_id,
+            impl_plan=impl_plan, qa_plan=qa_plan,
+        )
+        gates = {**gates, **diff_gate}
         synthetic = BuildStep(
             id=f"task:{task.id}",
             produce=list(stage.produce),

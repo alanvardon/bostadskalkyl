@@ -173,6 +173,13 @@ class OrchestratorConfig(BaseModel):
     # prompt file; the emit-tool footer is appended either way. Only consulted when
     # tdd is on, so it is harmless (a no-op) otherwise.
     test_author_path: str | None = None
+    # Supervised red-review pause (Phase 72b). When tdd is on, after the test-author
+    # writes failing tests and the green→red transition is confirmed, the run pauses
+    # for a human to review the RED tests before implementation: 'yes' implements,
+    # feedback re-authors the tests, 'abort' stops the run. Default on (it is the
+    # supervised guard); set false to let red-green run unattended. Only consulted
+    # when tdd is on and the run is not fully_autonomous.
+    tdd_red_review: bool = True
 
     pipeline: Pipeline = Field(default_factory=default_pipeline)
     branch: BranchConfig = Field(default_factory=BranchConfig)
@@ -259,7 +266,7 @@ def _reject_v1(data: dict) -> None:
 _ALLOWED_TOP_LEVEL: frozenset[str] = frozenset({
     "default_model", "db_path", "fully_autonomous",
     "autonomous_max_seconds", "autonomous_max_cost_usd",
-    "tdd", "test_paths", "test_author_path",
+    "tdd", "test_paths", "test_author_path", "tdd_red_review",
     "flow", "stage", "builtin", "defs",
     "branch", "pre_hooks", "qa", "git", "pr", "audit",
 })
@@ -308,7 +315,7 @@ def load_config(path: Path | None = None) -> OrchestratorConfig:
     fields: dict = {"pipeline": pipeline}
     for key in ("default_model", "db_path", "fully_autonomous",
                 "autonomous_max_seconds", "autonomous_max_cost_usd",
-                "tdd", "test_paths", "test_author_path"):
+                "tdd", "test_paths", "test_author_path", "tdd_red_review"):
         if key in data:
             fields[key] = data[key]
     if "branch" in data:

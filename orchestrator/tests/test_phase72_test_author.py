@@ -125,7 +125,7 @@ async def test_run_test_author_green_to_red_returns_snapshot(monkeypatch):
 
     _patch_scripts(monkeypatch, [(True, ""), (False, "FAILED: 1 test")])
 
-    async def _author(plan, model, system_prompt=None, allowed_tools=None, disallowed_tools=None):
+    async def _author(plan, model, system_prompt=None, allowed_tools=None, disallowed_tools=None, feedback=None):
         return TestAuthorResult(testable=True, summary="covers behaviour X")
 
     monkeypatch.setattr(wf, "author_tests", _author)
@@ -144,7 +144,7 @@ async def test_run_test_author_born_green_falls_back(monkeypatch):
 
     _patch_scripts(monkeypatch, [(True, ""), (True, "")])
 
-    async def _author(plan, model, system_prompt=None, allowed_tools=None, disallowed_tools=None):
+    async def _author(plan, model, system_prompt=None, allowed_tools=None, disallowed_tools=None, feedback=None):
         return TestAuthorResult(testable=True, summary="claims testable")
 
     monkeypatch.setattr(wf, "author_tests", _author)
@@ -162,7 +162,7 @@ async def test_run_test_author_baseline_red_falls_back_without_authoring(monkeyp
     _patch_scripts(monkeypatch, [(False, "pre-existing failure")])
     authored = {"called": False}
 
-    async def _author(plan, model, system_prompt=None, allowed_tools=None, disallowed_tools=None):
+    async def _author(plan, model, system_prompt=None, allowed_tools=None, disallowed_tools=None, feedback=None):
         authored["called"] = True
         return TestAuthorResult(testable=True)
 
@@ -179,7 +179,7 @@ async def test_run_test_author_untestable_passthrough(monkeypatch):
 
     _patch_scripts(monkeypatch, [(True, "")])
 
-    async def _author(plan, model, system_prompt=None, allowed_tools=None, disallowed_tools=None):
+    async def _author(plan, model, system_prompt=None, allowed_tools=None, disallowed_tools=None, feedback=None):
         return TestAuthorResult(testable=False, summary="DOM-only, no harness")
 
     monkeypatch.setattr(wf, "author_tests", _author)
@@ -213,6 +213,7 @@ class _Stubs:
             for i in range(1, n_tasks + 1)
         ]
         self.ta_calls: list[str] = []         # plan_text each _run_test_author saw
+        self.ta_feedback: list[str | None] = []  # feedback each call saw (re-author)
         self._ta_results = ta_results          # per-task TestAuthorResult, or None → all testable
         self.impl_plans: list[str] = []
         self.qa_calls = 0
@@ -225,9 +226,10 @@ class _Stubs:
     async def decompose(self, plan_text, model="claude-sonnet-4-6", max_tasks=0) -> DecompositionResult:
         return DecompositionResult(tasks=self.tasks)
 
-    async def run_test_author(self, plan_text, model, test_paths, gate_refs) -> TestAuthorResult:
+    async def run_test_author(self, plan_text, model, test_paths, gate_refs, feedback=None) -> TestAuthorResult:
         idx = len(self.ta_calls)
         self.ta_calls.append(plan_text)
+        self.ta_feedback.append(feedback)
         if self._ta_results is None:
             return TestAuthorResult(testable=True, summary="ok", snapshot="SNAP", red_output="boom")
         return self._ta_results[idx]
@@ -279,9 +281,11 @@ def _patch(stubs: _Stubs, monkeypatch, *, hash_value: str = "SNAP") -> None:
     monkeypatch.setattr("orchestrator.workflow.ensure_on_main", stubs.ensure_on_main)
 
 
-def _tdd_cfg(**kw):
+def _tdd_cfg(*, red_review=False, **kw):
+    # red_review defaults False so these authoring/diff-gate/resume tests keep their
+    # single plan-approval resume; Phase 72b's own tests opt in with red_review=True.
     return task_build_config(**kw).model_copy(
-        update={"tdd": True, "test_paths": ["**/*.test.js"]}
+        update={"tdd": True, "test_paths": ["**/*.test.js"], "tdd_red_review": red_review}
     )
 
 

@@ -48,6 +48,10 @@ db_path       = ".orchestrator/checkpoints.db"
 #     prompt. Unset = the convention (.orchestrator/prompts/test-author.md →
 #     bundled default). Set it to point the author at an arbitrary prompt file;
 #     the emit-tool footer is appended either way.
+#   - tdd_red_review: SUPERVISED red-review pause (default true). After the tests
+#     go green→red the run pauses for a human to review the RED suite before
+#     implementation: reply 'yes' to implement, 'abort' to stop, or feedback to
+#     re-author the tests. Set false to let red-green run unattended.
 #   - Graceful-degrade: a task the author judges untestable (or a born-green /
 #     no-script-gate situation) falls back to the classic implement→qa path.
 #   - tdd = true is INCOMPATIBLE with fully_autonomous = true (the human
@@ -55,6 +59,7 @@ db_path       = ".orchestrator/checkpoints.db"
 # tdd              = false
 # test_paths       = ["**/*.test.js"]
 # test_author_path = "prompts/my-test-author.md"
+# tdd_red_review   = true
 
 
 # =============================================================================

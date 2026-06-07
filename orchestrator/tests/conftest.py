@@ -121,7 +121,8 @@ def _stub_decompose(monkeypatch):
 
     async def _fake_decompose(plan_text, model="claude-sonnet-4-6", max_tasks=0):
         return DecompositionResult(
-            tasks=[Task(id="task-1", title="The change", description=plan_text)],
+            tasks=[Task(id="task-1", title="The change", description=plan_text,
+                        acceptance_criteria="the change is implemented")],
             usage=None,
         )
 

@@ -35,7 +35,8 @@ def test_task_schema_fields():
     # The contract Phase 56 depends on: exactly these fields, nothing the
     # plan-only decomposer can't produce (no `files`, no `depends_on`).
     assert set(Task.model_fields) == {"id", "title", "description", "acceptance_criteria"}
-    assert Task.model_fields["acceptance_criteria"].default is None  # optional
+    # Phase 72b: acceptance_criteria is now REQUIRED (the test-author's spec).
+    assert Task.model_fields["acceptance_criteria"].is_required()
     assert set(DecompositionResult.model_fields) == {"tasks", "schema_version", "usage"}
 
 
@@ -59,7 +60,7 @@ def test_decomposition_result_serde_roundtrip():
     result = DecompositionResult(
         tasks=[
             Task(id="a", title="A", description="do a", acceptance_criteria="checked"),
-            Task(id="b", title="B", description="do b"),
+            Task(id="b", title="B", description="do b", acceptance_criteria="checked too"),
         ]
     )
     restored = _CUSTOM_SERDE.loads_typed(_CUSTOM_SERDE.dumps_typed(result))
@@ -90,8 +91,10 @@ class _Stubs:
         # decomposed (e.g. "plan-2" → tasks for the revised plan).
         return DecompositionResult(
             tasks=[
-                Task(id=f"{plan_text}-t1", title="First", description="step one"),
-                Task(id=f"{plan_text}-t2", title="Second", description="step two"),
+                Task(id=f"{plan_text}-t1", title="First", description="step one",
+                     acceptance_criteria="one done"),
+                Task(id=f"{plan_text}-t2", title="Second", description="step two",
+                     acceptance_criteria="two done"),
             ]
         )
 
