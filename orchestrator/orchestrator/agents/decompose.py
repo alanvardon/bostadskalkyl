@@ -32,10 +32,12 @@ class Task(BaseModel):
         description="what THIS task changes — its slice of the plan, not a "
                     "restatement of the whole plan"
     )
-    acceptance_criteria: str | None = Field(
-        default=None,
-        description="optional, advisory: how a reviewer or test confirms this "
-                    "task is done",
+    acceptance_criteria: str = Field(
+        description="REQUIRED: one or more concrete, checkable statements of the "
+                    "observable behaviour that confirms this task is done — naming "
+                    "the input/action and the observed result. It is the spec the "
+                    "test-author writes tests against (Phase 72b); state behaviour, "
+                    "not implementation steps.",
     )
 
 
@@ -52,7 +54,8 @@ class _DecompositionSchema(BaseModel):
 class DecompositionResult(_DecompositionSchema):
     # Schema version. Bump on incompatible shape changes; pure additions of
     # optional fields don't need a bump. Not part of the tool schema.
-    schema_version: int = 1
+    # v2 (Phase 72b): Task.acceptance_criteria became required (was optional).
+    schema_version: int = 2
     # Populated after the API call returns; not part of the LLM tool schema.
     usage: TaskUsage | None = None
 

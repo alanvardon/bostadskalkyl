@@ -28,7 +28,8 @@ from tests.conftest import task_build_config
 class _Stubs:
     def __init__(self, n_tasks: int = 1, qa_verdicts: list[QaResult] | None = None) -> None:
         self.tasks = [
-            Task(id=f"t{i}", title=f"Task {i}", description=f"do step {i}")
+            Task(id=f"t{i}", title=f"Task {i}", description=f"do step {i}",
+                 acceptance_criteria=f"step {i} works")
             for i in range(1, n_tasks + 1)
         ]
         # plan_text each producer / QA call received, and producer feedback.

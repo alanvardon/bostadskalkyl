@@ -28,7 +28,12 @@ logger = logging.getLogger(__name__)
 # @task in the body's task graph, so a half-finished 2.0.0 checkpoint can't safely
 # resume into it. With tdd off (the default) the task is never called and the
 # graph is identical to 2.0.0, but the body now CAN emit it, so the bump.
-WORKFLOW_VERSION = "2.1.0"
+#
+# 2.2.0 (Phase 72b): Task.acceptance_criteria became REQUIRED (was optional). The
+# DecompositionResult is checkpointed; a pre-2.2.0 checkpoint may carry a task with
+# no criteria, which now fails to deserialize — the version gate refuses that
+# resume cleanly instead of a confusing mid-run ValidationError.
+WORKFLOW_VERSION = "2.2.0"
 
 
 from orchestrator.errors import FatalError
