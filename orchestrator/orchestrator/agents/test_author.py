@@ -61,6 +61,12 @@ class TestAuthorResult(BaseModel):
     # False → the task is not unit-testable (or the author couldn't write a
     # failing test); the workflow routes it to the classic implement→qa path.
     testable: bool
+    # When testable is False, WHICH kind of degrade this is — set by
+    # workflow._run_test_author, not the agent. Distinguishes a legitimate "not
+    # unit-testable" judgement (a graceful classic fallback, even autonomous) from
+    # a red-confirm FAILURE (no script gate / non-green baseline / born-green),
+    # which autonomous TDD treats as a hard abort (Phase 76). None when testable.
+    degrade_kind: str | None = None
     # The author's one-line note on success, or the UNTESTABLE reason.
     summary: str = ""
     # Hash of the test_paths globset right after authoring — the diff-gate's
