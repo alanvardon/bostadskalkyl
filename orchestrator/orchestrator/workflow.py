@@ -63,7 +63,16 @@ logger = logging.getLogger(__name__)
 # per-attempt hook. Both are additive and inert until a consumer is wired (77c), so
 # the graph is unchanged — but a checkpointed StepResult shape changed, so a
 # half-finished 2.5.0 TDD run can't resume across the upgrade and needs a fresh start.
-WORKFLOW_VERSION = "2.6.0"
+#
+# 2.7.0 (Phase 77b): test-author evidence folder. TestAuthorResult gains a `full_run`
+# field (the COMPLETE final RED run, via 77a's full-output capture) — a checkpointed
+# shape change on a serde-allowlisted model, so a half-finished 2.6.0 TDD run can't
+# resume across the upgrade. The per-task `test-author/` folder (final tests copied
+# verbatim + RED run + freeze hash + process summary.md) replaces the flat
+# `test-author-<id>.md`. The post-branch task graph is unchanged (the writer is a
+# side-effect after the authored verdict, like its predecessor) and TDD-off runs are
+# byte-for-byte identical; the bump is purely for the changed checkpointed shape.
+WORKFLOW_VERSION = "2.7.0"
 
 
 from orchestrator.errors import FatalError
@@ -175,7 +184,7 @@ from orchestrator.git_ops import (
     working_tree_has_changes,
     PreHookError,
 )
-from orchestrator.paths import find_project_root
+from orchestrator.paths import find_project_root, iter_test_files
 from orchestrator.pre_hooks import run_pre_hooks
 from orchestrator.run_artifacts import (
     rename_with_branch,
@@ -184,7 +193,7 @@ from orchestrator.run_artifacts import (
     write_plan,
     write_qa,
     write_summary,
-    write_test_author,
+    write_test_author_folder,
     write_usage,
 )
 
@@ -840,33 +849,38 @@ def _script_gate_steps(config, gate_refs):
 
 
 async def _run_script_gates(steps, repo_root: str):
-    """Run the resolved script gates; return (all_green, failing_output).
+    """Run the resolved script gates; return (all_green, failing_output, full_output).
 
     Each runs as a gate (a non-zero exit is a FAIL verdict, not an abort), so a
-    red suite yields its output as feedback rather than raising."""
+    red suite yields its output as feedback rather than raising.
+
+    `failing_output` is the failures-only summary (each failing gate's `detail`) —
+    the feedback the implementer's first attempt sees. `full_output` is the
+    COMPLETE log of EVERY gate, pass and fail (Phase 77a `StepResult.full_output`):
+    the red-green evidence layer (Phase 77b) persists it as proof of what actually
+    ran, not just what failed."""
     green = True
     failures = []
+    full = []
     for step in steps:
         result = await execute_script(step, Path(repo_root), as_gate=True)
+        full.append(f"### {step.id}\n{result.full_output}")
         if not result.passed:
             green = False
             failures.append(f"### {step.id}\n{result.detail}")
-    return green, "\n\n".join(failures)
+    return green, "\n\n".join(failures), "\n\n".join(full)
 
 
 def _hash_test_paths(test_paths, repo_root: str) -> str:
     """A content+membership hash of every file matching the test_paths globset.
 
     The diff-gate's frozen baseline: any edit, deletion, or sneaked-in test file
-    changes the hash. Patterns are project-root-relative; `**` recurses."""
+    changes the hash. Patterns are project-root-relative; `**` recurses. The
+    orchestrator's own `.orchestrator/` workspace is excluded (via iter_test_files)
+    so the Phase 77b evidence copies written there can't perturb the freeze."""
     root = Path(repo_root)
-    matched = set()
-    for pattern in test_paths:
-        for p in root.glob(pattern):
-            if p.is_file():
-                matched.add(p)
     h = hashlib.sha256()
-    for p in sorted(matched):
+    for p in iter_test_files(test_paths, root):
         h.update(str(p.relative_to(root)).encode())
         h.update(b"\0")
         h.update(p.read_bytes())
@@ -952,7 +966,7 @@ async def _run_test_author(
         )
 
     if not reauthor:
-        green_before, _ = await _run_script_gates(scripts, repo_root)
+        green_before, _, _ = await _run_script_gates(scripts, repo_root)
         if not green_before:
             logger.warning(
                 "TDD: the suite is not green before authoring, so a green→red "
@@ -974,7 +988,7 @@ async def _run_test_author(
         # red-confirm failure. Tag it so autonomous TDD degrades (not aborts).
         return verdict.model_copy(update={"degrade_kind": _DEGRADE_UNTESTABLE})
 
-    green_after, red_output = await _run_script_gates(scripts, repo_root)
+    green_after, red_output, full_run = await _run_script_gates(scripts, repo_root)
     if green_after:
         logger.warning(
             "TDD: the authored tests did not turn the suite red (born-green); the "
@@ -993,6 +1007,9 @@ async def _run_test_author(
         summary=verdict.summary,
         snapshot=snapshot,
         red_output=red_output,
+        # The COMPLETE final RED run for the Phase 77b evidence layer; falls back to
+        # the failures-only summary if the runner produced no captured full output.
+        full_run=full_run or red_output,
         usage=verdict.usage,
     )
 
@@ -1047,7 +1064,7 @@ def _is_red_review_approve(decision) -> bool:
 async def _author_with_review(
     task, task_plan: str, config, usage_by_task: dict, gate_refs: list[str], *,
     thread_id: str, audit, autonomous: bool, manual_checks: list | None = None,
-    feedback: str | None = None, attempt: int = 0,
+    feedback: str | None = None, attempt: int = 0, rounds_info: dict | None = None,
 ) -> tuple[TestAuthorResult, int]:
     """Author tests for one task, with the Phase 74 coverage critic and the Phase
     72b supervised red-review pause + re-author escape.
@@ -1069,7 +1086,15 @@ async def _author_with_review(
     re-author cycle calls this once per round); the returned attempt is the value
     used for the LAST author call, so the next round passes attempt + 1 to keep
     every test_author_task / critic_task cache key unique even when the feedback
-    string repeats. Supervised callers pass the defaults and ignore the count."""
+    string repeats. Supervised callers pass the defaults and ignore the count.
+
+    `rounds_info` (Phase 77b): when a dict is passed, the converging process is
+    recorded into it for the `test-author/summary.md` evidence — `critic_verdicts`
+    (one {meaningful, feedback} per critic round), `critic_rounds`, and `red_review`
+    (the supervised reviewer's outcome). Populated deterministically each call, so a
+    resume that re-executes this frame fills it identically. None → no recording."""
+    if rounds_info is not None:
+        rounds_info.setdefault("critic_verdicts", [])
     while True:  # human-review loop (outer); each iteration re-resolves the tests
         # Coverage-critic loop (inner): author → critique → re-author until the
         # critic is satisfied, the critic is off, or its budget is exhausted.
@@ -1086,6 +1111,10 @@ async def _author_with_review(
                 break
             cr = await critic_task(task_plan, _coverage_critic_model(config), attempt)
             _record_usage(usage_by_task, "coverage_critic", cr)
+            if rounds_info is not None:
+                rounds_info["critic_verdicts"].append(
+                    {"meaningful": cr.meaningful, "feedback": cr.feedback}
+                )
             if cr.meaningful:
                 break
             if critic_rounds >= config.tdd_critic_max_attempts:
@@ -1108,6 +1137,9 @@ async def _author_with_review(
             feedback = cr.feedback or _CRITIC_DEFAULT_FEEDBACK
             attempt += 1
             critic_rounds += 1
+
+        if rounds_info is not None:
+            rounds_info["critic_rounds"] = critic_rounds
 
         # Supervised red-review (Phase 72b). Suppressed when autonomous (Phase 76
         # replaces the human guard with the red-confirm hard gate + bounded
@@ -1134,8 +1166,12 @@ async def _author_with_review(
                 "Aborted at red-review: the reviewer rejected the failing tests.",
             )
         if _is_red_review_approve(decision):
+            if rounds_info is not None:
+                rounds_info["red_review"] = "approved"
             return ta, attempt
         feedback = decision if isinstance(decision, str) and decision.strip() else None
+        if rounds_info is not None:
+            rounds_info["red_review"] = f"re-authored: {feedback or '(no note)'}"
         attempt += 1
 
 
@@ -1189,8 +1225,9 @@ _AUTONOMOUS_REAUTHOR_FEEDBACK = (
 
 
 async def _run_autonomous_tdd_task(
-    task, plan_result, task_plan: str, qa_plan, base_gate_refs: list[str], stage,
-    hil, config, check_cancel, usage_by_task: dict, qa_holder: dict, *,
+    task, task_index: int, plan_result, task_plan: str, qa_plan,
+    base_gate_refs: list[str], stage, hil, config, check_cancel,
+    usage_by_task: dict, qa_holder: dict, *,
     thread_id: str, audit, manual_checks: list | None,
 ) -> None:
     """One task under autonomous TDD (Phase 76). No human is present, so the
@@ -1230,12 +1267,22 @@ async def _run_autonomous_tdd_task(
             None if reauthor_round == 0
             else _AUTONOMOUS_REAUTHOR_FEEDBACK.format(last=last_feedback or "(none)")
         )
+        rounds_info: dict = {}
         ta, attempt = await _author_with_review(
             task, task_plan, config, usage_by_task, base_gate_refs,
             thread_id=thread_id, audit=audit, autonomous=True,
             manual_checks=manual_checks, feedback=feedback, attempt=attempt,
+            rounds_info=rounds_info,
         )
-        write_test_author(thread_id, task.id, ta)
+        # Phase 77b evidence. Each autonomous re-author round OVERWRITES the folder;
+        # the LAST write reflects the suite the implement build is about to run —
+        # the final accepted tests on success, or the last authored set on abort.
+        # Record the autonomous re-author count alongside the critic rounds.
+        if reauthor_round:
+            rounds_info["autonomous_reauthor_round"] = reauthor_round
+        write_test_author_folder(
+            thread_id, task_index, task, ta, list(config.test_paths), rounds_info,
+        )
 
         if not ta.testable:
             if ta.degrade_kind in _RED_CONFIRM_FAILURES:
@@ -1326,7 +1373,8 @@ async def _run_task_loop(
     {task_id, title, acceptance_criteria, reason} here, so the entrypoint can record
     the criteria a human must verify by hand."""
     hil = _build_hil(stage)
-    for task in decomposition.tasks:
+    # 1-based flow order → the task-NN-<id> evidence folder index (Phase 77b).
+    for task_index, task in enumerate(decomposition.tasks, 1):
         task_plan = _compose_task_plan(plan_result.plan_text, task)
         qa_plan = PlanResult(
             title=plan_result.title,
@@ -1341,8 +1389,8 @@ async def _run_task_loop(
         # is unchanged.
         if config.tdd and autonomous:
             await _run_autonomous_tdd_task(
-                task, plan_result, task_plan, qa_plan, base_gate_refs, stage, hil,
-                config, check_cancel, usage_by_task, qa_holder,
+                task, task_index, plan_result, task_plan, qa_plan, base_gate_refs,
+                stage, hil, config, check_cancel, usage_by_task, qa_holder,
                 thread_id=thread_id, audit=audit, manual_checks=manual_checks,
             )
             continue
@@ -1358,15 +1406,20 @@ async def _run_task_loop(
         # The test-author always sees the clean task_plan, so its @task cache key is
         # stable across resumes; the RED output is injected only into impl_plan.
         if config.tdd:
+            rounds_info: dict = {}
             ta, _ = await _author_with_review(
                 task, task_plan, config, usage_by_task, gate_refs,
                 thread_id=thread_id, audit=audit, autonomous=autonomous,
-                manual_checks=manual_checks,
+                manual_checks=manual_checks, rounds_info=rounds_info,
             )
-            # Phase 73: record the test-author's verdict for EVERY TDD task, so the
-            # run folder shows the decision for each (not only the ones that got
-            # tests). write_test_author renders the testable=false case too.
-            write_test_author(thread_id, task.id, ta)
+            # Phase 73/77b: write the test-author/ evidence folder for EVERY TDD
+            # task, so the run folder shows the decision for each (not only the ones
+            # that got tests). For a testable task this captures the final accepted
+            # suite + its RED run + freeze hash; an untestable task gets summary.md
+            # only. Written ONCE here, after convergence — before the implement loop.
+            write_test_author_folder(
+                thread_id, task_index, task, ta, list(config.test_paths), rounds_info,
+            )
             if ta.testable:
                 repo_root = str(find_project_root())
                 diff_gate = {

@@ -107,14 +107,19 @@ async def test_diff_gate_passes_when_unchanged_fails_when_tampered(tmp_path):
 
 def _patch_scripts(monkeypatch, results):
     """Patch _script_gate_steps (non-empty) + _run_script_gates to yield the given
-    (green, output) tuples in order. `results` is a list consumed per call."""
+    tuples in order. `results` is a list consumed per call.
+
+    Each entry is (green, failing_output) or (green, failing_output, full_output);
+    a 2-tuple is padded so full_output mirrors the failing output (Phase 77b made
+    _run_script_gates return the extra full-run element)."""
     from orchestrator import workflow as wf
 
     monkeypatch.setattr(wf, "_script_gate_steps", lambda cfg, refs: ["<fake-step>"])
     it = iter(results)
 
     async def _gates(steps, root):
-        return next(it)
+        r = next(it)
+        return r if len(r) == 3 else (r[0], r[1], r[1])
 
     monkeypatch.setattr(wf, "_run_script_gates", _gates)
 

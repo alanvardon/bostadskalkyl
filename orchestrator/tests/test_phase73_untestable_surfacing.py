@@ -16,6 +16,7 @@ import pytest
 from langgraph.types import Command
 
 import orchestrator.run_artifacts as ra
+from orchestrator.agents.decompose import Task
 from orchestrator.agents.test_author import TestAuthorResult
 
 
@@ -45,13 +46,24 @@ def test_write_manual_checks_empty_is_noop(monkeypatch, tmp_path):
     assert not (tmp_path / "runs" / "tid" / "manual-checks.md").exists()
 
 
-def test_write_test_author_records_untestable_verdict(monkeypatch, tmp_path):
+def test_write_test_author_folder_records_untestable_verdict(monkeypatch, tmp_path):
+    # An untestable / degraded task still gets a test-author/ folder (Phase 73
+    # surfacing preserved), but only summary.md — no copied tests / RED run / hash.
     monkeypatch.setattr(ra, "_runs_dir", lambda: tmp_path / "runs")
-    ra.write_test_author("tid", "t2", TestAuthorResult(testable=False, summary="no harness"))
-    f = next((tmp_path / "runs" / "tid").glob("test-author-*.md"))
-    text = f.read_text(encoding="utf-8")
+    monkeypatch.setattr(ra, "find_project_root", lambda: tmp_path / "proj")
+    (tmp_path / "proj").mkdir()
+    task = Task(id="t2", title="DOM toggle", description="d", acceptance_criteria="c")
+    ra.write_test_author_folder(
+        "tid", 2, task, TestAuthorResult(testable=False, summary="no harness"),
+        ["**/*.test.js"],
+    )
+    folder = tmp_path / "runs" / "tid" / "task-02-t2" / "test-author"
+    text = (folder / "summary.md").read_text(encoding="utf-8")
     assert "**Testable:** False" in text
     assert "no harness" in text
+    # No tests / RED run / hash for a degraded task.
+    assert not (folder / "results-test-run.md").exists()
+    assert not (folder / "test-snapshot-hash.md").exists()
 
 
 # --------------------------------------------------------------------------- #
