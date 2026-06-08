@@ -35,11 +35,11 @@ from tests.conftest import task_build_config
 # --------------------------------------------------------------------------- #
 
 
-def test_tdd_with_fully_autonomous_is_rejected():
-    # Supervised TDD's guard is the human; fully_autonomous suppresses it. The
-    # combo is refused at load (Phase 76 re-enables it with machinery).
-    with pytest.raises(ValueError, match="fully_autonomous"):
-        OrchestratorConfig(tdd=True, fully_autonomous=True, test_paths=["**/*.test.js"])
+def test_tdd_with_fully_autonomous_is_allowed():
+    # Phase 76 re-enabled the combo with machinery (hard red-confirm + bounded
+    # re-author), so it no longer errors at load. (Phase 72 forbade it.)
+    cfg = OrchestratorConfig(tdd=True, fully_autonomous=True, test_paths=["**/*.test.js"])
+    assert cfg.tdd is True and cfg.fully_autonomous is True
 
 
 def test_tdd_requires_test_paths():

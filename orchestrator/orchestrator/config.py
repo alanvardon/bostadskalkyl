@@ -190,6 +190,14 @@ class OrchestratorConfig(BaseModel):
     tdd_coverage_critic: bool = True
     # Max critic-driven re-author rounds before proceeding-with-a-manual-check.
     tdd_critic_max_attempts: int = 2
+    # Autonomous TDD re-author budget (Phase 76). Only consulted when tdd AND
+    # fully_autonomous are both on. With no human red-review/re-author escape, the
+    # implement build is run with a BOUNDED budget; if it can't make the frozen
+    # tests pass within that budget the tests are AUTOMATICALLY re-authored (they
+    # may be wrong / over-constrained), capped at this many rounds. Exhausting the
+    # cap fails the task (status="failed") rather than looping a wrong frozen test
+    # to the autonomous safety ceiling.
+    tdd_autonomous_reauthor_max: int = 2
 
     pipeline: Pipeline = Field(default_factory=default_pipeline)
     branch: BranchConfig = Field(default_factory=BranchConfig)
@@ -217,22 +225,19 @@ class OrchestratorConfig(BaseModel):
     def _validate_tdd(self) -> "OrchestratorConfig":
         """TDD invariants (Phase 72).
 
-        (A) tdd + fully_autonomous is forbidden: supervised TDD's guard is the
-        human (red-review / re-author), which fully_autonomous suppresses while
-        also unbounding retries — a wrong frozen test would loop to the ceiling.
-        Autonomous TDD is Phase 76; until then the combo is refused at load.
+        tdd + fully_autonomous is ALLOWED as of Phase 76: with no human present
+        the human guards (red-review / re-author) are replaced by machinery — the
+        green→red red-confirm becomes a HARD gate (a born-green / non-green-
+        baseline / no-script-gate verdict aborts the task instead of silently
+        degrading), and the implement build runs with a BOUNDED budget whose
+        exhaustion triggers an automatic, capped re-author cycle
+        (tdd_autonomous_reauthor_max) rather than looping a wrong frozen test to
+        the safety ceiling. (Phase 72 originally forbade the combo — decision A —
+        until that machinery existed.)
 
         test_paths is required when tdd is on — it is the globset the diff-gate
         freezes; with nothing to freeze the write-separation guarantee is empty.
         """
-        if self.tdd and self.fully_autonomous:
-            raise ValueError(
-                "tdd = true is incompatible with fully_autonomous = true: "
-                "supervised TDD relies on the human red-review / re-author guard, "
-                "which fully_autonomous suppresses (and unbounded retries would "
-                "loop a wrong frozen test to the safety ceiling). Autonomous TDD "
-                "is Phase 76. Disable one of them."
-            )
         if self.tdd and not self.test_paths:
             raise ValueError(
                 "tdd = true requires test_paths (the globset the diff-gate "
@@ -278,6 +283,7 @@ _ALLOWED_TOP_LEVEL: frozenset[str] = frozenset({
     "autonomous_max_seconds", "autonomous_max_cost_usd",
     "tdd", "test_paths", "test_author_path", "tdd_red_review",
     "tdd_coverage_critic", "tdd_critic_max_attempts",
+    "tdd_autonomous_reauthor_max",
     "flow", "stage", "builtin", "defs",
     "branch", "pre_hooks", "qa", "git", "pr", "audit",
 })
@@ -327,7 +333,8 @@ def load_config(path: Path | None = None) -> OrchestratorConfig:
     for key in ("default_model", "db_path", "fully_autonomous",
                 "autonomous_max_seconds", "autonomous_max_cost_usd",
                 "tdd", "test_paths", "test_author_path", "tdd_red_review",
-                "tdd_coverage_critic", "tdd_critic_max_attempts"):
+                "tdd_coverage_critic", "tdd_critic_max_attempts",
+                "tdd_autonomous_reauthor_max"):
         if key in data:
             fields[key] = data[key]
     if "branch" in data:

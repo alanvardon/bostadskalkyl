@@ -45,7 +45,19 @@ logger = logging.getLogger(__name__)
 # re-author on a negative verdict. A new @task in the body's graph → a half-finished
 # 2.3.0 checkpoint can't safely resume into it. Gated on config.tdd_coverage_critic
 # (default on); CoverageCriticResult is on the serde allowlist.
-WORKFLOW_VERSION = "2.4.0"
+#
+# 2.5.0 (Phase 76): autonomous-mode TDD. tdd + fully_autonomous is no longer refused
+# at load; instead the per-task station runs a distinct `_run_autonomous_tdd_task`
+# when both are on — a HARD red-confirm gate (a born-green / non-green-baseline /
+# no-script-gate verdict aborts the task instead of degrading) plus a BOUNDED
+# re-author cycle (the implement build runs bounded with on_exhausted="abort"; an
+# exhausted build re-authors the tests, capped at tdd_autonomous_reauthor_max, then
+# aborts). New control flow + new test_author_task / critic_task invocation patterns
+# (per-round `attempt`) the body can now reach → a half-finished 2.4.0 checkpoint
+# can't safely resume into it. With tdd or fully_autonomous off the supervised /
+# non-TDD per-task graph is unchanged. No serde change (TestAuthorResult.degrade_kind
+# is an additive optional field).
+WORKFLOW_VERSION = "2.5.0"
 
 
 from orchestrator.errors import FatalError
@@ -881,6 +893,21 @@ def _make_diff_gate(test_paths, snapshot: str, repo_root: str):
     return _diff_gate
 
 
+# TestAuthorResult.degrade_kind values (Phase 76). A testable=False verdict is
+# either a legitimate "not unit-testable" judgement (graceful classic fallback,
+# even when autonomous) or a red-confirm FAILURE — the green→red guarantee could
+# not be established. Autonomous TDD hard-aborts the latter (no human to eyeball
+# it); supervised TDD degrades both (the human is the guard).
+_DEGRADE_UNTESTABLE = "untestable"          # the author judged the behaviour not unit-testable
+_DEGRADE_NO_GATE = "no_gate"                # no deterministic script gate to confirm against
+_DEGRADE_NOT_GREEN = "not_green_baseline"   # the suite was not green before authoring
+_DEGRADE_BORN_GREEN = "born_green"          # the authored tests did not fail → proved nothing
+
+# The red-confirm degrade kinds: the cases autonomous TDD treats as a hard abort
+# (everything except the author's own UNTESTABLE judgement).
+_RED_CONFIRM_FAILURES = frozenset({_DEGRADE_NO_GATE, _DEGRADE_NOT_GREEN, _DEGRADE_BORN_GREEN})
+
+
 async def _run_test_author(
     plan_text: str, model: str, test_paths: list[str], gate_refs: list[str],
     feedback: str | None = None,
@@ -913,7 +940,10 @@ async def _run_test_author(
             "TDD: no script gate in the task-build gate list, so a green→red "
             "transition can't be confirmed; classic fallback for this task."
         )
-        return TestAuthorResult(testable=False, summary="no deterministic test gate")
+        return TestAuthorResult(
+            testable=False, degrade_kind=_DEGRADE_NO_GATE,
+            summary="no deterministic test gate",
+        )
 
     if not reauthor:
         green_before, _ = await _run_script_gates(scripts, repo_root)
@@ -922,7 +952,10 @@ async def _run_test_author(
                 "TDD: the suite is not green before authoring, so a green→red "
                 "transition can't be proven; classic fallback for this task."
             )
-            return TestAuthorResult(testable=False, summary="suite not green before authoring")
+            return TestAuthorResult(
+                testable=False, degrade_kind=_DEGRADE_NOT_GREEN,
+                summary="suite not green before authoring",
+            )
 
     allowed, disallowed = _test_author_tools(config)
     verdict = await author_tests(
@@ -931,7 +964,9 @@ async def _run_test_author(
     )
     if not verdict.testable:
         logger.info("TDD: task judged untestable (%s); classic fallback.", verdict.summary)
-        return verdict
+        # The author's own UNTESTABLE judgement — a legitimate degrade, not a
+        # red-confirm failure. Tag it so autonomous TDD degrades (not aborts).
+        return verdict.model_copy(update={"degrade_kind": _DEGRADE_UNTESTABLE})
 
     green_after, red_output = await _run_script_gates(scripts, repo_root)
     if green_after:
@@ -941,6 +976,7 @@ async def _run_test_author(
         )
         return TestAuthorResult(
             testable=False,
+            degrade_kind=_DEGRADE_BORN_GREEN,
             summary="authored tests did not fail (born-green)",
             usage=verdict.usage,
         )
@@ -1005,7 +1041,8 @@ def _is_red_review_approve(decision) -> bool:
 async def _author_with_review(
     task, task_plan: str, config, usage_by_task: dict, gate_refs: list[str], *,
     thread_id: str, audit, autonomous: bool, manual_checks: list | None = None,
-) -> TestAuthorResult:
+    feedback: str | None = None, attempt: int = 0,
+) -> tuple[TestAuthorResult, int]:
     """Author tests for one task, with the Phase 74 coverage critic and the Phase
     72b supervised red-review pause + re-author escape.
 
@@ -1019,9 +1056,14 @@ async def _author_with_review(
     An untestable verdict returns immediately (classic fallback). Runs in the
     entrypoint frame so interrupt() is reachable; each re-author/critic round is a
     distinct test_author_task / critic_task @task (via `attempt`) so resume replays
-    cleanly."""
-    feedback: str | None = None
-    attempt = 0
+    cleanly.
+
+    Returns (verdict, attempt). `feedback`/`attempt` seed the loop so a caller can
+    drive REPEATED rounds with a monotonic attempt counter (Phase 76's autonomous
+    re-author cycle calls this once per round); the returned attempt is the value
+    used for the LAST author call, so the next round passes attempt + 1 to keep
+    every test_author_task / critic_task cache key unique even when the feedback
+    string repeats. Supervised callers pass the defaults and ignore the count."""
     while True:  # human-review loop (outer); each iteration re-resolves the tests
         # Coverage-critic loop (inner): author → critique → re-author until the
         # critic is satisfied, the critic is off, or its budget is exhausted.
@@ -1033,7 +1075,7 @@ async def _author_with_review(
             )
             _record_usage(usage_by_task, "test_author", ta)
             if not ta.testable:
-                return ta
+                return ta, attempt
             if not config.tdd_coverage_critic:
                 break
             cr = await critic_task(task_plan, _coverage_critic_model(config), attempt)
@@ -1061,9 +1103,11 @@ async def _author_with_review(
             attempt += 1
             critic_rounds += 1
 
-        # Supervised red-review (Phase 72b).
+        # Supervised red-review (Phase 72b). Suppressed when autonomous (Phase 76
+        # replaces the human guard with the red-confirm hard gate + bounded
+        # re-author in _run_autonomous_tdd_task).
         if autonomous or not config.tdd_red_review:
-            return ta
+            return ta, attempt
         if audit is not None:
             emit_event(audit, thread_id, "interrupt",
                        payload={"kind": "red_review", "step_id": f"task:{task.id}"})
@@ -1084,9 +1128,166 @@ async def _author_with_review(
                 "Aborted at red-review: the reviewer rejected the failing tests.",
             )
         if _is_red_review_approve(decision):
-            return ta
+            return ta, attempt
         feedback = decision if isinstance(decision, str) and decision.strip() else None
         attempt += 1
+
+
+async def _run_task_build_step(
+    task, plan_result, impl_plan: str, qa_plan, gate_refs: list[str],
+    diff_gate: dict, stage, hil, config, check_cancel, usage_by_task: dict,
+    qa_holder: dict, *, thread_id: str, audit, autonomous: bool, retry=None,
+) -> None:
+    """Run ONE task's produce⇄gate build — the per-task tail shared by the
+    supervised/non-TDD path and the Phase 76 autonomous-TDD path.
+
+    `diff_gate` is the optional {"builtin:diff-gate": callable} freeze (empty for a
+    classic / untestable task); when set, `gate_refs` already leads with
+    "builtin:diff-gate". `retry` overrides stage.retry — autonomous TDD passes a
+    copy with on_exhausted="abort" so the BOUNDED build raises BuildFailed on
+    exhaustion (to be caught by the re-author cycle) instead of pausing for a
+    human. A non-proceed build raises BuildFailed(step_id="task:<id>")."""
+    producers, gates = _builtin_build_callables(
+        config, plan_result, usage_by_task, qa_holder, thread_id,
+        impl_plan=impl_plan, qa_plan=qa_plan,
+    )
+    gates = {**gates, **diff_gate}
+    synthetic = BuildStep(
+        id=f"task:{task.id}",
+        produce=list(stage.produce),
+        gate=gate_refs,
+        ungated=stage.ungated or (not gate_refs),  # gate=[] → producer runs once
+        retry=retry if retry is not None else stage.retry,
+        human_in_loop=hil,
+    )
+    await _run_build_step(
+        synthetic, config, impl_plan, check_cancel, usage_by_task,
+        builtin_producers=producers,
+        builtin_gates=gates,
+        thread_id=thread_id,
+        audit=audit,
+        autonomous=autonomous,
+    )
+
+
+# Feedback the autonomous re-author cycle hands the test-author when the
+# implementation cannot pass the frozen tests within its bounded budget — the tests
+# themselves are the suspect (a human would re-author here; Phase 76 automates it).
+_AUTONOMOUS_REAUTHOR_FEEDBACK = (
+    "The implementation could not make these tests pass within its attempt budget. "
+    "The tests may be wrong, over-constrained, or assert behaviour the task does "
+    "not require. Revise the test file(s) to correctly and minimally pin the "
+    "task's required behaviour through its public interface.\n\n"
+    "Last failing gate output:\n{last}"
+)
+
+
+async def _run_autonomous_tdd_task(
+    task, plan_result, task_plan: str, qa_plan, base_gate_refs: list[str], stage,
+    hil, config, check_cancel, usage_by_task: dict, qa_holder: dict, *,
+    thread_id: str, audit, manual_checks: list | None,
+) -> None:
+    """One task under autonomous TDD (Phase 76). No human is present, so the
+    supervised guards (red-review / re-author) are replaced by machinery:
+
+      - RED-CONFIRM IS A HARD GATE — a red-confirm failure (no script gate /
+        non-green baseline / born-green; degrade_kind in _RED_CONFIRM_FAILURES)
+        aborts the task (BuildFailed → status="failed") instead of silently
+        degrading. A genuinely-untestable verdict (the author's own judgement)
+        still degrades to the classic implement→qa path + a manual check
+        (legitimate, and surfaced in the run result).
+      - BOUNDED RE-AUTHOR — the implement build runs with a BOUNDED budget and
+        on_exhausted="abort"; if it can't turn the frozen tests green within that
+        budget the tests are re-authored (they may be wrong/over-constrained),
+        capped at tdd_autonomous_reauthor_max rounds. Exhausting the cap aborts the
+        task with a clear reason rather than looping a wrong frozen test to the
+        autonomous safety ceiling.
+
+    The diff-gate freeze (Phase 72) is autonomous-safe as-is and used unchanged.
+    Runs in the entrypoint frame so its BuildFailed propagates to the body; the
+    bounded build's @tasks replay positionally across a crash-resume, and each
+    re-author round uses a strictly increasing `attempt` so every test_author_task
+    / critic_task cache key stays unique even when the feedback string repeats."""
+    repo_root = str(find_project_root())
+    # on_exhausted="abort" so the bounded build raises BuildFailed (no human pause);
+    # an empty hil so no producer/gate pauses fire (there is no human). The
+    # run-level autonomous safety ceiling is still enforced via check_cancel, which
+    # _run_build_step threads into every producer attempt.
+    bounded_retry = stage.retry.model_copy(update={"on_exhausted": "abort"})
+    bounded_hil = HumanInLoopConfig()
+
+    attempt = 0
+    reauthor_round = 0
+    last_feedback: str | None = None
+    while True:
+        feedback = (
+            None if reauthor_round == 0
+            else _AUTONOMOUS_REAUTHOR_FEEDBACK.format(last=last_feedback or "(none)")
+        )
+        ta, attempt = await _author_with_review(
+            task, task_plan, config, usage_by_task, base_gate_refs,
+            thread_id=thread_id, audit=audit, autonomous=True,
+            manual_checks=manual_checks, feedback=feedback, attempt=attempt,
+        )
+        write_test_author(thread_id, task.id, ta)
+
+        if not ta.testable:
+            if ta.degrade_kind in _RED_CONFIRM_FAILURES:
+                # The green→red guarantee couldn't be established and there is no
+                # human to eyeball it → hard abort rather than ship without a proof.
+                raise BuildFailed(
+                    f"task:{task.id}", attempt,
+                    f"Autonomous TDD: red-confirm failed ({ta.degrade_kind}): "
+                    f"{ta.summary}. With no human reviewer the green→red guarantee "
+                    "can't be established, so the task is aborted rather than "
+                    "shipped without a proven test.",
+                )
+            # Legitimately untestable (the author's judgement): degrade to the
+            # classic implement→qa path (unbounded, like a non-TDD autonomous task)
+            # and record a manual check (surfaced in the result).
+            if manual_checks is not None:
+                manual_checks.append({
+                    "task_id": task.id,
+                    "title": task.title,
+                    "acceptance_criteria": task.acceptance_criteria,
+                    "reason": ta.summary,
+                })
+            await _run_task_build_step(
+                task, plan_result, task_plan, qa_plan, base_gate_refs, {},
+                stage, hil, config, check_cancel, usage_by_task, qa_holder,
+                thread_id=thread_id, audit=audit, autonomous=True,
+            )
+            return
+
+        # Testable → freeze the authored tests + run a BOUNDED implement build.
+        diff_gate = {
+            "builtin:diff-gate": _make_diff_gate(
+                list(config.test_paths), ta.snapshot, repo_root
+            ),
+        }
+        gate_refs = ["builtin:diff-gate", *base_gate_refs]
+        impl_plan = _compose_red_green(task_plan, ta.red_output)
+        try:
+            await _run_task_build_step(
+                task, plan_result, impl_plan, qa_plan, gate_refs, diff_gate,
+                stage, bounded_hil, config, check_cancel, usage_by_task, qa_holder,
+                thread_id=thread_id, audit=audit, autonomous=False,
+                retry=bounded_retry,
+            )
+            return  # the implementation turned the frozen tests green → task done
+        except BuildFailed as exc:
+            if reauthor_round >= config.tdd_autonomous_reauthor_max:
+                raise BuildFailed(
+                    f"task:{task.id}", exc.attempts,
+                    f"Autonomous TDD: the implementation could not pass the "
+                    f"authored tests after {reauthor_round} re-author(s) "
+                    f"(cap {config.tdd_autonomous_reauthor_max}); the tests may be "
+                    f"wrong or over-constrained. Last gate output: "
+                    f"{exc.last_feedback or '(none)'}",
+                ) from exc
+            last_feedback = exc.last_feedback
+            reauthor_round += 1
+            attempt += 1  # keep every author / critic cache key strictly increasing
 
 
 async def _run_task_loop(
@@ -1126,7 +1327,21 @@ async def _run_task_loop(
             type=plan_result.type,
             plan_text=_compose_task_qa(plan_result.plan_text, task),
         )
-        gate_refs = list(stage.gate)
+        base_gate_refs = list(stage.gate)
+
+        # Phase 76: autonomous TDD has no human red-review / re-author guard, so it
+        # runs a distinct station — a HARD red-confirm gate + a bounded re-author
+        # cycle (see _run_autonomous_tdd_task). The supervised / non-TDD path below
+        # is unchanged.
+        if config.tdd and autonomous:
+            await _run_autonomous_tdd_task(
+                task, plan_result, task_plan, qa_plan, base_gate_refs, stage, hil,
+                config, check_cancel, usage_by_task, qa_holder,
+                thread_id=thread_id, audit=audit, manual_checks=manual_checks,
+            )
+            continue
+
+        gate_refs = base_gate_refs
         diff_gate: dict = {}
         impl_plan = task_plan  # the implementer's plan; gains the RED output below
         # TDD red-green (Phase 72): author tests ONCE before the implement loop,
@@ -1137,7 +1352,7 @@ async def _run_task_loop(
         # The test-author always sees the clean task_plan, so its @task cache key is
         # stable across resumes; the RED output is injected only into impl_plan.
         if config.tdd:
-            ta = await _author_with_review(
+            ta, _ = await _author_with_review(
                 task, task_plan, config, usage_by_task, gate_refs,
                 thread_id=thread_id, audit=audit, autonomous=autonomous,
                 manual_checks=manual_checks,
@@ -1165,26 +1380,10 @@ async def _run_task_loop(
                     "acceptance_criteria": task.acceptance_criteria,
                     "reason": ta.summary,
                 })
-        producers, gates = _builtin_build_callables(
-            config, plan_result, usage_by_task, qa_holder, thread_id,
-            impl_plan=impl_plan, qa_plan=qa_plan,
-        )
-        gates = {**gates, **diff_gate}
-        synthetic = BuildStep(
-            id=f"task:{task.id}",
-            produce=list(stage.produce),
-            gate=gate_refs,
-            ungated=stage.ungated or (not gate_refs),  # gate=[] → producer runs once
-            retry=stage.retry,
-            human_in_loop=hil,
-        )
-        await _run_build_step(
-            synthetic, config, impl_plan, check_cancel, usage_by_task,
-            builtin_producers=producers,
-            builtin_gates=gates,
-            thread_id=thread_id,
-            audit=audit,
-            autonomous=autonomous,
+        await _run_task_build_step(
+            task, plan_result, impl_plan, qa_plan, gate_refs, diff_gate, stage, hil,
+            config, check_cancel, usage_by_task, qa_holder,
+            thread_id=thread_id, audit=audit, autonomous=autonomous,
         )
 
 
