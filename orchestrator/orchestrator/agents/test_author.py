@@ -73,8 +73,16 @@ class TestAuthorResult(BaseModel):
     # frozen baseline. Empty when not testable.
     snapshot: str = ""
     # The failing-suite output captured at red-confirm time (for artifacts /
-    # visibility). Empty when not testable.
+    # visibility). Empty when not testable. This is the failures-only summary that
+    # feeds the implementer's first-attempt plan (_compose_red_green) and the
+    # red-review display — short and focused on what to make pass.
     red_output: str = ""
+    # The COMPLETE final RED run (every test, pass+fail; both streams) captured at
+    # red-confirm time via the Phase 77a full-output capture — the evidence layer's
+    # `results-test-run.md` (Phase 77b). Distinct from `red_output` (failures-only):
+    # a full run proves what was EXECUTED, not just what failed. Empty when not
+    # testable. Additive optional field → no schema_version bump.
+    full_run: str = ""
     usage: TaskUsage | None = None
 
 

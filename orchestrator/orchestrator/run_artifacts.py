@@ -20,12 +20,12 @@ Usage in workflow.py:
 import json
 from pathlib import Path
 
-from orchestrator.agents.decompose import DecompositionResult
+from orchestrator.agents.decompose import DecompositionResult, Task
 from orchestrator.agents.planning import PlanResult
 from orchestrator.agents.qa import QaResult
 from orchestrator.agents.summarize import SummaryResult
 from orchestrator.agents.test_author import TestAuthorResult
-from orchestrator.paths import find_project_root
+from orchestrator.paths import find_project_root, iter_test_files
 
 def _runs_dir() -> Path:
     """Resolve the runs directory lazily.
@@ -117,27 +117,122 @@ def _safe_id(task_id: str) -> str:
     return "".join(c if c.isalnum() or c in "-_" else "-" for c in task_id) or "task"
 
 
-def write_test_author(thread_id: str, task_id: str, ta: TestAuthorResult) -> None:
-    """Write test-author-<task_id>.md — the test-author's verdict for one TDD task.
+def _task_folder_name(task_index: int, task_id: str) -> str:
+    """`task-NN-<safe-id>` — the per-task evidence root, numbered in flow order
+    (1-based, as the station iterates the decomposed tasks). The test-author/ folder
+    (Phase 77b) and impl/attempt-N/ folders (Phase 77c) live under it."""
+    return f"task-{task_index:02d}-{_safe_id(task_id)}"
 
-    Written for EVERY TDD task (Phase 73), testable or not, so the run folder shows
-    the test-author's decision for each task — not only the ones that got tests. For
-    a testable task it captures the frozen-test snapshot and the failing (RED) suite
-    output; for a degraded task it records `testable=false` and the reason it fell
-    back to the classic implement→qa path. Best-effort; the checkpointed
-    TestAuthorResult is the source of truth."""
+
+def _copy_test_files(test_paths, dest_dir: Path) -> list[str]:
+    """Copy every project test file matching `test_paths` into `dest_dir`, verbatim,
+    preserving each file's path relative to the project root (so multiple files, or
+    files in subdirs, never collide and a reviewer sees the real layout). Returns
+    the copied relative paths. Generic — no assumption about filename or language;
+    `iter_test_files` excludes the orchestrator's own workspace so prior tasks'
+    evidence copies are never swept back in."""
+    root = find_project_root()
+    copied: list[str] = []
+    for p in iter_test_files(test_paths, root):
+        rel = p.relative_to(root)
+        out = dest_dir / rel
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(p.read_bytes())
+        copied.append(str(rel))
+    return copied
+
+
+def _test_author_summary_md(task: Task, ta: TestAuthorResult, info: dict, copied: list[str]) -> str:
+    """Render test-author/summary.md: the testable verdict, the author's note, the
+    coverage-critic verdict(s), # re-author rounds, and the red-review outcome — the
+    converging process recorded as a log (Phase 77b). Defensive about missing
+    `rounds_info` keys (an untestable task or a non-critic/non-review config)."""
+    lines = [
+        f"# Test author — {task.title} (`{task.id}`)",
+        "",
+        f"**Testable:** {ta.testable}",
+    ]
+    if ta.degrade_kind:
+        lines.append(f"**Degrade kind:** {ta.degrade_kind}")
+    lines += ["", ta.summary or "(no summary)", ""]
+
+    critic_verdicts = info.get("critic_verdicts") or []
+    if critic_verdicts:
+        lines += ["## Coverage critic", ""]
+        for i, cv in enumerate(critic_verdicts, 1):
+            verdict = "meaningful" if cv.get("meaningful") else "weak"
+            note = cv.get("feedback") or ""
+            lines.append(f"{i}. **{verdict}**" + (f" — {note}" if note else ""))
+        lines.append("")
+    if "critic_rounds" in info:
+        lines += [f"**Re-author rounds (critic):** {info['critic_rounds']}", ""]
+    if "red_review" in info:
+        lines += [f"**Red-review:** {info['red_review']}", ""]
+    if "autonomous_reauthor_round" in info:
+        lines += [
+            f"**Autonomous re-author round:** {info['autonomous_reauthor_round']} "
+            "(the implementation could not pass the prior suite within its budget)",
+            "",
+        ]
+    if copied:
+        lines += ["## Frozen test files", ""]
+        lines += [f"- `{rel}`" for rel in copied]
+        lines.append("")
+    return "\n".join(lines)
+
+
+def write_test_author_folder(
+    thread_id: str, task_index: int, task: Task, ta: TestAuthorResult,
+    test_paths, rounds_info: dict | None = None,
+) -> None:
+    """Write task-NN-<id>/test-author/ — the converged test-authoring evidence for
+    one TDD task (Phase 77b; replaces the flat test-author-<id>.md).
+
+    Written ONCE, after the authoring process converges (critic satisfied + any
+    re-author done) — never per critic / re-author round; the rounds are recorded in
+    summary.md as a log, but the copy + RED run + hash reflect the FINAL accepted
+    suite only. For a TESTABLE task the folder is proof the discipline happened:
+
+        task-NN-<id>/test-author/
+        ├── <test_paths file(s)>   copied verbatim (any language / layout)
+        ├── results-test-run.md    the COMPLETE RED run on those tests (Phase 77a)
+        ├── test-snapshot-hash.md  the deterministic freeze baseline (_hash_test_paths)
+        └── summary.md             verdict, critic verdict(s), # re-author, red-review
+
+    EVERY TDD task gets the folder (Phase 73 surfacing): an untestable / degraded
+    task gets summary.md only (verdict + reason), no tests / RED run / hash. The copy
+    and the hash are taken from the same post-authoring tree state, so the freeze
+    proof in 77c lines up. Best-effort; the checkpointed TestAuthorResult is the
+    source of truth, so a disk error here never takes down the run."""
     try:
-        d = _run_dir(thread_id)
+        d = _run_dir(thread_id) / _task_folder_name(task_index, task.id) / "test-author"
         d.mkdir(parents=True, exist_ok=True)
-        snap = f"\n**Frozen snapshot:** `{ta.snapshot}`\n" if ta.snapshot else ""
-        red = f"\n## Red output\n\n```\n{ta.red_output}\n```\n" if ta.red_output else ""
-        content = (
-            f"# Test author — {task_id}\n\n"
-            f"**Testable:** {ta.testable}\n\n"
-            f"{ta.summary}\n"
-            f"{snap}{red}"
+
+        copied: list[str] = []
+        if ta.testable:
+            copied = _copy_test_files(test_paths, d)
+            (d / "results-test-run.md").write_text(
+                f"# RED run — {task.id}\n\n"
+                "The COMPLETE final test run on the frozen tests (every test, "
+                "pass+fail; both streams). The suite is RED here — this is the spec "
+                "the implementation must turn green.\n\n"
+                f"```\n{ta.full_run or ta.red_output}\n```\n",
+                encoding="utf-8",
+            )
+            (d / "test-snapshot-hash.md").write_text(
+                f"# Frozen test snapshot — {task.id}\n\n"
+                "The deterministic content+membership hash of the test_paths globset "
+                "right after authoring — the baseline the diff-gate freezes and each "
+                "impl attempt (Phase 77c) re-hashes to prove the tests weren't "
+                "touched.\n\n"
+                f"    {ta.snapshot}\n",
+                encoding="utf-8",
+            )
+
+        (d / "summary.md").write_text(
+            _test_author_summary_md(task, ta, rounds_info or {}, copied),
+            encoding="utf-8",
         )
-        (d / f"test-author-{_safe_id(task_id)}.md").write_text(content, encoding="utf-8")
     except OSError:
         pass
 

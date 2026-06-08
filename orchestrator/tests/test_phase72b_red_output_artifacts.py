@@ -17,6 +17,7 @@ from langgraph.types import Command
 
 import orchestrator.run_artifacts as ra
 from orchestrator import workflow
+from orchestrator.agents.decompose import Task
 from orchestrator.agents.test_author import TestAuthorResult
 
 
@@ -38,35 +39,47 @@ def test_compose_red_green_empty_output_is_unchanged():
 
 
 # --------------------------------------------------------------------------- #
-# unit: write_test_author artifact
+# unit: write_test_author_folder artifact (Phase 77b)
 # --------------------------------------------------------------------------- #
 
 
-def test_write_test_author_writes_red_green_record(monkeypatch, tmp_path):
-    # Override conftest's autouse _isolate_runs_dir to point at tmp_path.
+def _task(task_id="t1", title="Task one"):
+    return Task(id=task_id, title=title, description="do it", acceptance_criteria="works")
+
+
+def test_write_test_author_folder_writes_red_green_record(monkeypatch, tmp_path):
+    # Override conftest's autouse _isolate_runs_dir to point at tmp_path, and the
+    # project root the copier globs (no test files there → empty copy, summary only).
     monkeypatch.setattr(ra, "_runs_dir", lambda: tmp_path / "runs")
+    monkeypatch.setattr(ra, "find_project_root", lambda: tmp_path / "proj")
+    (tmp_path / "proj").mkdir()
     ta = TestAuthorResult(
         testable=True, summary="covers behaviour X",
-        snapshot="HASH123", red_output="1 test failing",
+        snapshot="HASH123", red_output="1 test failing", full_run="FULL RED LOG",
     )
-    ra.write_test_author("tid", "t1", ta)
+    ra.write_test_author_folder("tid", 1, _task(), ta, ["**/*.test.js"])
 
-    files = list((tmp_path / "runs" / "tid").glob("test-author-*.md"))
-    assert len(files) == 1
-    text = files[0].read_text(encoding="utf-8")
-    assert "t1" in text
-    assert "covers behaviour X" in text
-    assert "HASH123" in text
-    assert "1 test failing" in text
+    folder = tmp_path / "runs" / "tid" / "task-01-t1" / "test-author"
+    summary = (folder / "summary.md").read_text(encoding="utf-8")
+    assert "t1" in summary and "covers behaviour X" in summary
+    assert (folder / "test-snapshot-hash.md").read_text(encoding="utf-8").find("HASH123") != -1
+    # The RED-run evidence is the COMPLETE run (full_run), not the failures summary.
+    assert "FULL RED LOG" in (folder / "results-test-run.md").read_text(encoding="utf-8")
 
 
-def test_write_test_author_sanitises_task_id(monkeypatch, tmp_path):
+def test_write_test_author_folder_sanitises_task_id(monkeypatch, tmp_path):
     monkeypatch.setattr(ra, "_runs_dir", lambda: tmp_path / "runs")
-    ra.write_test_author("tid", "feat/weird id", TestAuthorResult(testable=True))
-    files = list((tmp_path / "runs" / "tid").glob("test-author-*.md"))
-    assert len(files) == 1
-    # no path separators / spaces leaked into the filename
-    assert "/" not in files[0].name and " " not in files[0].name
+    monkeypatch.setattr(ra, "find_project_root", lambda: tmp_path / "proj")
+    (tmp_path / "proj").mkdir()
+    ra.write_test_author_folder(
+        "tid", 2, _task("feat/weird id", "Weird"), TestAuthorResult(testable=True),
+        ["**/*.test.js"],
+    )
+    folders = list((tmp_path / "runs" / "tid").glob("task-*"))
+    assert len(folders) == 1
+    # no path separators / spaces leaked into the folder name
+    assert "/" not in folders[0].name and " " not in folders[0].name
+    assert folders[0].name.startswith("task-02-")
 
 
 # --------------------------------------------------------------------------- #
