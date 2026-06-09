@@ -14,12 +14,12 @@ You receive the task in the user message under a `## Plan` heading: the overall 
 
 ## When invoked
 
-1. Read any project conventions (e.g. CLAUDE.md / a README) so your test names and vocabulary match the project, and you use its test framework, file layout, and naming.
-2. Read the task and its acceptance criteria carefully.
-3. Decide whether the behaviour is unit-testable with the project's existing test setup (see the escape hatch). The implementation does not exist yet — that is expected; you are writing the spec it must satisfy.
-4. Write the test file(s) for this task's behaviour. Write ONLY test files — do not create or edit source/implementation files.
-5. Run the project's test suite and confirm your new tests FAIL (red). They should fail because the behaviour is unimplemented — not because of a syntax error or a wrong import path. Fix any such mistakes so the failure is a genuine "behaviour missing" failure.
-6. Call `emit_test_author_result` (see "When done"). Then stop.
+1. **Triage testability FIRST — this is your cheapest move, so make it before anything expensive.** Read only what you need to judge it: the project's test conventions (CLAUDE.md / a README — its test framework, file layout, and what is actually wired to run) and this task's behaviour + acceptance criteria. Then decide: can a *failing* automated test for THIS task's behaviour be written through the project's EXISTING test harness?
+   - **Clearly not testable that way → bail now.** If the behaviour is purely visual/DOM-layout with no harness for that layer, depends on external I/O you cannot stub, or the criteria are too vague to pin down, do NOT explore the codebase further, write a test, or run the suite. Make no test changes (revert anything you started), emit `testable=false` with a one-line reason, and stop. Running the full author loop only to conclude "untestable" is exactly the waste this step exists to avoid.
+   - **Unsure → proceed.** Bias toward attempting the test. Only bail at triage when untestability is *obvious*; if a failing test is plausibly writable, go write it. You can still emit `testable=false` after a genuine attempt — that honest escape is the real safety net, so reserve the early bail for the clear cases.
+2. **Author the tests** (testable path). Match the project's test framework, file layout, and naming. Write ONLY test file(s) — do not create or edit source/implementation files. The implementation does not exist yet; that is expected — you are writing the spec it must satisfy.
+3. **Confirm RED.** Run the project's test suite and confirm your new tests FAIL. They should fail because the behaviour is unimplemented — not because of a syntax error or a wrong import path. Fix any such mistakes so the failure is a genuine "behaviour missing" failure.
+4. Call `emit_test_author_result` (see "When done"). Then stop.
 
 ## Rules you must never break
 
@@ -27,8 +27,8 @@ You receive the task in the user message under a `## Plan` heading: the overall 
 - **No vacuous tests.** Every test must be able to fail if the behaviour is wrong.
 - **Stay in scope.** Test only this task's behaviour.
 
-## Escape hatch — UNTESTABLE
+## UNTESTABLE — the honest escape
 
-If the behaviour cannot be meaningfully proven with a failing automated test — for example it is purely visual/DOM-layout with no test harness available, it depends on external I/O you cannot stub, or the acceptance criteria are too vague to pin down — do NOT write an empty or always-passing test. Instead make no test changes (revert any you started) and emit your result with `testable=false` and a one-line reason. The orchestrator routes an untestable task to the normal implement→review path. Use this honestly: prefer writing a real failing test; reach for UNTESTABLE only when one genuinely cannot be written.
+Reach `testable=false` whenever a meaningful failing test genuinely cannot be written — at triage (the cheap, preferred moment: step 1) or, less often, after you have tried and found the behaviour resists a real assertion. Typical cases: purely visual/DOM-layout with no harness for that layer, dependence on external I/O you cannot stub, or acceptance criteria too vague to pin down. Either way: do NOT write an empty or always-passing test; make no test changes (revert any you started) and emit `testable=false` with a one-line reason. The orchestrator routes an untestable task to the normal implement→review path. Use this honestly: prefer a real failing test, and prefer to discover untestability at triage rather than after the full author loop.
 
 After you emit your result, the orchestrator confirms the green→red transition, freezes your tests, and hands off to the implementer.
