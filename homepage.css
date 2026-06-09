@@ -1,0 +1,206 @@
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --ink: #1a1a18;
+  --ink-mid: #4a4a46;
+  --ink-soft: #8a8a84;
+  --ink-faint: #c8c8c0;
+  --paper: #f7f5ef;
+  --paper-warm: #efeee6;
+  --paper-card: #faf9f4;
+  --accent: #2d5a3d;
+  --accent-light: #4a8a5e;
+  --accent-faint: #e8f0eb;
+  --warn: #8b4a1a;
+  --warn-light: #b87a2a;
+  --warn-faint: #f5ece3;
+  --rule: #d8d6ce;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  font-family: 'DM Sans', sans-serif;
+  background: var(--paper);
+  color: var(--ink);
+  font-size: 16px;
+  line-height: 1.6;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Navigation ───────────────────────────────────────────── */
+
+.homepage-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.5rem;
+  background: var(--paper-card);
+  border-bottom: 1px solid var(--rule);
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+
+.homepage-nav .nav-brand {
+  font-family: 'DM Serif Display', serif;
+  font-size: 1.25rem;
+  font-weight: 400;
+  color: var(--ink);
+  text-decoration: none;
+  letter-spacing: -0.01em;
+}
+
+.homepage-nav .nav-link {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--accent);
+  text-decoration: none;
+  padding: 0.4rem 0.9rem;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  transition: background 0.18s ease, color 0.18s ease;
+}
+
+.homepage-nav .nav-link:hover,
+.homepage-nav .nav-link:focus-visible {
+  background: var(--accent);
+  color: var(--paper-card);
+}
+
+/* ── Hero ─────────────────────────────────────────────────── */
+
+.hero-section {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 4rem 1.5rem 5rem;
+  background: var(--paper);
+}
+
+.hero-title {
+  font-family: 'DM Serif Display', serif;
+  font-size: clamp(2rem, 6vw, 3.5rem);
+  font-weight: 400;
+  color: var(--ink);
+  letter-spacing: -0.03em;
+  line-height: 1.15;
+  margin-bottom: 1.25rem;
+  max-width: 16ch;
+}
+
+.hero-subtitle {
+  font-size: clamp(1rem, 2.5vw, 1.125rem);
+  color: var(--ink-soft);
+  max-width: 44ch;
+  margin-bottom: 2.5rem;
+  font-weight: 300;
+}
+
+.cta-button {
+  display: inline-block;
+  padding: 0.85rem 2.25rem;
+  background: var(--accent);
+  color: var(--paper-card);
+  font-family: 'DM Sans', sans-serif;
+  font-size: 1rem;
+  font-weight: 500;
+  text-decoration: none;
+  border-radius: 8px;
+  border: 2px solid var(--accent);
+  cursor: pointer;
+  transition: background 0.18s ease, border-color 0.18s ease, transform 0.12s ease;
+}
+
+.cta-button:hover,
+.cta-button:focus-visible {
+  background: var(--accent-light);
+  border-color: var(--accent-light);
+  transform: translateY(-2px);
+}
+
+.cta-button:active {
+  transform: translateY(0);
+}
+
+/* ── Features ─────────────────────────────────────────────── */
+
+.features-section {
+  padding: 3.5rem 1.5rem;
+  background: var(--paper-warm);
+  border-top: 1px solid var(--rule);
+}
+
+.features-section .features-inner {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 1.5rem;
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+.feature-card {
+  background: var(--paper-card);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  padding: 1.75rem 1.5rem;
+  text-align: center;
+}
+
+.feature-card .feature-icon {
+  font-size: 2rem;
+  margin-bottom: 0.75rem;
+  display: block;
+}
+
+.feature-card .feature-heading {
+  font-family: 'DM Serif Display', serif;
+  font-size: 1.1rem;
+  font-weight: 400;
+  color: var(--ink);
+  margin-bottom: 0.5rem;
+}
+
+.feature-card .feature-text {
+  font-size: 0.875rem;
+  color: var(--ink-soft);
+  line-height: 1.55;
+}
+
+/* ── Footer ───────────────────────────────────────────────── */
+
+.homepage-footer {
+  padding: 1.5rem;
+  text-align: center;
+  font-size: 0.8125rem;
+  color: var(--ink-faint);
+  border-top: 1px solid var(--rule);
+  background: var(--paper-card);
+}
+
+/* ── Responsive tweaks ────────────────────────────────────── */
+
+@media (max-width: 480px) {
+  .homepage-nav {
+    padding: 0.875rem 1rem;
+  }
+
+  .hero-section {
+    padding: 3rem 1rem 4rem;
+  }
+
+  .features-section {
+    padding: 2.5rem 1rem;
+  }
+
+  .feature-card {
+    padding: 1.25rem 1rem;
+  }
+}
