@@ -67,6 +67,73 @@ def task_build_config(
     return cfg.model_copy(update={"pipeline": new_pipeline})
 
 
+class _LiveModelCall(RuntimeError):
+    """Raised when a test reaches a real Claude call without stubbing it."""
+
+
+# Every module that did `from orchestrator.agents.runner import run_structured_*`
+# holds its OWN binding, so the guard must patch each site, not just the source.
+_AGENT_SITES = [
+    "orchestrator.steps.run_structured_agent",
+    "orchestrator.workflow.run_structured_agent",
+    "orchestrator.agents.test_author.run_structured_agent",
+    "orchestrator.agents.coverage_critic.run_structured_agent",
+    "orchestrator.agents.summarize.run_structured_agent",
+    "orchestrator.agents.qa.run_structured_agent",
+]
+_COMPLETION_SITES = [
+    "orchestrator.agents.planning.run_structured_completion",
+    "orchestrator.agents.decompose.run_structured_completion",
+]
+
+
+@pytest.fixture(autouse=True)
+def _block_live_models(monkeypatch):
+    """Safety net: fail (never spend) if a test reaches a live Claude call.
+
+    The spine/station agents each hold their OWN `run_structured_*` binding, so a
+    test that drives the real workflow without stubbing the right one would
+    silently hit the live API and bill real tokens (this is exactly how arming TDD
+    on main made the pre-TDD full-workflow tests start paying for a live
+    test-author leg). This autouse fixture patches every binding site to raise, so
+    any unstubbed agent call fails loudly instead. Tests that legitimately stub
+    their own binding run AFTER this fixture and win; the suite-wide stubs below
+    (decompose/docs/summarize/test-author) provide the canned results full-workflow
+    tests need so they pass without touching a model.
+    """
+    async def _raise(*args, **kwargs):
+        who = kwargs.get("emit_tool_name") or kwargs.get("tool_name") or "?"
+        raise _LiveModelCall(
+            f"live model call in test (emit={who}) — stub it (see conftest)"
+        )
+
+    for site in _AGENT_SITES + _COMPLETION_SITES:
+        try:
+            monkeypatch.setattr(site, _raise)
+        except (AttributeError, ImportError):
+            pass
+
+
+@pytest.fixture(autouse=True)
+def _stub_test_author(monkeypatch):
+    """Under TDD (on by default since #115) the per-task station runs a test-author
+    leg — a real Claude call. Stub it suite-wide returning testable=False so the
+    task takes the classic implement→qa path (which full-workflow tests already
+    stub). Tests that exercise the test-author override this with their own
+    monkeypatch of `orchestrator.workflow.author_tests`."""
+    from orchestrator.agents.test_author import TestAuthorResult
+
+    async def _fake_author_tests(
+        plan_text, model, system_prompt=None, allowed_tools=None,
+        disallowed_tools=None, feedback=None,
+    ):
+        return TestAuthorResult(
+            testable=False, summary="(test-author stubbed in tests)", usage=None,
+        )
+
+    monkeypatch.setattr("orchestrator.workflow.author_tests", _fake_author_tests)
+
+
 @pytest.fixture(autouse=True)
 def _isolate_runs_dir(monkeypatch):
     runs = find_project_root() / ".orchestrator" / "runs" / "developer_tests"
