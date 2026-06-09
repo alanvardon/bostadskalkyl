@@ -72,6 +72,15 @@ logger = logging.getLogger(__name__)
 # `test-author-<id>.md`. The post-branch task graph is unchanged (the writer is a
 # side-effect after the authored verdict, like its predecessor) and TDD-off runs are
 # byte-for-byte identical; the bump is purely for the changed checkpointed shape.
+#
+# 2.7.0 (Phase 77c, unchanged): impl attempt evidence — the FIRST consumer of both
+# 77a seams. The TDD station wires run_retry_block's on_attempt hook (via _run_build_step
+# / _run_task_build_step) to write task-NN-<id>/impl/attempt-N/ (the COMPLETE run via
+# full_output + the freeze MATCH/MISMATCH vs the 77b baseline) for every implement
+# attempt of a TESTABLE task — including the GREEN one. No new @task, no checkpointed
+# shape change (the recorder is a best-effort side-effect in the entrypoint frame, like
+# the 77b writer), so the graph is byte-for-byte unchanged and no bump is needed; the
+# classic / non-TDD path passes on_attempt=None and writes nothing.
 WORKFLOW_VERSION = "2.7.0"
 
 
@@ -189,6 +198,7 @@ from orchestrator.pre_hooks import run_pre_hooks
 from orchestrator.run_artifacts import (
     rename_with_branch,
     write_decomposition,
+    write_impl_attempt,
     write_manual_checks,
     write_plan,
     write_qa,
@@ -485,6 +495,7 @@ async def _run_build_step(
     thread_id: str | None = None,
     audit=None,
     autonomous: bool = False,
+    on_attempt=None,
 ) -> None:
     """Run one produce⇄gate build via the generic engine (run_retry_block).
 
@@ -507,6 +518,12 @@ async def _run_build_step(
     outcome raises BuildFailed → the clean status="failed" return (builds are
     pre-commit, so nothing is half-shipped). interrupt() is reachable because this
     helper runs in the entrypoint frame.
+
+    `on_attempt(attempt, passed, gate_results)` (Phase 77a hook) is an optional
+    read-only per-attempt observer threaded straight to run_retry_block: it fires
+    once after the gates resolve EVERY attempt, including the GREEN one. The TDD
+    station passes it to persist per-attempt evidence (Phase 77c); a None default
+    keeps every other build byte-for-byte unchanged.
     """
     repo_root = str(find_project_root())
     builtin_producers = builtin_producers or {}
@@ -614,6 +631,7 @@ async def _run_build_step(
         run_gate=run_gate,
         check_cancel=check_cancel,
         on_producers_done=on_producers_done,
+        on_attempt=on_attempt,   # Phase 77c per-attempt evidence (None elsewhere)
         on_gate_failed=on_gate_failed,
         interrupt_fn=interrupt,  # used only when on_exhausted="approval_gate"
         autonomous=autonomous,   # unbounded budget; loop until a gate passes
@@ -913,6 +931,27 @@ def _make_diff_gate(test_paths, snapshot: str, repo_root: str):
     return _diff_gate
 
 
+def _impl_attempt_recorder(thread_id, task_index, task, test_paths, snapshot, repo_root):
+    """Build the Phase 77c per-attempt evidence callback for a TESTABLE TDD task.
+
+    Returns an `on_attempt(attempt, passed, gate_results)` coroutine for
+    run_retry_block's 77a hook. It fires once per implement attempt — every
+    attempt, including the GREEN one — re-hashes the test_paths globset (the same
+    pure `_hash_test_paths` the diff-gate uses, so the freeze verdict is
+    deterministic and reads the same tree the gates just judged) and writes
+    task-NN-<id>/impl/attempt-N/ (the COMPLETE run + MATCH/MISMATCH vs `snapshot`,
+    the 77b baseline). Only the testable path builds this; the classic / untestable
+    path passes on_attempt=None and writes no impl/ evidence. A read-only observer
+    of best-effort side-effect files, so it replays cleanly on resume."""
+    async def on_attempt(attempt: int, passed: bool, gate_results: list) -> None:
+        current_hash = _hash_test_paths(test_paths, repo_root)
+        write_impl_attempt(
+            thread_id, task_index, task, attempt, passed, gate_results,
+            baseline=snapshot, current_hash=current_hash,
+        )
+    return on_attempt
+
+
 # TestAuthorResult.degrade_kind values (Phase 76). A testable=False verdict is
 # either a legitimate "not unit-testable" judgement (graceful classic fallback,
 # even when autonomous) or a red-confirm FAILURE — the green→red guarantee could
@@ -1179,6 +1218,7 @@ async def _run_task_build_step(
     task, plan_result, impl_plan: str, qa_plan, gate_refs: list[str],
     diff_gate: dict, stage, hil, config, check_cancel, usage_by_task: dict,
     qa_holder: dict, *, thread_id: str, audit, autonomous: bool, retry=None,
+    on_attempt=None,
 ) -> None:
     """Run ONE task's produce⇄gate build — the per-task tail shared by the
     supervised/non-TDD path and the Phase 76 autonomous-TDD path.
@@ -1188,7 +1228,11 @@ async def _run_task_build_step(
     "builtin:diff-gate". `retry` overrides stage.retry — autonomous TDD passes a
     copy with on_exhausted="abort" so the BOUNDED build raises BuildFailed on
     exhaustion (to be caught by the re-author cycle) instead of pausing for a
-    human. A non-proceed build raises BuildFailed(step_id="task:<id>")."""
+    human. A non-proceed build raises BuildFailed(step_id="task:<id>").
+
+    `on_attempt` (Phase 77c) is the per-attempt evidence recorder for a TESTABLE
+    TDD task, threaded to run_retry_block; a classic / untestable task passes None
+    and writes no impl/ evidence."""
     producers, gates = _builtin_build_callables(
         config, plan_result, usage_by_task, qa_holder, thread_id,
         impl_plan=impl_plan, qa_plan=qa_plan,
@@ -1209,6 +1253,7 @@ async def _run_task_build_step(
         thread_id=thread_id,
         audit=audit,
         autonomous=autonomous,
+        on_attempt=on_attempt,
     )
 
 
@@ -1320,12 +1365,19 @@ async def _run_autonomous_tdd_task(
         }
         gate_refs = ["builtin:diff-gate", *base_gate_refs]
         impl_plan = _compose_red_green(task_plan, ta.red_output)
+        # Phase 77c per-attempt evidence. Each re-author round re-freezes a NEW
+        # suite, so the recorder closes over THIS round's snapshot; the impl/ folder
+        # is cleared on attempt 1 (the bounded build restarts the count each round),
+        # leaving only attempts against the suite that ultimately ran.
+        on_attempt = _impl_attempt_recorder(
+            thread_id, task_index, task, list(config.test_paths), ta.snapshot, repo_root,
+        )
         try:
             await _run_task_build_step(
                 task, plan_result, impl_plan, qa_plan, gate_refs, diff_gate,
                 stage, bounded_hil, config, check_cancel, usage_by_task, qa_holder,
                 thread_id=thread_id, audit=audit, autonomous=False,
-                retry=bounded_retry,
+                retry=bounded_retry, on_attempt=on_attempt,
             )
             return  # the implementation turned the frozen tests green → task done
         except BuildFailed as exc:
@@ -1397,6 +1449,7 @@ async def _run_task_loop(
 
         gate_refs = base_gate_refs
         diff_gate: dict = {}
+        on_attempt = None  # Phase 77c: set only for a testable TDD task (below)
         impl_plan = task_plan  # the implementer's plan; gains the RED output below
         # TDD red-green (Phase 72): author tests ONCE before the implement loop,
         # confirm the green→red transition, then freeze them with the diff-gate
@@ -1430,6 +1483,12 @@ async def _run_task_loop(
                 gate_refs = ["builtin:diff-gate", *gate_refs]
                 # Phase 72b: give the implementer's first attempt the failing tests.
                 impl_plan = _compose_red_green(task_plan, ta.red_output)
+                # Phase 77c: record per-attempt impl evidence (full run + freeze
+                # MATCH/MISMATCH) against this task's frozen baseline.
+                on_attempt = _impl_attempt_recorder(
+                    thread_id, task_index, task, list(config.test_paths),
+                    ta.snapshot, repo_root,
+                )
             elif manual_checks is not None:
                 # Degraded to the classic path: its acceptance criterion is a manual
                 # check (Phase 73). Surfaced in the result + a manual-checks.md artifact.
@@ -1443,6 +1502,7 @@ async def _run_task_loop(
             task, plan_result, impl_plan, qa_plan, gate_refs, diff_gate, stage, hil,
             config, check_cancel, usage_by_task, qa_holder,
             thread_id=thread_id, audit=audit, autonomous=autonomous,
+            on_attempt=on_attempt,
         )
 
 

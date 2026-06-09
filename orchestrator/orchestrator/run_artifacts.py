@@ -18,6 +18,7 @@ Usage in workflow.py:
 """
 
 import json
+import shutil
 from pathlib import Path
 
 from orchestrator.agents.decompose import DecompositionResult, Task
@@ -231,6 +232,96 @@ def write_test_author_folder(
 
         (d / "summary.md").write_text(
             _test_author_summary_md(task, ta, rounds_info or {}, copied),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+
+
+def write_impl_attempt(
+    thread_id: str,
+    task_index: int,
+    task: Task,
+    attempt: int,
+    passed: bool,
+    gate_results: list,
+    *,
+    baseline: str,
+    current_hash: str,
+) -> None:
+    """Write task-NN-<id>/impl/attempt-N/ — the GREEN-half evidence for ONE
+    implement attempt of a TESTABLE TDD task (Phase 77c).
+
+    Fired once per implement attempt via run_retry_block's on_attempt hook (Phase
+    77a) — EVERY attempt, including the passing (GREEN) one, which the failure-only
+    hooks never see. Two files:
+
+        task-NN-<id>/impl/attempt-N/
+        ├── test-results.md   the COMPLETE test run after this attempt (every gate's
+        │                     captured full_output, Phase 77a) — proof the WHOLE
+        │                     suite ran, not just the failing delta
+        └── snapshot-hash.md  the test_paths re-hash this attempt vs the frozen 77b
+                              baseline → MATCH ✓ / MISMATCH ✗ (the freeze proof; a
+                              MISMATCH is the evidence of why the diff-gate failed)
+
+    `attempt` is run_retry_block's own 1-based counter (continuous across a
+    growable budget, so an extension keeps numbering rather than resetting). On
+    `attempt <= 1` the impl/ folder is cleared first, so a fresh build leaves only
+    the attempts against the suite that ultimately ran — notably each autonomous
+    re-author round (Phase 76) re-freezes a NEW suite and restarts the attempt
+    count, so without the clear a smaller final round would inherit stale,
+    higher-numbered folders from a replaced suite.
+
+    Best-effort; the checkpointed retry result is the source of truth, so a disk
+    error here never takes down the run. Only the testable TDD path wires the
+    on_attempt hook that calls this — the classic / untestable path writes
+    nothing here."""
+    try:
+        impl_dir = (
+            _run_dir(thread_id) / _task_folder_name(task_index, task.id) / "impl"
+        )
+        if attempt <= 1 and impl_dir.exists():
+            shutil.rmtree(impl_dir, ignore_errors=True)
+        d = impl_dir / f"attempt-{attempt}"
+        d.mkdir(parents=True, exist_ok=True)
+
+        # The COMPLETE test run: every gate that produced a captured runner log
+        # (Phase 77a full_output). The synthetic diff-gate and LLM gates (e.g.
+        # builtin:qa) carry no full_output, so they fall out naturally and what
+        # remains is the actual test-suite run. On a freeze MISMATCH the diff-gate
+        # (ordered first) fails before the suite runs → no log; record that.
+        runs = [
+            f"### {gr.step_id}\n\n```\n{gr.full_output}\n```"
+            for gr in gate_results
+            if getattr(gr, "full_output", "")
+        ]
+        body = "\n\n".join(runs) if runs else (
+            "_No test run was captured this attempt — the freeze check (diff-gate) "
+            "failed before the suite ran (the frozen tests were modified). See "
+            "snapshot-hash.md._"
+        )
+        verdict = "GREEN ✓ (all gates passed)" if passed else "RED ✗ (a gate failed)"
+        (d / "test-results.md").write_text(
+            f"# Impl attempt {attempt} — {task.id}\n\n"
+            f"**Gate verdict:** {verdict}\n\n"
+            "The COMPLETE test run after this implementation attempt — every test, "
+            "pass and fail, both streams — proof the whole suite ran against this "
+            "attempt, not only the failing delta.\n\n"
+            f"{body}\n",
+            encoding="utf-8",
+        )
+
+        match = current_hash == baseline
+        (d / "snapshot-hash.md").write_text(
+            f"# Freeze check — {task.id} attempt {attempt}\n\n"
+            f"**Result:** {'MATCH ✓' if match else 'MISMATCH ✗'}\n\n"
+            "Re-hash of the test_paths globset this attempt vs the frozen baseline "
+            "(../../test-author/test-snapshot-hash.md). A MATCH proves the "
+            "implementer left the tests untouched and turned them green by changing "
+            "the implementation only; a MISMATCH is the evidence of why the "
+            "diff-gate failed this attempt.\n\n"
+            f"- Baseline (frozen at authoring): `{baseline}`\n"
+            f"- This attempt:                   `{current_hash}`\n",
             encoding="utf-8",
         )
     except OSError:
