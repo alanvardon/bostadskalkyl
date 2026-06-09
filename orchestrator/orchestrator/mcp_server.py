@@ -1,8 +1,11 @@
 """MCP server exposing the orchestrator to Claude Code.
 
-Two tools:
+Tools:
   - implement_feature: start a workflow; returns a plan for approval
   - approve_plan:      resume an awaiting workflow with the user's response
+  - resume_run:        recover a workflow that failed mid-task
+  - cancel_run:        signal cancellation between task boundaries
+  - run_status:        report where a (backgrounded) run stands
 
 The flow is conversational by design. The workflow pauses at plan approval, the
 user reviews via Claude Code chat, then approves or revises. Each tool call:
@@ -12,6 +15,17 @@ user reviews via Claude Code chat, then approves or revises. Each tool call:
 
 State lives in .orchestrator/checkpoints.db between calls, keyed by the
 thread_id that implement_feature generates and approve_plan replays.
+
+Observable progress (Phase 79): the post-approval leg runs 5+ minutes, during
+which Claude Code chat shows NOTHING — it doesn't render MCP progress
+notifications (they're advisory per spec). So the long-leg tools accept
+`background=True`: they kick the workflow off as a tracked asyncio task
+(_BG_RUNS) and return {"status": "started", thread_id} at once, and the chat
+polls `run_status(thread_id)` to print persistent text updates. While a run is
+live it holds the AsyncSqliteSaver write-lock, so run_status reads progress
+from the filesystem audit-log tail (NOT aget_state) and the final result from
+the in-memory registry; it only reads the checkpoint snapshot when no task is
+live (e.g. after a server restart), when the DB is free.
 
 Testing without Claude Code (recommended first step):
   npx @modelcontextprotocol/inspector \\
@@ -23,6 +37,9 @@ CRITICAL: always invoke via the full env-scoped python path, not the
 doesn't apply to them (PLAN.md landmine #2).
 """
 
+import asyncio
+import json
+import time
 from pathlib import Path
 from uuid import uuid4
 
@@ -56,6 +73,80 @@ from orchestrator.workflow import (
 (find_project_root() / ".orchestrator").mkdir(exist_ok=True)
 
 mcp = FastMCP("orchestrator")
+
+
+# --- Plan-approval hints --------------------------------------------------
+# Shared by the synchronous and background paths so the chat gets the same
+# "what to do next" text whether the interrupt is returned directly or read
+# back via run_status.
+_IMPLEMENT_APPROVAL_HINT = (
+    "Show the plan_text to the user. Ask whether they approve or want changes. "
+    "Then call approve_plan with this same thread_id and their response "
+    "('yes' to proceed, or feedback to revise)."
+)
+_APPROVE_PLAN_REVISED_HINT = (
+    "Plan was revised based on the feedback. Show the new plan_text to the "
+    "user and call approve_plan again with their next response."
+)
+_RESUME_APPROVAL_HINT = (
+    "Workflow paused for plan approval. Show the plan to the user and call "
+    "approve_plan with their response."
+)
+
+
+# --- Background-run registry (Phase 79) -----------------------------------
+# A backgrounded workflow runs as an asyncio task on the FastMCP event loop.
+# asyncio only keeps a weak reference to tasks, so we hold a STRONG ref here —
+# otherwise a 5-minute run could be garbage-collected between tool calls. The
+# entry also carries the start time (for elapsed) so run_status can report it
+# without re-deriving from the checkpoint.
+class _BgRun:
+    def __init__(self, task: "asyncio.Task", request: str | None) -> None:
+        self.task = task
+        self.request = request
+        self.started_at = time.monotonic()
+
+
+_BG_RUNS: dict[str, _BgRun] = {}
+
+
+def _last_audit_event(thread_id: str) -> dict | None:
+    """Return the most recent audit event for thread_id, or None.
+
+    Tails the JSONL audit log (.orchestrator/audit.log). This is a plain
+    filesystem read with NO checkpoint-DB access, so it's safe to call while a
+    background run holds the AsyncSqliteSaver write-lock — the lock-contention
+    landmine the cancellation store documents. Shape:
+    {event_type, task_name, timestamp}.
+    """
+    cfg = load_config()
+    log_path = Path(cfg.audit.log_path)
+    if not log_path.is_absolute():
+        log_path = find_project_root() / log_path
+    if not log_path.exists():
+        return None
+    last: dict | None = None
+    try:
+        with log_path.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if rec.get("thread_id") == thread_id:
+                    last = rec
+    except OSError:
+        return None
+    if last is None:
+        return None
+    return {
+        "event_type": last.get("event_type"),
+        "task_name": last.get("task_name"),
+        "timestamp": last.get("timestamp"),
+    }
 
 
 def _incompatible_checkpoint(
@@ -265,12 +356,90 @@ async def _fetch_existing_state(thread_id: str) -> dict:
     }
 
 
+async def _run_workflow(
+    thread_id: str,
+    input_data,
+    *,
+    orch_config=None,
+    approval_hint: str,
+    ctx: Context | None = None,
+) -> dict:
+    """Drive one workflow leg and shape the outcome into a response dict.
+
+    Shared by the synchronous tool path and the background runner. Opens the
+    checkpointer, streams via run_with_progress (so MCP-aware clients still get
+    notifications), and converts the result into exactly one of:
+      - an awaiting_approval dict (the run paused at an interrupt),
+      - a structured error dict (the orchestrator error families), or
+      - the workflow's final {status, ...} dict with thread_id injected.
+
+    `orch_config` is the resolved OrchestratorConfig for a fresh start
+    (implement_feature applies per-invocation overrides); pass None for resumes
+    so build_workflow loads config itself. `input_data` is the request string,
+    Command(resume=...), or None — same as run_with_progress.
+    """
+    lg_config = {"configurable": {"thread_id": thread_id}}
+    try:
+        async with build_workflow(config=orch_config) as workflow:
+            result = await run_with_progress(workflow, input_data, lg_config, ctx)
+    except (IncompatibleCheckpointError, IncompatiblePipelineError) as exc:
+        if isinstance(exc, IncompatibleCheckpointError):
+            return _incompatible_checkpoint(thread_id, exc)
+        return _incompatible_pipeline(thread_id, exc)
+    except UserActionError as exc:
+        return _user_action_required(thread_id, exc)
+    except RetriableError as exc:
+        return _retriable_error(thread_id, exc)
+    except FatalError as exc:
+        return _fatal_error(thread_id, exc)
+    if "__interrupt__" in result:
+        return _awaiting_approval(thread_id, result, approval_hint)
+    result["thread_id"] = thread_id
+    return result
+
+
+def _start_background(
+    thread_id: str,
+    input_data,
+    *,
+    orch_config=None,
+    approval_hint: str,
+    request_text: str | None,
+) -> dict:
+    """Kick off _run_workflow as a tracked background task; return at once.
+
+    The task runs on the FastMCP event loop concurrently with later tool calls
+    (run_status, cancel_run). We pass ctx=None: the Context that started the run
+    belongs to THIS tool call and is invalid once it returns, and the chat sees
+    progress via run_status polling rather than notifications anyway.
+    """
+    async def _runner() -> dict:
+        return await _run_workflow(
+            thread_id, input_data, orch_config=orch_config,
+            approval_hint=approval_hint, ctx=None,
+        )
+
+    _BG_RUNS[thread_id] = _BgRun(asyncio.create_task(_runner()), request_text)
+    return {
+        "status": "started",
+        "thread_id": thread_id,
+        "next": (
+            "The run is executing in the background. Poll run_status(thread_id) "
+            "about every 20s and show the user each update. run_status returns "
+            "'running' (with stage + elapsed) while it works, 'awaiting_approval' "
+            "if it pauses for a gate (then call approve_plan), or the final "
+            "'succeeded'/'failed'/'no_changes'/'cancelled' result when done."
+        ),
+    }
+
+
 @mcp.tool()
 async def implement_feature(
     request: str,
     approve_plan: bool | None = None,
     base_branch: str | None = None,
     idempotency_key: str | None = None,
+    background: bool = False,
     ctx: Context | None = None,
 ) -> dict:
     """Start a feature, fix, or refactor implementation workflow.
@@ -310,11 +479,21 @@ async def implement_feature(
         base_branch: Per-invocation override for the PR base branch.
         idempotency_key: Optional caller-supplied key. Reusing a key
             returns the existing run instead of starting a new one.
+        background: When True, kick the run off as a tracked task and
+            return {"status": "started", thread_id} immediately instead
+            of blocking; then poll run_status(thread_id) to report
+            progress in chat. The normal approval flow keeps this False
+            here (planning is quick — you want the plan back to show the
+            user) and passes background=True to approve_plan, which is
+            where the 5+ min leg lives. Use background=True here only with
+            approve_plan=False, which runs straight through that long leg.
 
     Returns:
         Awaiting-approval dict (or, if approve_plan was overridden to
-        False, the final succeeded/failed dict). When an idempotency
-        key replays an existing run, the dict carries `replayed: True`.
+        False, the final succeeded/failed dict). With background=True, a
+        {"status": "started", thread_id} dict — poll run_status. When an
+        idempotency key replays an existing run, the dict carries
+        `replayed: True`.
     """
     # The idempotency claim happens BEFORE any other side effect (run_log entry,
     # workflow build). If the key collides, return the original run's state without
@@ -328,48 +507,33 @@ async def implement_feature(
     else:
         thread_id = f"run-{uuid4().hex[:8]}"
 
-    config = {"configurable": {"thread_id": thread_id}}
     append_run(thread_id, request, source="mcp", idempotency_key=idempotency_key)
     effective_config = apply_overrides(
         load_config(),
         approve_plan=approve_plan,
         base_branch=base_branch,
     )
-    # Stream via run_with_progress so the MCP client sees per-task progress
-    # notifications during the 5+ min runs. ctx is
-    # injected by FastMCP; None when called outside the MCP transport
-    # (tests, ad-hoc invocations).
-    try:
-        async with build_workflow(config=effective_config) as workflow:
-            result = await run_with_progress(workflow, request, config, ctx)
-    except (IncompatibleCheckpointError, IncompatiblePipelineError) as exc:
-        # These FatalError subclasses get their own handlers for structured fields.
-        if isinstance(exc, IncompatibleCheckpointError):
-            return _incompatible_checkpoint(thread_id, exc)
-        return _incompatible_pipeline(thread_id, exc)
-    except UserActionError as exc:
-        return _user_action_required(thread_id, exc)
-    except RetriableError as exc:
-        return _retriable_error(thread_id, exc)
-    except FatalError as exc:
-        return _fatal_error(thread_id, exc)
-    if "__interrupt__" in result:
-        return _awaiting_approval(
-            thread_id,
-            result,
-            "Show the plan_text to the user. Ask whether they approve or "
-            "want changes. Then call approve_plan with this same thread_id "
-            "and their response ('yes' to proceed, or feedback to revise).",
+    # background=True: kick the workflow off as a tracked task and return at
+    # once so the chat polls run_status (see module docstring). Otherwise run
+    # synchronously, streaming progress notifications to MCP-aware clients via
+    # ctx (injected by FastMCP; None outside the MCP transport).
+    if background:
+        return _start_background(
+            thread_id, request, orch_config=effective_config,
+            approval_hint=_IMPLEMENT_APPROVAL_HINT, request_text=request,
         )
-    # With approve_plan overridden to False the workflow can complete on
-    # the first call — pass the result straight through.
-    result["thread_id"] = thread_id
-    return result
+    return await _run_workflow(
+        thread_id, request, orch_config=effective_config,
+        approval_hint=_IMPLEMENT_APPROVAL_HINT, ctx=ctx,
+    )
 
 
 @mcp.tool()
 async def resume_run(
-    thread_id: str, force: bool = False, ctx: Context | None = None
+    thread_id: str,
+    force: bool = False,
+    background: bool = False,
+    ctx: Context | None = None,
 ) -> dict:
     """Resume a workflow that failed mid-task without restarting it.
 
@@ -396,6 +560,9 @@ async def resume_run(
         thread_id: The thread_id from the prior failed response.
         force: When the thread is cancelled, set True to clear the
             cancel flag and resume anyway. Default False refuses.
+        background: When True, run the recovery leg as a tracked task and
+            return {"status": "started", thread_id} immediately; poll
+            run_status(thread_id) for progress. Default False blocks.
 
     Returns:
         Same shape as approve_plan: another awaiting_approval (rare,
@@ -415,34 +582,18 @@ async def resume_run(
             }
         clear_cancelled(thread_id)
 
-    config = {"configurable": {"thread_id": thread_id}}
-    # The functional API's resume incantation: passing None to
-    # the entrypoint continues a paused/failed workflow from its
-    # last checkpoint instead of starting a fresh run. We route
-    # through run_with_progress so the resumed run streams MCP
-    # progress events the same way a fresh run does.
-    try:
-        async with build_workflow() as workflow:
-            result = await run_with_progress(workflow, None, config, ctx)
-    except (IncompatibleCheckpointError, IncompatiblePipelineError) as exc:
-        if isinstance(exc, IncompatibleCheckpointError):
-            return _incompatible_checkpoint(thread_id, exc)
-        return _incompatible_pipeline(thread_id, exc)
-    except UserActionError as exc:
-        return _user_action_required(thread_id, exc)
-    except RetriableError as exc:
-        return _retriable_error(thread_id, exc)
-    except FatalError as exc:
-        return _fatal_error(thread_id, exc)
-    if "__interrupt__" in result:
-        return _awaiting_approval(
-            thread_id,
-            result,
-            "Workflow paused for plan approval. Show the plan to the "
-            "user and call approve_plan with their response.",
+    # Passing None as the input is the functional API's resume incantation: it
+    # continues the paused/failed workflow from its last checkpoint instead of
+    # starting fresh. background=True runs the recovery leg as a tracked task
+    # and reports via run_status (see module docstring); otherwise synchronous.
+    if background:
+        return _start_background(
+            thread_id, None, approval_hint=_RESUME_APPROVAL_HINT,
+            request_text=None,
         )
-    result["thread_id"] = thread_id
-    return result
+    return await _run_workflow(
+        thread_id, None, approval_hint=_RESUME_APPROVAL_HINT, ctx=ctx,
+    )
 
 
 @mcp.tool()
@@ -483,7 +634,10 @@ async def cancel_run(thread_id: str) -> dict:
 
 @mcp.tool()
 async def approve_plan(
-    thread_id: str, response: str, ctx: Context | None = None
+    thread_id: str,
+    response: str,
+    background: bool = False,
+    ctx: Context | None = None,
 ) -> dict:
     """Resume an awaiting workflow with the user's response to the plan.
 
@@ -509,9 +663,22 @@ async def approve_plan(
           result = await approve_plan(result["thread_id"], response)
       # result["status"] is now "succeeded" or "failed"
 
+    In the Claude Code chat, the "yes" approval starts a 5+ min leg that would
+    otherwise block with no visible activity. Prefer background=True for it,
+    then poll run_status(thread_id) ~every 20s and print each update:
+      result = await approve_plan(thread_id, "yes", background=True)
+      while result["status"] in ("started", "running"):
+          # wait ~20s, then:
+          result = await run_status(thread_id)
+      # awaiting_approval (call approve_plan again) or a terminal status
+
     Args:
         thread_id: From the most recent awaiting_approval response.
         response: "yes" to proceed, or feedback text to revise the plan.
+        background: When True, run the post-approval leg as a tracked task
+            and return {"status": "started", thread_id} immediately; poll
+            run_status(thread_id) for progress. Recommended for "yes" in
+            the interactive chat. Default False blocks until done.
 
     Returns:
         On revision: same awaiting_approval shape (loop again).
@@ -519,40 +686,95 @@ async def approve_plan(
         On QA exhaustion: {"status": "failed", "qa_failures": str, ...}
         On an empty build: {"status": "no_changes", "branch": str, ...}
     """
-    config = {"configurable": {"thread_id": thread_id}}
-    # Stream via run_with_progress. "yes" on approval kicks off the longest
-    # section of the workflow (planning → impl → QA → commit → push → PR), so this
-    # is the call that benefits most from progress notifications.
-    try:
-        async with build_workflow() as workflow:
-            result = await run_with_progress(
-                workflow, Command(resume=response), config, ctx
-            )
-    except (IncompatibleCheckpointError, IncompatiblePipelineError) as exc:
-        if isinstance(exc, IncompatibleCheckpointError):
-            return _incompatible_checkpoint(thread_id, exc)
-        return _incompatible_pipeline(thread_id, exc)
-    except UserActionError as exc:
-        return _user_action_required(thread_id, exc)
-    except RetriableError as exc:
-        return _retriable_error(thread_id, exc)
-    except FatalError as exc:
-        return _fatal_error(thread_id, exc)
-    if "__interrupt__" in result:
-        return _awaiting_approval(
-            thread_id,
-            result,
-            "Plan was revised based on the feedback. Show the new "
-            "plan_text to the user and call approve_plan again with their "
-            "next response.",
+    # "yes" on approval kicks off the longest section of the workflow (planning
+    # → impl → QA → commit → push → PR), so this is the call that benefits most
+    # from background=True: return at once and let the chat poll run_status (see
+    # module docstring). A revision reply re-enters the planning loop and pauses
+    # again quickly, so backgrounding it is harmless either way. _run_workflow
+    # injects thread_id into the final dict so the chat can still call resume_run
+    # if something fails downstream.
+    if background:
+        return _start_background(
+            thread_id, Command(resume=response),
+            approval_hint=_APPROVE_PLAN_REVISED_HINT, request_text=None,
         )
-    # Pass the workflow's native status through ("succeeded" or "failed")
-    # rather than re-shaping. Also inject thread_id so the user has it
-    # available in chat for recovery — without this, the id
-    # disappears after the first approval cycle and the user can't
-    # call resume_run if something fails downstream.
-    result["thread_id"] = thread_id
-    return result
+    return await _run_workflow(
+        thread_id, Command(resume=response),
+        approval_hint=_APPROVE_PLAN_REVISED_HINT, ctx=ctx,
+    )
+
+
+@mcp.tool()
+async def run_status(thread_id: str) -> dict:
+    """Report where a backgrounded run stands. Poll this after a tool returned
+    {"status": "started", thread_id}.
+
+    Drive the poll loop from chat: call run_status about every 20s and print
+    each update to the user, so the long run shows visible, persistent activity
+    instead of dead air. Stop when the status is no longer "running".
+
+    Possible statuses:
+      - "running": still working. `stage` is the latest task from the audit log,
+        `elapsed_seconds` is wall-clock since the run started, `last_event` is
+        {event_type, task_name, timestamp}. Wait ~20s and poll again.
+      - "awaiting_approval": the run paused at a gate (plan / red_review /
+        approval_gate). Show the plan or red_output to the user and call
+        approve_plan(thread_id, response) — optionally background=True again for
+        the leg that follows.
+      - terminal: "succeeded" (with pr_url), "no_changes", "failed"
+        (with qa_failures), "cancelled", or "aborted" — the run is done.
+      - an error shape ("user_action_required" / "retriable_error" /
+        "incompatible_checkpoint" / "incompatible_pipeline" / "fatal"): handle
+        as documented for that status, then resume_run / start fresh as advised.
+
+    Implementation note: while a run is live it holds the checkpoint DB
+    write-lock, so this reads progress from the filesystem audit-log tail and
+    the final result from the in-memory task — it touches the checkpoint
+    snapshot only when no task is tracked (e.g. after a server restart).
+
+    Args:
+        thread_id: The thread_id from the "started" response.
+
+    Returns:
+        A status dict as described above.
+    """
+    run = _BG_RUNS.get(thread_id)
+    if run is not None:
+        if not run.task.done():
+            # The live run holds the AsyncSqliteSaver write-lock — read progress
+            # from the audit-log tail, NOT aget_state, to avoid "database is
+            # locked" (the cancellation store documents this contention).
+            last = _last_audit_event(thread_id)
+            return {
+                "status": "running",
+                "thread_id": thread_id,
+                "elapsed_seconds": round(time.monotonic() - run.started_at, 1),
+                "stage": (last or {}).get("task_name"),
+                "last_event": last,
+                "next": "Still working. Poll run_status again in ~20s.",
+            }
+        # Finished: the task's return value is the terminal response dict
+        # (_run_workflow already shaped awaiting_approval / errors / final
+        # status, all carrying thread_id). Kept in the registry so repeat polls
+        # keep returning it — the "don't lose the final result" landmine.
+        try:
+            return run.task.result()
+        except Exception as exc:  # pragma: no cover - defensive
+            # _run_workflow shapes the known orchestrator error families into
+            # dicts itself, so a raised exception is unexpected. Surface it
+            # rather than letting the backgrounded failure vanish.
+            return {
+                "status": "fatal",
+                "thread_id": thread_id,
+                "error": str(exc),
+                "next": (
+                    "The background run failed unexpectedly. Inspect the logs, "
+                    "fix the root cause, and start a fresh implement_feature."
+                ),
+            }
+    # No tracked task — e.g. the server restarted, or an idempotency replay.
+    # Nothing holds the DB lock now, so reading the checkpoint snapshot is safe.
+    return await _fetch_existing_state(thread_id)
 
 
 if __name__ == "__main__":
