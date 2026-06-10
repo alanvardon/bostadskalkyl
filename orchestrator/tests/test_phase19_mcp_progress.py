@@ -115,6 +115,39 @@ async def test_emits_progress_per_task(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_decompose_event_appends_task_titles(monkeypatch):
+    """Phase 82: after decompose, the progress message lists the task titles
+    (comma-separated) so the waiting client sees how the plan was split."""
+    monkeypatch.setenv("HEARTBEAT_INTERVAL", "9999")
+    from orchestrator.agents.decompose import DecompositionResult, Task
+
+    decomp = DecompositionResult(
+        tasks=[
+            Task(id="add-toggle", title="Add toggle markup", description="d",
+                 acceptance_criteria="a"),
+            Task(id="update-styles", title="Update styles", description="d",
+                 acceptance_criteria="a"),
+            Task(id="update-tests", title="Update tests", description="d",
+                 acceptance_criteria="a"),
+        ],
+        usage=None,
+    )
+    events = [
+        {"decompose_task": decomp},
+        {"workflow": {"status": "succeeded"}},
+    ]
+    ctx = _FakeContext()
+
+    await run_with_progress(
+        _FakeWorkflow(events), "req", {"configurable": {"thread_id": "x"}}, ctx
+    )
+
+    msg = ctx.calls[0]["message"]
+    assert msg.startswith("done: decompose")
+    assert "→ 3 tasks: Add toggle markup, Update styles, Update tests" in msg
+
+
+@pytest.mark.asyncio
 async def test_interrupt_event_is_returned_not_reported(monkeypatch):
     """When the workflow pauses for plan approval, the __interrupt__
     event becomes the return value — it must not emit a progress
