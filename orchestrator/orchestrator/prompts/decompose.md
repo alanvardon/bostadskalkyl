@@ -51,6 +51,25 @@ to inflate the count.
 - **Faithful to the plan** — cover everything the plan calls for and nothing it
   doesn't. Do not invent scope.
 
+## Fold infrastructure steps into the behaviour that needs them
+
+File renames, reference-fix sweeps, and documentation updates are **not independent
+behaviours** — they are preparatory or cleanup steps that exist only to enable or
+follow a behaviour. Do NOT create a separate task for them. Fold them into the
+behaviour task they support.
+
+    WRONG — infrastructure tasks, none observable on their own:
+      rename-index-to-kalkyl        ← a file was renamed, not a behaviour
+      fix-hardcoded-index-refs      ← reference cleanup, not a behaviour
+      update-docs-entry-points      ← docs update, not a behaviour
+
+    RIGHT — merged into the behaviour that needs them:
+      calculator-loads-at-kalkyl-url  ← rename + ref fix included; now observable
+
+The plan may describe these as separate steps. That is fine — fold them anyway. You
+are turning a prose plan into the fewest independently demonstrable tasks, not
+mapping plan paragraphs one-to-one to tasks.
+
 ## For each task, emit
 
 - `id` — a stable, unique kebab-case slug named after the **behaviour**, not the
