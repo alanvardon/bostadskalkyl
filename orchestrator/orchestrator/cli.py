@@ -137,6 +137,18 @@ async def _run_with_progress(workflow, input_data, config) -> dict:
                         f"  done: {name} ({_format_elapsed(task_elapsed)})",
                         file=sys.stderr,
                     )
+                    # After decompose, show the task titles the decomposer
+                    # produced — the one piece of info that tells the waiting
+                    # user whether the plan was interpreted sensibly. getattr
+                    # guard: the loop sees every task key, not just decompose.
+                    if name == "decompose":
+                        tasks = getattr(value, "tasks", None)
+                        if tasks:
+                            titles = " · ".join(t.title for t in tasks)
+                            print(
+                                f"    → {len(tasks)} tasks: {titles}",
+                                file=sys.stderr,
+                            )
                     # Predict what's running now so the heartbeat label
                     # is accurate. qa is ambiguous (PASS → commit, FAIL
                     # → another implementation attempt) — disambiguate

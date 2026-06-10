@@ -142,9 +142,18 @@ async def run_with_progress(
                     # Strip the _task suffix for readable output —
                     # "implementation" beats "implementation_task".
                     name = key.removesuffix("_task")
-                    await _report(
-                        f"done: {name} ({_format_elapsed(task_elapsed)})"
-                    )
+                    message = f"done: {name} ({_format_elapsed(task_elapsed)})"
+                    # After decompose, append the task titles so the waiting
+                    # client can see whether the plan was interpreted sensibly.
+                    # getattr guard: the loop sees every task key, not just
+                    # decompose. Comma separator — this is a plain notification
+                    # string, not terminal-rendered like the CLI's bullet form.
+                    if name == "decompose":
+                        tasks = getattr(value, "tasks", None)
+                        if tasks:
+                            titles = ", ".join(t.title for t in tasks)
+                            message += f" → {len(tasks)} tasks: {titles}"
+                    await _report(message)
                     # Predict the next stage so the heartbeat label is
                     # accurate. qa branches: PASS → commit, FAIL →
                     # another implementation attempt.
