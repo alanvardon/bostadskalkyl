@@ -122,7 +122,7 @@
           legend: {
             position: 'top',
             labels: {
-              font: { family: 'DM Sans', size: 12 },
+              font: { family: 'Inter', size: 12 },
               color: cc.legend,
               boxWidth: 14,
               padding: 16,
@@ -134,8 +134,8 @@
             borderWidth: 1,
             titleColor: cc.tooltipTitle,
             bodyColor: cc.tooltipBody,
-            titleFont: { family: 'DM Sans', size: 12, weight: '500' },
-            bodyFont: { family: 'DM Sans', size: 12 },
+            titleFont: { family: 'Inter', size: 12, weight: '500' },
+            bodyFont: { family: 'Inter', size: 12 },
             padding: 10,
             callbacks: {
               title: function (items) { return 'Year ' + items[0].label; },
@@ -149,15 +149,15 @@
         },
         scales: {
           x: {
-            title: { display: true, text: 'Years from now', font: { family: 'DM Sans', size: 12 }, color: cc.tick },
+            title: { display: true, text: 'Years from now', font: { family: 'Inter', size: 12 }, color: cc.tick },
             grid: { color: cc.grid, lineWidth: 0.5 },
-            ticks: { font: { family: 'DM Sans', size: 11 }, color: cc.tick, maxTicksLimit: 15 }
+            ticks: { font: { family: 'Inter', size: 11 }, color: cc.tick, maxTicksLimit: 15 }
           },
           y: {
-            title: { display: true, text: 'Remaining balance (kr)', font: { family: 'DM Sans', size: 12 }, color: cc.tick },
+            title: { display: true, text: 'Remaining balance (kr)', font: { family: 'Inter', size: 12 }, color: cc.tick },
             grid: { color: cc.grid, lineWidth: 0.5 },
             ticks: {
-              font: { family: 'DM Sans', size: 11 },
+              font: { family: 'Inter', size: 11 },
               color: cc.tick,
               callback: function (v) { return (v / 1000000).toFixed(1) + ' Mkr'; }
             }
@@ -349,7 +349,7 @@
           legend: {
             position: 'top',
             labels: {
-              font: { family: 'DM Sans', size: 12 },
+              font: { family: 'Inter', size: 12 },
               color: cc.legend,
               boxWidth: 14,
               padding: 16,
@@ -361,8 +361,8 @@
             borderWidth: 1,
             titleColor: cc.tooltipTitle,
             bodyColor: cc.tooltipBody,
-            titleFont: { family: 'DM Sans', size: 12, weight: '500' },
-            bodyFont: { family: 'DM Sans', size: 12 },
+            titleFont: { family: 'Inter', size: 12, weight: '500' },
+            bodyFont: { family: 'Inter', size: 12 },
             padding: 10,
             callbacks: {
               title: function (items) { return 'Year ' + items[0].label; },
@@ -376,15 +376,15 @@
         },
         scales: {
           x: {
-            title: { display: true, text: 'Years from now', font: { family: 'DM Sans', size: 12 }, color: cc.tick },
+            title: { display: true, text: 'Years from now', font: { family: 'Inter', size: 12 }, color: cc.tick },
             grid: { color: cc.grid, lineWidth: 0.5 },
-            ticks: { font: { family: 'DM Sans', size: 11 }, color: cc.tick, maxTicksLimit: 15 }
+            ticks: { font: { family: 'Inter', size: 11 }, color: cc.tick, maxTicksLimit: 15 }
           },
           y: {
-            title: { display: true, text: 'Remaining balance (kr)', font: { family: 'DM Sans', size: 12 }, color: cc.tick },
+            title: { display: true, text: 'Remaining balance (kr)', font: { family: 'Inter', size: 12 }, color: cc.tick },
             grid: { color: cc.grid, lineWidth: 0.5 },
             ticks: {
-              font: { family: 'DM Sans', size: 11 },
+              font: { family: 'Inter', size: 11 },
               color: cc.tick,
               callback: function (v) { return (v / 1000000).toFixed(1) + ' Mkr'; }
             }
