@@ -162,6 +162,7 @@
     const stressAnn   = loanAmount * (stressRate / 100);
     const stressRel   = App.calc.ranteavdrag(stressAnn);
     const stressAfter = stressTotal - stressRel / 12;
+    stressSlider.style.setProperty('--fill', (((stressRate - 0.5) / 11.5) * 100).toFixed(1) + '%');
     document.getElementById('stressRateDisplay').textContent = stressRate.toFixed(2) + '%';
     document.getElementById('stressMonthlyInterest').textContent = fmt(stressMI);
     const stressTotalEl = document.getElementById('stressTotalMonthly');
@@ -262,6 +263,10 @@
     set('s-cashBalance', (totalBalance >= 0 ? '+' : '') + fmt(totalBalance), totalBalance >= 0 ? 'positive' : 'negative');
     set('s-pnl-net',     fmt(netProceeds));
     set('s-pnl-upfront', '−' + fmt(totalUpfront));
+
+    // Mobile key-figures bar
+    set('m-totalMonthly', fmt(totalMonthly));
+    set('m-cashBalance', (totalBalance >= 0 ? '+' : '') + fmt(totalBalance), totalBalance >= 0 ? 'positive' : 'negative');
 
     // Savings row in P&L card
     const savingsRow = document.getElementById('s-savings-row');

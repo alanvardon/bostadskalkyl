@@ -13,7 +13,7 @@ fail() { printf '✗ FAIL — %s\n' "$1" >&2; VIOLATIONS=$((VIOLATIONS + 1)); }
 pass() { printf '✓ PASS — %s\n' "$1"; }
 
 JS_FILES="calc.js dom.js storage.js modals.js charts.js app.js"
-ALL_FILES="index.html $JS_FILES styles.css"
+ALL_FILES="index.html bostadskalkyl.html $JS_FILES styles.css home.css"
 
 DIFF_ADDED=$(git diff HEAD -- $ALL_FILES | grep '^+' | grep -v '^+++' || true)
 
