@@ -437,26 +437,33 @@ select:focus { border-color: var(--accent-light); box-shadow: var(--ring); }
 .pot-split-label { font-size: 12.5px; color: var(--accent); font-weight: 550; }
 .pot-split-val { font-family: var(--font-display); font-size: 1.55rem; color: var(--accent); font-variant-numeric: tabular-nums; }
 
-.pot-settle {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0.7rem;
-  margin-top: 1rem;
-}
-.pot-settle-item {
+.pot-transfer {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 0.6rem 0.7rem;
+  align-items: center;
+  gap: 0.6rem;
+  margin-top: 1rem;
+  padding: 0.7rem 0.85rem;
   background: var(--paper-card);
-  border: 1px solid var(--rule);
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--rule));
   border-radius: var(--r-sm);
 }
-.pot-settle-name { font-size: 11px; font-weight: 600; color: var(--ink-soft); letter-spacing: 0.03em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.pot-settle-val { font-weight: 600; font-size: 15px; font-variant-numeric: tabular-nums; color: var(--ink); }
-.pot-settle-val.positive { color: var(--accent); }
-.pot-settle-val.negative { color: var(--copper); }
-.pot-settle-hint { font-size: 10px; color: var(--ink-soft); opacity: 0.8; }
+.pot-transfer-icon {
+  flex-shrink: 0;
+  width: 26px; height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--accent-faint);
+  color: var(--accent);
+  font-size: 14px;
+}
+.pot-transfer-text { font-size: 13.5px; color: var(--ink-mid); line-height: 1.35; }
+.pot-transfer-text strong { color: var(--ink); font-weight: 600; }
+.pot-transfer-text .pot-transfer-amount { color: var(--accent); font-weight: 600; font-variant-numeric: tabular-nums; }
+.pot-transfer.even .pot-transfer-icon { background: var(--rule); color: var(--ink-soft); }
+.pot-transfer-note { font-size: 11px; color: var(--ink-soft); margin-top: 0.45rem; line-height: 1.45; }
+.pot-transfer-note:empty { display: none; }
 
 /* ── Cost groups ────────────────────────────────────────────── */
 .cost-group { margin-bottom: 1.1rem; }

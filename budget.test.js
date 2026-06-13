@@ -34,6 +34,37 @@ test('pools all income and splits it equally', () => {
   assert.equal(r.personA.potNet + r.personB.potNet, 2650);
 });
 
+test('settle-up transfer evens the salaries; higher earner pays the lower', () => {
+  const r = budget.computeBudget(st({
+    incomes: [
+      { amount: 46000, owner: 'a' },
+      { amount: 39000, owner: 'b' },
+      { amount: 2650, owner: 'joint' }
+    ]
+  }));
+  // half the salary gap, higher earner -> lower earner
+  assert.equal(r.transfer.amount, (46000 - 39000) / 2); // 3500
+  assert.equal(r.transfer.from, 'a');
+  assert.equal(r.transfer.to, 'b');
+  // transfer + each getting half the joint income lands both on equalShare
+  assert.equal(46000 - r.transfer.amount + r.incomeJoint / 2, r.equalShare);
+  assert.equal(39000 + r.transfer.amount + r.incomeJoint / 2, r.equalShare);
+});
+
+test('lower earner b pays direction flips; equal incomes => no transfer', () => {
+  const flipped = budget.computeBudget(st({
+    incomes: [{ amount: 30000, owner: 'a' }, { amount: 40000, owner: 'b' }]
+  }));
+  assert.equal(flipped.transfer.from, 'b');
+  assert.equal(flipped.transfer.to, 'a');
+  assert.equal(flipped.transfer.amount, 5000);
+
+  const even = budget.computeBudget(st({
+    incomes: [{ amount: 35000, owner: 'a' }, { amount: 35000, owner: 'b' }]
+  }));
+  assert.equal(even.transfer.amount, 0);
+});
+
 test('joint costs split 50/50, individual costs hit only their owner', () => {
   const r = budget.computeBudget(st({
     incomes: [{ amount: 40000, owner: 'a' }, { amount: 40000, owner: 'b' }],

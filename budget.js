@@ -115,6 +115,18 @@
       byCategory[key] = (byCategory[key] || 0) + (costs[c].amount || 0);
     }
 
+    // The single person-to-person transfer that evens out the two salaries:
+    // the higher earner sends the other half the gap. Joint income (barnbidrag
+    // etc.) is shared 50/50 on top from the pot, so it doesn't change who pays
+    // whom — only the final equalShare. transfer + each getting incomeJoint/2
+    // lands both people on equalShare.
+    var gap = incomeA - incomeB;
+    var transfer = {
+      amount: Math.abs(gap) / 2,
+      from: gap >= 0 ? 'a' : 'b',
+      to:   gap >= 0 ? 'b' : 'a'
+    };
+
     // potNet: what flows back to (positive) or stays in (negative) the pot
     // for this person once everyone has taken out the same equal share.
     function person(ownIncome, ownCosts, ownSavings) {
@@ -146,6 +158,7 @@
       byCategory: byCategory,
       personA: person(incomeA, costsA, savingsA),
       personB: person(incomeB, costsB, savingsB),
+      transfer: transfer,
       surplus: totalIncome - totalCosts - totalSavings,
       savingsRate: totalIncome > 0 ? totalSavings / totalIncome : 0
     };
@@ -222,6 +235,19 @@
     return owner === 'a' ? (state.people[0] || 'A')
          : owner === 'b' ? (state.people[1] || 'B')
          : 'Together';
+  }
+
+  function nameStrong(owner) {
+    var s = document.createElement('strong');
+    s.textContent = personName(owner);
+    return s;
+  }
+
+  function moneyStrong(text) {
+    var s = document.createElement('strong');
+    s.classList.add('pot-transfer-amount');
+    s.textContent = text;
+    return s;
   }
 
   // ── Row building & list rendering ─────────────────────────────────
@@ -422,12 +448,26 @@
     setMoney('d-potJoint', r.incomeJoint);
     setMoney('d-potTotal', r.totalIncome);
     setMoney('d-equalShare', r.equalShare);
-    var netA = document.getElementById('d-potNetA');
-    var netB = document.getElementById('d-potNetB');
-    netA.textContent = fmtSigned(r.personA.potNet);
-    netB.textContent = fmtSigned(r.personB.potNet);
-    setPosNeg(netA, r.personA.potNet);
-    setPosNeg(netB, r.personB.potNet);
+
+    // Settle-up: one person pays the other to even out their salaries
+    var tr = r.transfer;
+    var txt = document.getElementById('potTransferText');
+    var note = document.getElementById('potTransferNote');
+    var transferEl = document.getElementById('potTransfer');
+    if (tr.amount < 0.5) {
+      transferEl.classList.add('even');
+      txt.textContent = 'Incomes are already even — nothing to transfer';
+    } else {
+      transferEl.classList.remove('even');
+      txt.replaceChildren(
+        nameStrong(tr.from), document.createTextNode(' pays '),
+        nameStrong(tr.to), document.createTextNode(' '),
+        moneyStrong(fmt(tr.amount))
+      );
+    }
+    note.textContent = r.incomeJoint > 0
+      ? 'Joint income (' + fmt(r.incomeJoint) + ') is then shared 50/50 on top — you each take home ' + fmt(r.equalShare) + '.'
+      : '';
 
     // Income column subtotals
     setMoney('subA', r.incomeA);
@@ -537,6 +577,7 @@
     if (t.id === 'personAName' || t.id === 'personBName') {
       state.people[t.id === 'personAName' ? 0 : 1] = t.value.trim() || (t.id === 'personAName' ? 'A' : 'B');
       refreshNames();
+      recalc(); // the settle-up sentence is built with the live names
       save();
     }
   });
