@@ -277,14 +277,14 @@
     el.dataset.id = row.id;
     el.dataset.kind = kind;
 
-    // Joint cost rows are draggable between categories. Only the handle is the
-    // drag source (so text selection inside the inputs still works).
+    // Joint cost rows can be dragged (by the handle) to reorder within a
+    // category or move between categories. Pointer-based, so mouse + touch.
     if (kind === 'cost' && row.owner === 'joint') {
       el.classList.add('b-draggable');
       var handle = document.createElement('span');
       handle.classList.add('b-drag-handle');
-      handle.setAttribute('draggable', 'true');
       handle.setAttribute('aria-hidden', 'true');
+      handle.setAttribute('title', 'Drag to reorder or move category');
       handle.textContent = '⠿';
       el.appendChild(handle);
     }
@@ -646,8 +646,6 @@
     save();
   }
 
-  var draggedId = null;
-
   function dragAfterRow(listEl, y) {
     var rows = Array.prototype.slice.call(listEl.querySelectorAll('.b-row:not(.dragging)'));
     var closest = null, closestOffset = Number.NEGATIVE_INFINITY;
@@ -663,18 +661,26 @@
     document.querySelectorAll('.cat-card.drag-over').forEach(function (el) { el.classList.remove('drag-over'); });
   }
 
-  function moveRowToCategory(catId, beforeId) {
-    var idx = state.costs.findIndex(function (r) { return r.id === draggedId; });
-    if (idx < 0) return;
-    var moved = state.costs.splice(idx, 1)[0];
-    moved.owner = 'joint';
-    moved.category = catId;
-    if (beforeId && beforeId !== draggedId) {
-      var bIdx = state.costs.findIndex(function (r) { return r.id === beforeId; });
-      if (bIdx < 0) state.costs.push(moved); else state.costs.splice(bIdx, 0, moved);
-    } else {
-      state.costs.push(moved);
-    }
+  // After a drag, rebuild state.costs to match the live DOM: joint rows in
+  // their new card order (category taken from the card they ended up in),
+  // followed by the individual rows (their order is independent).
+  function commitDragOrder() {
+    var jointOrder = [];
+    document.querySelectorAll('#jointCategories .cat-card').forEach(function (card) {
+      var catId = card.dataset.catId;
+      card.querySelectorAll('.cat-list > .b-row').forEach(function (rowEl) {
+        jointOrder.push({ id: rowEl.dataset.id, cat: catId });
+      });
+    });
+    var byId = {};
+    state.costs.forEach(function (r) { byId[r.id] = r; });
+    var newJoint = [];
+    jointOrder.forEach(function (e) {
+      var r = byId[e.id];
+      if (r) { r.owner = 'joint'; r.category = e.cat; newJoint.push(r); }
+    });
+    var individuals = state.costs.filter(function (r) { return r.owner === 'a' || r.owner === 'b'; });
+    state.costs = newJoint.concat(individuals);
     renderJointCategories();
     recalc();
     save();
@@ -763,43 +769,135 @@
     save();
   });
 
-  // Drag-and-drop joint cost rows between category cards (mouse/trackpad).
+  // Drag-and-drop joint cost rows — Pointer Events so it works on mouse,
+  // trackpad AND touch. The dragged row stays in the DOM as a faded
+  // placeholder that follows the pointer's insertion point; a floating clone
+  // tracks the finger; the page edge-scrolls when you drag near the top/bottom.
   var catsContainer = document.getElementById('jointCategories');
+
+  var dragging = false, pendingDrag = false;
+  var dragRow = null, dragHandle = null, dragClone = null, dragPointerId = null;
+  var dragOffX = 0, dragOffY = 0, startX = 0, startY = 0, lastX = 0, lastY = 0;
+  var dragRaf = null;
+
+  function findTargetList(x, y) {
+    var el = document.elementFromPoint(x, y);
+    if (!el) return null;
+    var list = el.closest('.cat-list');
+    if (list) return list;
+    var card = el.closest('.cat-card');
+    return card ? card.querySelector('.cat-list') : null;
+  }
+
+  function moveClone(x, y) {
+    if (dragClone) {
+      dragClone.style.left = (x - dragOffX) + 'px';
+      dragClone.style.top = (y - dragOffY) + 'px';
+    }
+  }
+
+  function updateTarget(x, y) {
+    var list = findTargetList(x, y);
+    if (!list) return;
+    clearDragOver();
+    list.closest('.cat-card').classList.add('drag-over');
+    var ref = dragAfterRow(list, y);
+    if (ref) list.insertBefore(dragRow, ref);
+    else list.appendChild(dragRow);
+  }
+
+  function autoScroll(y) {
+    var EDGE = 64, SPEED = 14;
+    var ic = document.querySelector('.inputs-col');
+    var useIc = ic && getComputedStyle(ic).overflowY !== 'visible' && ic.scrollHeight > ic.clientHeight + 1;
+    if (useIc) {
+      var r = ic.getBoundingClientRect();
+      if (y < r.top + EDGE) ic.scrollTop -= SPEED;
+      else if (y > r.bottom - EDGE) ic.scrollTop += SPEED;
+    } else {
+      var se = document.scrollingElement || document.documentElement;
+      if (y < EDGE) se.scrollTop -= SPEED;
+      else if (y > window.innerHeight - EDGE) se.scrollTop += SPEED;
+    }
+  }
+
+  function dragTick() {
+    if (!dragging) return;
+    autoScroll(lastY);
+    updateTarget(lastX, lastY);
+    dragRaf = requestAnimationFrame(dragTick);
+  }
+
+  function startDrag() {
+    dragging = true;
+    pendingDrag = false;
+    var rect = dragRow.getBoundingClientRect();
+    dragOffX = startX - rect.left;
+    dragOffY = startY - rect.top;
+    dragClone = dragRow.cloneNode(true);
+    dragClone.classList.add('b-drag-clone');
+    dragClone.style.width = rect.width + 'px';
+    document.body.appendChild(dragClone);
+    moveClone(lastX, lastY);
+    dragRow.classList.add('dragging');
+    document.body.classList.add('b-dragging');
+    dragRaf = requestAnimationFrame(dragTick);
+  }
+
+  function endDrag() {
+    if (dragRaf) { cancelAnimationFrame(dragRaf); dragRaf = null; }
+    if (dragHandle && dragPointerId != null) {
+      try { dragHandle.releasePointerCapture(dragPointerId); } catch (_) {}
+    }
+    var wasDragging = dragging;
+    if (dragClone) { dragClone.remove(); dragClone = null; }
+    document.body.classList.remove('b-dragging');
+    clearDragOver();
+    if (wasDragging) commitDragOrder(); // rebuilds from DOM + re-renders (clears .dragging)
+    dragging = false;
+    pendingDrag = false;
+    dragRow = null;
+    dragHandle = null;
+    dragPointerId = null;
+  }
+
   if (catsContainer) {
-    catsContainer.addEventListener('dragstart', function (e) {
+    catsContainer.addEventListener('pointerdown', function (e) {
+      if (e.button != null && e.button !== 0) return; // primary button / touch only
       var handle = e.target.closest('.b-drag-handle');
       if (!handle) return;
       var row = handle.closest('.b-row');
       if (!row) return;
-      draggedId = row.dataset.id;
-      row.classList.add('dragging');
-      e.dataTransfer.effectAllowed = 'move';
-      try { e.dataTransfer.setData('text/plain', draggedId); } catch (_) {}
-      if (e.dataTransfer.setDragImage) e.dataTransfer.setDragImage(row, 12, 12);
-    });
-    catsContainer.addEventListener('dragend', function (e) {
-      var row = e.target.closest('.b-row');
-      if (row) row.classList.remove('dragging');
-      draggedId = null;
-      clearDragOver();
-    });
-    catsContainer.addEventListener('dragover', function (e) {
-      if (!draggedId) return;
-      var list = e.target.closest('.cat-list');
-      if (!list) return;
       e.preventDefault();
-      e.dataTransfer.dropEffect = 'move';
-      clearDragOver();
-      list.closest('.cat-card').classList.add('drag-over');
+      dragHandle = handle;
+      dragRow = row;
+      dragPointerId = e.pointerId;
+      startX = lastX = e.clientX;
+      startY = lastY = e.clientY;
+      pendingDrag = true;
+      try { handle.setPointerCapture(e.pointerId); } catch (_) {}
     });
-    catsContainer.addEventListener('drop', function (e) {
-      if (!draggedId) return;
-      var list = e.target.closest('.cat-list');
-      if (!list) return;
+
+    document.addEventListener('pointermove', function (e) {
+      if (!pendingDrag && !dragging) return;
+      if (dragPointerId != null && e.pointerId !== dragPointerId) return;
+      lastX = e.clientX;
+      lastY = e.clientY;
+      if (!dragging) {
+        if (Math.abs(e.clientX - startX) < 5 && Math.abs(e.clientY - startY) < 5) return;
+        startDrag();
+      }
       e.preventDefault();
-      var before = dragAfterRow(list, e.clientY);
-      moveRowToCategory(list.dataset.catId, before ? before.dataset.id : null);
-      clearDragOver();
+      moveClone(lastX, lastY);
+      updateTarget(lastX, lastY);
+    }, { passive: false });
+
+    document.addEventListener('pointerup', function (e) {
+      if (dragPointerId != null && e.pointerId !== dragPointerId) return;
+      if (pendingDrag || dragging) endDrag();
+    });
+    document.addEventListener('pointercancel', function () {
+      if (pendingDrag || dragging) endDrag();
     });
   }
 

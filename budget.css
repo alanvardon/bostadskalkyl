@@ -537,15 +537,33 @@ input::placeholder { color: var(--ink-faint); }
 .b-row.b-draggable.dragging { opacity: 0.4; }
 .b-drag-handle {
   color: var(--ink-faint);
-  font-size: 14px;
+  font-size: 15px;
   line-height: 1;
   cursor: grab;
   user-select: none;
   -webkit-user-select: none;
-  padding: 0 1px;
+  touch-action: none; /* the handle owns the gesture so touch-drag doesn't scroll */
+  padding: 2px 3px;
+  margin-left: -2px;
 }
 .b-drag-handle:hover { color: var(--ink-soft); }
 .b-drag-handle:active { cursor: grabbing; }
+
+/* The floating clone that follows the pointer while dragging */
+.b-drag-clone {
+  position: fixed;
+  left: 0; top: 0;
+  z-index: 300;
+  pointer-events: none;
+  margin: 0;
+  background: var(--paper-card);
+  border: 1px solid var(--accent-light);
+  border-radius: var(--r-sm);
+  box-shadow: var(--shadow-md);
+  padding: 4px 8px;
+}
+body.b-dragging { user-select: none; -webkit-user-select: none; }
+body.b-dragging, body.b-dragging * { cursor: grabbing !important; }
 
 /* ── The pot box ────────────────────────────────────────────── */
 .pot-box {
