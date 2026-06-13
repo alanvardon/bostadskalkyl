@@ -992,10 +992,6 @@ html.modal-open, html.modal-open body { overflow: hidden; }
   color: var(--ink-soft);
   white-space: nowrap;
 }
-.spark { width: 100%; height: 40px; margin-top: 0.6rem; display: block; }
-.spark-axis { stroke: var(--rule); stroke-width: 1; }
-.spark-up { fill: var(--accent); }
-.spark-down { fill: var(--copper); }
 
 /* ── Salary history list ────────────────────────────────────── */
 .history-list { display: flex; flex-direction: column; gap: 0.5rem; }

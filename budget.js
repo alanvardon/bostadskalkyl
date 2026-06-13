@@ -1144,50 +1144,9 @@
     return (net > 0 ? nameA + ' → ' + nameB : nameB + ' → ' + nameA) + '  ' + fmt(Math.abs(net));
   }
 
-  // A tiny SVG bar chart of each month's settle-up (chronological). Bars above
-  // the centre line = A pays B (accent), below = B pays A (copper); height is
-  // relative to the year's largest transfer. Colours come from CSS classes so
-  // the chart follows the theme. rows are oldest→newest.
-  function buildSparkline(rows) {
-    var NS = 'http://www.w3.org/2000/svg';
-    var STEP = 14, BAR = 8, H = 40, mid = H / 2;
-    var W = Math.max(rows.length, 1) * STEP;
-    var maxAbs = rows.reduce(function (m, r) { return Math.max(m, Math.abs(signedTransfer(r))); }, 0) || 1;
-
-    var svg = document.createElementNS(NS, 'svg');
-    svg.classList.add('spark');
-    svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
-    svg.setAttribute('preserveAspectRatio', 'none');
-    svg.setAttribute('role', 'img');
-    svg.setAttribute('aria-label', 'Monthly settle-up across the year');
-
-    var axis = document.createElementNS(NS, 'line');
-    axis.setAttribute('x1', 0); axis.setAttribute('x2', W);
-    axis.setAttribute('y1', mid); axis.setAttribute('y2', mid);
-    axis.classList.add('spark-axis');
-    svg.appendChild(axis);
-
-    rows.forEach(function (r, i) {
-      var v = signedTransfer(r);
-      var h = Math.max(Math.abs(v) / maxAbs * (mid - 3), 0.6);
-      var rect = document.createElementNS(NS, 'rect');
-      rect.setAttribute('x', i * STEP + (STEP - BAR) / 2);
-      rect.setAttribute('width', BAR);
-      rect.setAttribute('y', v >= 0 ? mid - h : mid);
-      rect.setAttribute('height', h);
-      rect.setAttribute('rx', 1);
-      rect.classList.add(v >= 0 ? 'spark-up' : 'spark-down');
-      var title = document.createElementNS(NS, 'title');
-      title.textContent = monthLabel(r.month) + ' · ' + transferText(r);
-      rect.appendChild(title);
-      svg.appendChild(rect);
-    });
-    return svg;
-  }
-
-  // "2026 so far" card above the history list: per-person income totals, the
-  // net settle-up across the year, and the sparkline. Summarises the calendar
-  // year of the most recent submission. Returns null when there's nothing to show.
+  // "2026 so far" card above the history list: per-person income totals and the
+  // net settle-up across the year. Summarises the calendar year of the most
+  // recent submission. Returns null when there's nothing to show.
   function buildYearSummary(rows) {
     if (!rows.length) return null;
     var year = String(rows[0].month || currentMonth()).slice(0, 4);
@@ -1221,7 +1180,6 @@
     card.appendChild(detailRow(nameA + ' income', fmt(totalA)));
     card.appendChild(detailRow(nameB + ' income', fmt(totalB)));
     card.appendChild(detailRow('Net settle-up', netText(net, nameA, nameB)));
-    card.appendChild(buildSparkline(yr.slice().reverse())); // oldest → newest
     return card;
   }
 
