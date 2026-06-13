@@ -140,3 +140,51 @@ test('handles missing arrays and rows without amounts', () => {
   }));
   assert.equal(r2.totalIncome, 1000);
 });
+
+test('defaultState has cost categories and every joint cost row is categorised', () => {
+  const s = budget.defaultState();
+  assert.ok(Array.isArray(s.categories) && s.categories.length >= 2);
+  const ids = new Set(s.categories.map(c => c.id));
+  for (const row of s.costs) {
+    if (row.owner === 'joint') assert.ok(ids.has(row.category), 'uncategorised joint cost: ' + row.label);
+  }
+});
+
+test('computeBudget breaks joint costs down by category, in category order', () => {
+  const r = budget.computeBudget({
+    categories: [{ id: 'c1', name: 'Boende' }, { id: 'c2', name: 'Mat' }],
+    incomes: [{ amount: 40000, owner: 'a' }, { amount: 40000, owner: 'b' }],
+    costs: [
+      { amount: 10000, owner: 'joint', category: 'c1' },
+      { amount: 2000, owner: 'joint', category: 'c1' },
+      { amount: 5000, owner: 'joint', category: 'c2' },
+      { amount: 500, owner: 'a' } // individual — not a joint category
+    ]
+  });
+  assert.deepEqual(r.jointCategories.map(c => c.id), ['c1', 'c2']);
+  const byId = Object.fromEntries(r.jointCategories.map(c => [c.id, c.amount]));
+  assert.equal(byId.c1, 12000);
+  assert.equal(byId.c2, 5000);
+  assert.equal(r.costsJoint, 17000);
+});
+
+test('uncategorised / unknown joint costs collect in an Övrigt bucket', () => {
+  const r = budget.computeBudget({
+    categories: [{ id: 'c1', name: 'Boende' }],
+    incomes: [{ amount: 10000, owner: 'a' }],
+    costs: [
+      { amount: 1000, owner: 'joint', category: 'c1' },
+      { amount: 300, owner: 'joint' },                 // no category
+      { amount: 200, owner: 'joint', category: 'gone' } // unknown category
+    ]
+  });
+  const other = r.jointCategories.find(c => c.id === '_other');
+  assert.ok(other, 'expected an _other bucket');
+  assert.equal(other.amount, 500);
+  // a fully-categorised set has no _other bucket
+  const clean = budget.computeBudget({
+    categories: [{ id: 'c1', name: 'Boende' }],
+    costs: [{ amount: 1000, owner: 'joint', category: 'c1' }]
+  });
+  assert.ok(!clean.jointCategories.some(c => c.id === '_other'));
+});

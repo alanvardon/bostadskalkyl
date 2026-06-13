@@ -25,6 +25,14 @@
   --shadow-sm: 0 1px 2px rgba(26, 26, 21, 0.05), 0 2px 8px rgba(26, 26, 21, 0.04);
   --shadow-md: 0 2px 6px rgba(26, 26, 21, 0.06), 0 10px 28px rgba(26, 26, 21, 0.08);
   --ring: 0 0 0 3px rgba(46, 93, 62, 0.16);
+  --cat-1: #2e6f5e;
+  --cat-2: #3f6f9e;
+  --cat-3: #c08a2e;
+  --cat-4: #8a5a8f;
+  --cat-5: #b0552f;
+  --cat-6: #6b8e4e;
+  --cat-7: #51606e;
+  --cat-8: #a87f52;
   --r-sm: 8px;
   --r-md: 12px;
   --r-lg: 16px;
@@ -55,6 +63,14 @@
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3), 0 2px 8px rgba(0, 0, 0, 0.25);
   --shadow-md: 0 2px 6px rgba(0, 0, 0, 0.35), 0 10px 28px rgba(0, 0, 0, 0.3);
   --ring: 0 0 0 3px rgba(95, 166, 116, 0.22);
+  --cat-1: #5fae93;
+  --cat-2: #6fa0d0;
+  --cat-3: #d9ab5a;
+  --cat-4: #bd8ec2;
+  --cat-5: #d98456;
+  --cat-6: #9bbf76;
+  --cat-7: #8a99a8;
+  --cat-8: #d0a878;
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -443,6 +459,93 @@ input::placeholder { color: var(--ink-faint); }
   padding: 6px 11px;
   color: var(--ink-soft);
 }
+
+/* ── Cost categories (joint) ────────────────────────────────── */
+.cat-cards { display: flex; flex-direction: column; gap: 0.7rem; }
+.add-cat-btn { margin: 0.1rem 0 0.2rem; }
+
+.cat-card {
+  background: var(--paper-warm);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-md);
+  padding: 0.8rem 0.9rem 0.7rem;
+  transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
+}
+.cat-card.drag-over {
+  border-color: var(--accent-light);
+  box-shadow: var(--ring);
+  background: var(--accent-faint);
+}
+
+.cat-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.6rem;
+  padding-bottom: 0.45rem;
+  border-bottom: 1px solid var(--rule);
+}
+.cat-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px !important;
+  font-weight: 600 !important;
+  padding: 5px 8px !important;
+  background: transparent;
+  border-color: transparent;
+}
+.cat-name:hover { border-color: var(--rule); }
+.cat-name:focus { border-color: var(--accent-light); background: var(--input-focus-bg); }
+.cat-sub {
+  flex-shrink: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.cat-remove {
+  flex-shrink: 0;
+  width: 24px; height: 24px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--ink-faint);
+  border-radius: 6px;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+.cat-remove:hover { color: var(--warn); background: var(--warn-faint); border-color: var(--warn); }
+
+.cat-list:empty {
+  min-height: 30px;
+  border: 1px dashed var(--rule);
+  border-radius: var(--r-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.cat-list:empty::before {
+  content: 'Drop a cost here, or add one below';
+  font-size: 11px;
+  color: var(--ink-faint);
+}
+
+/* Draggable joint cost rows: drag handle in front of the label */
+.b-row.b-draggable { grid-template-columns: auto 1fr 92px auto; }
+.b-row.b-draggable.dragging { opacity: 0.4; }
+.b-drag-handle {
+  color: var(--ink-faint);
+  font-size: 14px;
+  line-height: 1;
+  cursor: grab;
+  user-select: none;
+  -webkit-user-select: none;
+  padding: 0 1px;
+}
+.b-drag-handle:hover { color: var(--ink-soft); }
+.b-drag-handle:active { cursor: grabbing; }
 
 /* ── The pot box ────────────────────────────────────────────── */
 .pot-box {

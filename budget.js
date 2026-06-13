@@ -11,32 +11,43 @@
 
   function defaultState() {
     var id = 0;
-    function row(label, amount, owner) {
-      return { id: 'r' + (++id), label: label, amount: amount, owner: owner };
+    function row(label, amount, owner, category) {
+      var r = { id: 'r' + (++id), label: label, amount: amount, owner: owner };
+      if (category) r.category = category;
+      return r;
     }
     var s = {
       version: 1,
       people: ['Alan', 'Partner'],
+      // Categories group the JOINT costs (split 50/50). Individual costs aren't
+      // categorised. Rows reference a category by id; drag-and-drop reassigns it.
+      categories: [
+        { id: 'c-boende',     name: 'Boende' },
+        { id: 'c-hushall',    name: 'Mat & hushåll' },
+        { id: 'c-transport',  name: 'Transport' },
+        { id: 'c-forsakring', name: 'Försäkring & barn' },
+        { id: 'c-ovrigt',     name: 'Övrigt' }
+      ],
       incomes: [
         row('Lön / Salary', 46000, 'a'),
         row('Lön / Salary', 39000, 'b'),
         row('Barnbidrag', 2650, 'joint')
       ],
       costs: [
-        // Joint
-        row('Bolån (ränta & amortering)', 12775, 'joint'),
-        row('El / Electricity', 2101, 'joint'),
-        row('Vatten & avlopp', 231, 'joint'),
-        row('Fastighetsavgift', 397, 'joint'),
-        row('Matvaror & hushåll', 9700, 'joint'),
-        row('Restaurang & takeaway', 3000, 'joint'),
-        row('Bilkostnad / leasing', 3500, 'joint'),
-        row('Bränsle, parkering & SL', 2970, 'joint'),
-        row('Försäkringar (hem, bil, barn, liv)', 1455, 'joint'),
-        row('Förskola, fritids & aktiviteter', 3300, 'joint'),
-        row('Bredband & streaming', 413, 'joint'),
-        row('Kläder, hälsa & presenter', 2700, 'joint'),
-        row('Diverse / oförutsett', 2000, 'joint'),
+        // Joint — grouped into categories
+        row('Bolån (ränta & amortering)', 12775, 'joint', 'c-boende'),
+        row('El / Electricity', 2101, 'joint', 'c-boende'),
+        row('Vatten & avlopp', 231, 'joint', 'c-boende'),
+        row('Fastighetsavgift', 397, 'joint', 'c-boende'),
+        row('Matvaror & hushåll', 9700, 'joint', 'c-hushall'),
+        row('Restaurang & takeaway', 3000, 'joint', 'c-hushall'),
+        row('Bilkostnad / leasing', 3500, 'joint', 'c-transport'),
+        row('Bränsle, parkering & SL', 2970, 'joint', 'c-transport'),
+        row('Försäkringar (hem, bil, barn, liv)', 1455, 'joint', 'c-forsakring'),
+        row('Förskola, fritids & aktiviteter', 3300, 'joint', 'c-forsakring'),
+        row('Bredband & streaming', 413, 'joint', 'c-ovrigt'),
+        row('Kläder, hälsa & presenter', 2700, 'joint', 'c-ovrigt'),
+        row('Diverse / oförutsett', 2000, 'joint', 'c-ovrigt'),
         // Individual
         row('Mobil', 300, 'a'),
         row('Gym', 500, 'a'),
@@ -56,6 +67,7 @@
       ]
     };
     s.seq = id;
+    s.catSeq = 0;
     return s;
   }
 
@@ -83,6 +95,26 @@
     var costsA     = sum(costs, 'a');
     var costsB     = sum(costs, 'b');
     var totalCosts = costsJoint + costsA + costsB;
+
+    // Break the joint costs down by category, in the user's category order.
+    // Joint rows with no/unknown category collect into an "Övrigt" bucket.
+    var cats = state.categories || [];
+    var catTotals = {};
+    cats.forEach(function (c) { catTotals[c.id] = 0; });
+    var otherTotal = 0;
+    for (var ci = 0; ci < costs.length; ci++) {
+      var cr = costs[ci];
+      if (cr.owner !== 'joint') continue;
+      if (cr.category && Object.prototype.hasOwnProperty.call(catTotals, cr.category)) {
+        catTotals[cr.category] += (cr.amount || 0);
+      } else {
+        otherTotal += (cr.amount || 0);
+      }
+    }
+    var jointCategories = cats.map(function (c) {
+      return { id: c.id, name: c.name, amount: catTotals[c.id] };
+    });
+    if (otherTotal > 0) jointCategories.push({ id: '_other', name: 'Övrigt', amount: otherTotal });
 
     var savingsJoint = sum(savings, 'joint');
     var savingsA     = sum(savings, 'a');
@@ -125,6 +157,7 @@
       costsA: costsA,
       costsB: costsB,
       totalCosts: totalCosts,
+      jointCategories: jointCategories,
       savingsJoint: savingsJoint,
       savingsA: savingsA,
       savingsB: savingsB,
@@ -163,6 +196,17 @@
       // Joint savings was removed from the UI — fold any legacy joint savings
       // rows into person A so saved budgets keep their money and still render.
       s.savings.forEach(function (r) { if (r.owner === 'joint') r.owner = 'a'; });
+      // Categories are newer than some saved budgets: seed a starter set and
+      // drop any uncategorised joint costs into the last category so nothing
+      // disappears (the user can then drag them into place).
+      if (!Array.isArray(s.categories) || !s.categories.length) s.categories = defaultState().categories;
+      if (typeof s.catSeq !== 'number') s.catSeq = 0;
+      var valid = {};
+      s.categories.forEach(function (c) { valid[c.id] = true; });
+      var fallback = s.categories[s.categories.length - 1].id;
+      s.costs.forEach(function (r) {
+        if (r.owner === 'joint' && !valid[r.category]) r.category = fallback;
+      });
       return s;
     } catch (_) { return null; }
   }
@@ -233,6 +277,18 @@
     el.dataset.id = row.id;
     el.dataset.kind = kind;
 
+    // Joint cost rows are draggable between categories. Only the handle is the
+    // drag source (so text selection inside the inputs still works).
+    if (kind === 'cost' && row.owner === 'joint') {
+      el.classList.add('b-draggable');
+      var handle = document.createElement('span');
+      handle.classList.add('b-drag-handle');
+      handle.setAttribute('draggable', 'true');
+      handle.setAttribute('aria-hidden', 'true');
+      handle.textContent = '⠿';
+      el.appendChild(handle);
+    }
+
     var label = document.createElement('input');
     label.type = 'text';
     label.value = row.label;
@@ -259,7 +315,8 @@
     return el;
   }
 
-  // base segment of the list element ids: 'Cost' -> jointCostList/ownCostListA…
+  // base segment of the list element ids: 'Cost' -> ownCostListA/B (joint costs
+  // live in category cards, not a flat list)
   function listBase(kind) { return kind === 'cost' ? 'Cost' : 'Savings'; }
 
   function listEl(kind, owner) {
@@ -280,16 +337,76 @@
     });
   }
 
-  // Costs are grouped Joint + per person; savings are per person only.
-  function ownersFor(kind) { return kind === 'cost' ? ['joint', 'a', 'b'] : ['a', 'b']; }
-
+  // Individual (a/b) cost & savings lists. Joint costs live in category cards.
   function renderOwnerLists(kind) {
     var rows = kind === 'cost' ? state.costs : state.savings;
-    ownersFor(kind).forEach(function (owner) { listEl(kind, owner).replaceChildren(); });
+    ['a', 'b'].forEach(function (owner) { listEl(kind, owner).replaceChildren(); });
     rows.forEach(function (row) {
-      var owner = (row.owner === 'a' || row.owner === 'b') ? row.owner
-                : (kind === 'cost' ? 'joint' : 'a');
-      listEl(kind, owner).appendChild(buildRow(row, kind));
+      if (row.owner === 'a' || row.owner === 'b') listEl(kind, row.owner).appendChild(buildRow(row, kind));
+    });
+  }
+
+  function nextCatId() {
+    state.catSeq = (state.catSeq || 0) + 1;
+    return 'c-' + state.catSeq;
+  }
+
+  function buildCategoryCard(cat) {
+    var card = document.createElement('div');
+    card.classList.add('cat-card');
+    card.dataset.catId = cat.id;
+
+    var head = document.createElement('div');
+    head.classList.add('cat-head');
+
+    var name = document.createElement('input');
+    name.type = 'text';
+    name.value = cat.name;
+    name.placeholder = 'Category name';
+    name.classList.add('cat-name');
+    name.setAttribute('aria-label', 'Category name');
+    head.appendChild(name);
+
+    var sub = document.createElement('span');
+    sub.classList.add('cat-sub');
+    sub.dataset.catSub = cat.id;
+    sub.textContent = '—';
+    head.appendChild(sub);
+
+    var rm = document.createElement('button');
+    rm.type = 'button';
+    rm.classList.add('cat-remove');
+    rm.setAttribute('aria-label', 'Remove category');
+    rm.textContent = '×';
+    head.appendChild(rm);
+
+    card.appendChild(head);
+
+    var list = document.createElement('div');
+    list.classList.add('b-list', 'cat-list');
+    list.dataset.catId = cat.id;
+    state.costs.forEach(function (row) {
+      if (row.owner === 'joint' && row.category === cat.id) list.appendChild(buildRow(row, 'cost'));
+    });
+    card.appendChild(list);
+
+    var add = document.createElement('button');
+    add.type = 'button';
+    add.classList.add('btn', 'btn-ghost', 'row-add-btn');
+    add.dataset.add = 'cost';
+    add.dataset.owner = 'joint';
+    add.dataset.cat = cat.id;
+    add.textContent = '+ Add cost';
+    card.appendChild(add);
+
+    return card;
+  }
+
+  function renderJointCategories() {
+    var container = document.getElementById('jointCategories');
+    container.replaceChildren();
+    (state.categories || []).forEach(function (cat) {
+      container.appendChild(buildCategoryCard(cat));
     });
   }
 
@@ -297,6 +414,7 @@
     document.getElementById('personAName').value = state.people[0];
     document.getElementById('personBName').value = state.people[1];
     renderIncome();
+    renderJointCategories();
     renderOwnerLists('cost');
     renderOwnerLists('saving');
     recalc();
@@ -310,20 +428,24 @@
     });
   }
 
-  // ── The doughnut chart — where the pot goes, by owner ─────────────
+  // ── The doughnut chart — where the pot goes ───────────────────────
+  // Joint costs are broken out per category (cycling the --cat-* palette),
+  // then each person's own costs, savings, and what's left over.
 
   var costChart = null;
+  var CAT_TOKENS = ['--cat-1', '--cat-2', '--cat-3', '--cat-4', '--cat-5', '--cat-6', '--cat-7', '--cat-8'];
 
   function updateChart(r) {
     if (!window.Chart) return;
     var cs = getComputedStyle(document.documentElement);
-    var segs = [
-      { label: 'Joint costs',              val: r.costsJoint,           token: '--accent' },
-      { label: personName('a') + ' costs', val: r.costsA,               token: '--accent-light' },
-      { label: personName('b') + ' costs', val: r.costsB,               token: '--copper' },
-      { label: 'Savings',                  val: r.totalSavings,         token: '--warn-light' },
-      { label: 'Left over',                val: Math.max(0, r.surplus), token: '--ink-faint' }
-    ];
+    var segs = [];
+    (r.jointCategories || []).forEach(function (c, i) {
+      segs.push({ label: c.name || 'Category', val: c.amount, token: CAT_TOKENS[i % CAT_TOKENS.length] });
+    });
+    segs.push({ label: personName('a') + ' costs', val: r.costsA,               token: '--accent-light' });
+    segs.push({ label: personName('b') + ' costs', val: r.costsB,               token: '--copper' });
+    segs.push({ label: 'Savings',                  val: r.totalSavings,         token: '--warn-light' });
+    segs.push({ label: 'Left over',                val: Math.max(0, r.surplus), token: '--ink-faint' });
     var labels = [], data = [], colors = [];
     segs.forEach(function (s) {
       if (s.val > 0) {
@@ -405,8 +527,13 @@
     setMoney('subB', r.incomeB);
     setMoney('subJoint', r.incomeJoint);
 
-    // Owner subtotals (joint + per person) + section totals
-    setMoney('costsJointSub', r.costsJoint);
+    // Per-category joint subtotals (cards persist across recalcs)
+    (r.jointCategories || []).forEach(function (c) {
+      var el = document.querySelector('.cat-sub[data-cat-sub="' + c.id + '"]');
+      if (el) el.textContent = fmt(c.amount);
+    });
+
+    // Individual cost subtotals + section total
     setMoney('costsASub', r.costsA);
     setMoney('costsBSub', r.costsB);
     setMoney('costsTotal', r.totalCosts);
@@ -484,10 +611,73 @@
     return null;
   }
 
-  function addRow(kind, owner) {
+  function addRow(kind, owner, category) {
     var row = { id: nextId(), label: '', amount: 0, owner: owner };
+    if (category) row.category = category;
     listFor(kind).push(row);
     return row;
+  }
+
+  // ── Categories (mutations + drag-and-drop) ────────────────────────
+
+  function addCategory() {
+    state.categories = state.categories || [];
+    var cat = { id: nextCatId(), name: '' };
+    state.categories.push(cat);
+    renderJointCategories();
+    recalc();
+    save();
+    var input = document.querySelector('.cat-card[data-cat-id="' + cat.id + '"] .cat-name');
+    if (input) input.focus();
+  }
+
+  function removeCategory(catId) {
+    var cats = state.categories || [];
+    if (cats.length <= 1) { alert('Keep at least one category.'); return; }
+    var idx = cats.findIndex(function (c) { return c.id === catId; });
+    if (idx < 0) return;
+    var fallback = cats[idx === 0 ? 1 : 0];
+    var count = state.costs.filter(function (r) { return r.owner === 'joint' && r.category === catId; }).length;
+    if (count > 0 && !confirm('Remove "' + (cats[idx].name || 'this category') + '"? Its ' + count + ' row(s) move to "' + (fallback.name || 'another category') + '".')) return;
+    state.costs.forEach(function (r) { if (r.owner === 'joint' && r.category === catId) r.category = fallback.id; });
+    cats.splice(idx, 1);
+    renderJointCategories();
+    recalc();
+    save();
+  }
+
+  var draggedId = null;
+
+  function dragAfterRow(listEl, y) {
+    var rows = Array.prototype.slice.call(listEl.querySelectorAll('.b-row:not(.dragging)'));
+    var closest = null, closestOffset = Number.NEGATIVE_INFINITY;
+    rows.forEach(function (child) {
+      var box = child.getBoundingClientRect();
+      var offset = y - box.top - box.height / 2;
+      if (offset < 0 && offset > closestOffset) { closestOffset = offset; closest = child; }
+    });
+    return closest;
+  }
+
+  function clearDragOver() {
+    document.querySelectorAll('.cat-card.drag-over').forEach(function (el) { el.classList.remove('drag-over'); });
+  }
+
+  function moveRowToCategory(catId, beforeId) {
+    var idx = state.costs.findIndex(function (r) { return r.id === draggedId; });
+    if (idx < 0) return;
+    var moved = state.costs.splice(idx, 1)[0];
+    moved.owner = 'joint';
+    moved.category = catId;
+    if (beforeId && beforeId !== draggedId) {
+      var bIdx = state.costs.findIndex(function (r) { return r.id === beforeId; });
+      if (bIdx < 0) state.costs.push(moved); else state.costs.splice(bIdx, 0, moved);
+    } else {
+      state.costs.push(moved);
+    }
+    renderJointCategories();
+    recalc();
+    save();
   }
 
   // ── Events (delegated) ────────────────────────────────────────────
@@ -502,6 +692,12 @@
       if (t.classList.contains('b-row-amount')) found.row.amount = App.calc.parseFormatted(t.value);
       recalc();
       save();
+      return;
+    }
+    if (t.classList.contains('cat-name')) {
+      var card = t.closest('.cat-card');
+      var cat = (state.categories || []).filter(function (c) { return c.id === card.dataset.catId; })[0];
+      if (cat) { cat.name = t.value; recalc(); save(); } // recalc relabels the chart slice
       return;
     }
     if (t.id === 'personAName' || t.id === 'personBName') {
@@ -532,15 +728,29 @@
       return;
     }
 
-    // Add buttons: data-add="income|cost|saving" data-owner="joint|a|b"
+    if (t.classList && t.classList.contains('cat-remove')) {
+      removeCategory(t.closest('.cat-card').dataset.catId);
+      return;
+    }
+
+    if (t.id === 'addCategoryBtn') { addCategory(); return; }
+
+    // Add buttons: data-add="income|cost|saving" data-owner="joint|a|b" [data-cat]
     var add = t.closest('[data-add]');
     if (add) {
       var kind = add.dataset.add;
       var owner = add.dataset.owner;
-      var row = addRow(kind, owner);
+      var cat = add.dataset.cat;
+      var row = addRow(kind, owner, cat);
       var el = buildRow(row, kind);
-      listEl(kind, owner).appendChild(el);
+      if (kind === 'cost' && owner === 'joint' && cat) {
+        var catList = document.querySelector('.cat-list[data-cat-id="' + cat + '"]');
+        if (catList) catList.appendChild(el);
+      } else {
+        listEl(kind, owner).appendChild(el);
+      }
       el.querySelector('.b-row-label').focus();
+      recalc();
       save();
     }
   });
@@ -552,6 +762,46 @@
     refreshNames();
     save();
   });
+
+  // Drag-and-drop joint cost rows between category cards (mouse/trackpad).
+  var catsContainer = document.getElementById('jointCategories');
+  if (catsContainer) {
+    catsContainer.addEventListener('dragstart', function (e) {
+      var handle = e.target.closest('.b-drag-handle');
+      if (!handle) return;
+      var row = handle.closest('.b-row');
+      if (!row) return;
+      draggedId = row.dataset.id;
+      row.classList.add('dragging');
+      e.dataTransfer.effectAllowed = 'move';
+      try { e.dataTransfer.setData('text/plain', draggedId); } catch (_) {}
+      if (e.dataTransfer.setDragImage) e.dataTransfer.setDragImage(row, 12, 12);
+    });
+    catsContainer.addEventListener('dragend', function (e) {
+      var row = e.target.closest('.b-row');
+      if (row) row.classList.remove('dragging');
+      draggedId = null;
+      clearDragOver();
+    });
+    catsContainer.addEventListener('dragover', function (e) {
+      if (!draggedId) return;
+      var list = e.target.closest('.cat-list');
+      if (!list) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      clearDragOver();
+      list.closest('.cat-card').classList.add('drag-over');
+    });
+    catsContainer.addEventListener('drop', function (e) {
+      if (!draggedId) return;
+      var list = e.target.closest('.cat-list');
+      if (!list) return;
+      e.preventDefault();
+      var before = dragAfterRow(list, e.clientY);
+      moveRowToCategory(list.dataset.catId, before ? before.dataset.id : null);
+      clearDragOver();
+    });
+  }
 
   // ── Chart: fullscreen overlay ─────────────────────────────────────
 

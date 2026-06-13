@@ -133,18 +133,14 @@
         <span class="section-total" id="costsTotal">—</span>
       </div>
       <p class="section-note">
-        <strong>Joint</strong> costs are split 50/50 from the pot. Each person's
-        <strong>own</strong> costs come out of their own share.
+        <strong>Joint</strong> costs are split 50/50 from the pot — sort them into
+        categories and drag rows between them. Each person's <strong>own</strong>
+        costs come out of their own share.
       </p>
 
-      <div class="owner-block">
-        <div class="owner-block-head">
-          <span class="owner-block-title">Joint costs <span class="owner-block-tag">split 50/50</span></span>
-          <span class="owner-block-sub" id="costsJointSub">—</span>
-        </div>
-        <div class="b-list" id="jointCostList"></div>
-        <button type="button" class="btn btn-ghost row-add-btn" data-add="cost" data-owner="joint">+ Add joint cost</button>
-      </div>
+      <p class="owner-split-label">Joint costs <span class="owner-block-tag">split 50/50</span></p>
+      <div id="jointCategories" class="cat-cards"></div>
+      <button type="button" class="btn btn-ghost row-add-btn add-cat-btn" id="addCategoryBtn">+ Add category</button>
 
       <p class="owner-split-label">Individual costs</p>
       <div class="owner-cols">
