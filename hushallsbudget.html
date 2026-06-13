@@ -175,20 +175,10 @@
         <span class="section-total" id="savingsTotal">—</span>
       </div>
       <p class="section-note">
-        Money you set aside each month. <strong>Joint</strong> pots are split 50/50;
-        personal pension and ISK sit with their owner.
+        What each of you sets aside every month — pension, ISK and buffer.
+        These come out of your own take-home share.
       </p>
 
-      <div class="owner-block">
-        <div class="owner-block-head">
-          <span class="owner-block-title">Joint savings <span class="owner-block-tag">split 50/50</span></span>
-          <span class="owner-block-sub" id="savingsJointSub">—</span>
-        </div>
-        <div class="b-list" id="jointSavingsList"></div>
-        <button type="button" class="btn btn-ghost row-add-btn" data-add="saving" data-owner="joint">+ Add joint savings</button>
-      </div>
-
-      <p class="owner-split-label">Individual savings</p>
       <div class="owner-cols">
         <div class="owner-col">
           <div class="owner-block-head">
@@ -320,8 +310,11 @@
     </div>
 
     <div class="sum-card">
-      <div class="sum-card-title">Where the pot goes</div>
-      <div class="chart-wrap">
+      <div class="sum-card-title chart-head">
+        Where the pot goes
+        <button type="button" class="chart-expand-btn" id="chartExpandBtn" title="View full screen" aria-label="View chart full screen">⤢</button>
+      </div>
+      <div class="chart-wrap" id="chartWrap">
         <canvas id="costChart"></canvas>
       </div>
     </div>
@@ -331,10 +324,6 @@
       <div class="sum-big positive" id="s-savingsRate">—</div>
       <div class="sum-card-subtitle">of total household income</div>
       <div class="sum-rows">
-        <div class="sum-row">
-          <span class="sum-row-label">Joint</span>
-          <span class="sum-row-val" id="s-savJoint">—</span>
-        </div>
         <div class="sum-row">
           <span class="sum-row-label" data-name-for="a">Alan</span>
           <span class="sum-row-val" id="s-savA">—</span>
@@ -346,6 +335,17 @@
       </div>
     </div>
 
+  </div>
+</div>
+
+<!-- Fullscreen chart overlay -->
+<div class="chart-overlay" id="chartOverlay" role="dialog" aria-modal="true" aria-label="Where the pot goes — full screen" hidden>
+  <div class="chart-overlay-inner">
+    <div class="chart-overlay-head">
+      <span class="chart-overlay-title">Where the pot goes</span>
+      <button type="button" class="chart-expand-btn chart-overlay-close" id="chartOverlayClose" title="Close" aria-label="Close full screen">×</button>
+    </div>
+    <div class="chart-overlay-stage" id="chartOverlayStage"></div>
   </div>
 </div>
 

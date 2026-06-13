@@ -263,6 +263,7 @@ body {
 /* ── Inputs (shared) ────────────────────────────────────────── */
 input[type="text"] {
   width: 100%;
+  min-width: 0; /* let inputs shrink inside grid/flex tracks (no horizontal overflow) */
   padding: 9px 12px;
   font-family: var(--font-ui);
   font-size: 14px;
@@ -310,6 +311,7 @@ input::placeholder { color: var(--ink-faint); }
   padding: 0.85rem 0.85rem 0.7rem;
   display: flex;
   flex-direction: column;
+  min-width: 0; /* shrink within the grid track */
 }
 .income-col-joint { border-style: dashed; }
 
@@ -396,9 +398,10 @@ input::placeholder { color: var(--ink-faint); }
   border: 1px solid var(--rule);
   border-radius: var(--r-md);
   padding: 0.85rem 0.85rem 0.7rem;
+  min-width: 0; /* shrink within the grid track */
 }
 
-.b-list { display: flex; flex-direction: column; gap: 7px; margin-bottom: 7px; }
+.b-list { display: flex; flex-direction: column; gap: 7px; margin-bottom: 7px; min-width: 0; }
 
 /* ── Editable rows (income / cost / saving) ─────────────────── */
 .b-row {
@@ -406,6 +409,7 @@ input::placeholder { color: var(--ink-faint); }
   grid-template-columns: 1fr 92px auto;
   align-items: center;
   gap: 6px;
+  min-width: 0;
 }
 
 .b-row-label { font-size: 13px !important; padding: 7px 9px !important; }
@@ -576,7 +580,7 @@ input::placeholder { color: var(--ink-faint); }
   border-top: 1px solid var(--rule);
   font-size: 13px;
 }
-.sum-row-label { color: var(--ink-soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sum-row-label { color: var(--ink-soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .sum-row-val { font-weight: 550; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .sum-row-val.positive { color: var(--accent); }
 .sum-row-val.negative { color: var(--warn); }
@@ -585,7 +589,7 @@ input::placeholder { color: var(--ink-faint); }
 
 /* Two person cards side by side */
 .person-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
-.person-cards .sum-card { margin-bottom: 0; }
+.person-cards .sum-card { margin-bottom: 0; min-width: 0; }
 
 /* ── Flow bar ───────────────────────────────────────────────── */
 .flow-bar {
@@ -612,7 +616,68 @@ input::placeholder { color: var(--ink-faint); }
 .flow-dot.flow-left { background: var(--ink-faint); }
 
 /* ── Doughnut chart ─────────────────────────────────────────── */
+.chart-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+
+.chart-expand-btn {
+  flex-shrink: 0;
+  width: 26px; height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--rule);
+  background: var(--paper-card);
+  color: var(--ink-soft);
+  border-radius: 7px;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.chart-expand-btn:hover { color: var(--accent); border-color: var(--accent-light); background: var(--paper-warm); }
+
 .chart-wrap { position: relative; height: 240px; margin-top: 0.5rem; }
+
+/* ── Fullscreen chart overlay ───────────────────────────────── */
+.chart-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+  background: color-mix(in srgb, var(--ink) 55%, transparent);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+  animation: overlay-in 0.2s ease;
+}
+.chart-overlay[hidden] { display: none; }
+
+.chart-overlay-inner {
+  position: relative;
+  width: min(900px, 100%);
+  height: min(80vh, 760px);
+  display: flex;
+  flex-direction: column;
+  background: var(--paper-card);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-md);
+  padding: 1.25rem 1.4rem 1.4rem;
+  animation: rise-in 0.3s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.chart-overlay-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.6rem;
+}
+.chart-overlay-title { font-family: var(--font-display); font-size: 1.35rem; color: var(--ink); }
+.chart-overlay-close { width: 30px; height: 30px; font-size: 18px; }
+.chart-overlay-stage { position: relative; flex: 1; min-height: 0; }
+
+@keyframes overlay-in { from { opacity: 0; } to { opacity: 1; } }
 
 /* ── Mobile key-figures bar ─────────────────────────────────── */
 .mobile-bar {

@@ -46,15 +46,13 @@
         row('Hobby', 600, 'b')
       ],
       savings: [
-        // Joint
-        row('Swedish Savings (buffert)', 5000, 'joint'),
-        row('Semesterkonto', 4500, 'joint'),
-        row('Barnsparande', 1000, 'joint'),
-        // Individual
-        row('Personal Pension', 4000, 'a'),
+        // Each person saves from their own take-home share
+        row('Pension (eget)', 4000, 'a'),
         row('ISK / fondsparande', 3000, 'a'),
-        row('Personal Pension', 4000, 'b'),
-        row('ISK / fondsparande', 3000, 'b')
+        row('Sparkonto / buffert', 1500, 'a'),
+        row('Pension (eget)', 4000, 'b'),
+        row('ISK / fondsparande', 3000, 'b'),
+        row('Sparkonto / buffert', 1500, 'b')
       ]
     };
     s.seq = id;
@@ -162,6 +160,9 @@
       var s = JSON.parse(raw);
       if (!s || s.version !== 1 || !Array.isArray(s.incomes) || !Array.isArray(s.costs) || !Array.isArray(s.savings)) return null;
       if (!Array.isArray(s.people) || s.people.length !== 2) s.people = ['Alan', 'Partner'];
+      // Joint savings was removed from the UI — fold any legacy joint savings
+      // rows into person A so saved budgets keep their money and still render.
+      s.savings.forEach(function (r) { if (r.owner === 'joint') r.owner = 'a'; });
       return s;
     } catch (_) { return null; }
   }
@@ -279,13 +280,16 @@
     });
   }
 
-  // Costs & savings: one Joint list + one list per person, grouped by owner.
+  // Costs are grouped Joint + per person; savings are per person only.
+  function ownersFor(kind) { return kind === 'cost' ? ['joint', 'a', 'b'] : ['a', 'b']; }
+
   function renderOwnerLists(kind) {
     var rows = kind === 'cost' ? state.costs : state.savings;
-    ['joint', 'a', 'b'].forEach(function (owner) { listEl(kind, owner).replaceChildren(); });
+    ownersFor(kind).forEach(function (owner) { listEl(kind, owner).replaceChildren(); });
     rows.forEach(function (row) {
-      listEl(kind, row.owner === 'a' || row.owner === 'b' ? row.owner : 'joint')
-        .appendChild(buildRow(row, kind));
+      var owner = (row.owner === 'a' || row.owner === 'b') ? row.owner
+                : (kind === 'cost' ? 'joint' : 'a');
+      listEl(kind, owner).appendChild(buildRow(row, kind));
     });
   }
 
@@ -314,11 +318,11 @@
     if (!window.Chart) return;
     var cs = getComputedStyle(document.documentElement);
     var segs = [
-      { label: 'Joint costs',            val: r.costsJoint,             token: '--accent' },
+      { label: 'Joint costs',              val: r.costsJoint,           token: '--accent' },
       { label: personName('a') + ' costs', val: r.costsA,               token: '--accent-light' },
       { label: personName('b') + ' costs', val: r.costsB,               token: '--copper' },
-      { label: 'Savings',                val: r.totalSavings,           token: '--warn-light' },
-      { label: 'Left over',              val: Math.max(0, r.surplus),   token: '--ink-faint' }
+      { label: 'Savings',                  val: r.totalSavings,         token: '--warn-light' },
+      { label: 'Left over',                val: Math.max(0, r.surplus), token: '--ink-faint' }
     ];
     var labels = [], data = [], colors = [];
     segs.forEach(function (s) {
@@ -406,7 +410,6 @@
     setMoney('costsASub', r.costsA);
     setMoney('costsBSub', r.costsB);
     setMoney('costsTotal', r.totalCosts);
-    setMoney('savingsJointSub', r.savingsJoint);
     setMoney('savingsASub', r.savingsA);
     setMoney('savingsBSub', r.savingsB);
     setMoney('savingsTotal', r.totalSavings);
@@ -455,7 +458,6 @@
 
     // Summary: savings rate
     document.getElementById('s-savingsRate').textContent = (r.savingsRate * 100).toFixed(1) + '%';
-    setMoney('s-savJoint', r.savingsJoint);
     setMoney('s-savA', r.savingsA);
     setMoney('s-savB', r.savingsB);
 
@@ -551,6 +553,41 @@
     save();
   });
 
+  // ── Chart: fullscreen overlay ─────────────────────────────────────
+
+  var chartOverlayOpen = false;
+  var chartWrap     = document.getElementById('chartWrap');
+  var expandBtn     = document.getElementById('chartExpandBtn');
+  var overlay       = document.getElementById('chartOverlay');
+  var overlayStage  = document.getElementById('chartOverlayStage');
+  var overlayClose  = document.getElementById('chartOverlayClose');
+
+  function onChartKey(e) { if (e.key === 'Escape') closeChart(); }
+
+  function openChart() {
+    if (!costChart) return;
+    overlay.hidden = false;
+    chartOverlayOpen = true;
+    overlayStage.appendChild(costChart.canvas);
+    costChart.resize();
+    document.addEventListener('keydown', onChartKey);
+    overlayClose.focus();
+  }
+
+  function closeChart() {
+    if (!chartOverlayOpen) return;
+    chartOverlayOpen = false;
+    chartWrap.appendChild(costChart.canvas);
+    costChart.resize();
+    overlay.hidden = true;
+    document.removeEventListener('keydown', onChartKey);
+    if (expandBtn) expandBtn.focus();
+  }
+
+  if (expandBtn)    expandBtn.addEventListener('click', openChart);
+  if (overlayClose) overlayClose.addEventListener('click', closeChart);
+  if (overlay)      overlay.addEventListener('click', function (e) { if (e.target === overlay) closeChart(); });
+
   // ── Theme (same storage key as the rest of Hemma) ────────────────
 
   var THEME_KEY = 'bostadskalkyl_theme';
@@ -580,4 +617,7 @@
   syncThemeColor();
   renderAll();
   refreshNames();
+
+  // No chart library? Hide the fullscreen button — the summary still works.
+  if (!window.Chart && expandBtn) expandBtn.hidden = true;
 }());

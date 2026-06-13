@@ -17,9 +17,10 @@ test('defaultState is internally consistent', () => {
   for (const row of [...s.costs, ...s.savings, ...s.incomes]) {
     assert.ok(owners.has(row.owner), 'unknown owner ' + row.owner);
   }
-  // defaults exercise both joint and individual rows for costs and savings
+  // costs exercise joint + both individuals; savings are individual-only (no joint pot)
   assert.ok(s.costs.some(r => r.owner === 'joint') && s.costs.some(r => r.owner === 'a') && s.costs.some(r => r.owner === 'b'));
-  assert.ok(s.savings.some(r => r.owner === 'joint') && s.savings.some(r => r.owner === 'a') && s.savings.some(r => r.owner === 'b'));
+  assert.ok(s.savings.some(r => r.owner === 'a') && s.savings.some(r => r.owner === 'b'));
+  assert.ok(!s.savings.some(r => r.owner === 'joint'), 'savings no longer has a joint pot');
 });
 
 test('pools all income and splits it equally', () => {
