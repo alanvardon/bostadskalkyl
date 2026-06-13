@@ -188,3 +188,50 @@ test('uncategorised / unknown joint costs collect in an Övrigt bucket', () => {
   });
   assert.ok(!clean.jointCategories.some(c => c.id === '_other'));
 });
+
+test('buildSubmission sums itemised income, keeps a breakdown, and splits the total', () => {
+  const row = budget.buildSubmission({
+    month: '2026-06',
+    incomesA: [{ label: 'Lön', amount: 46000 }, { label: 'Barnbidrag', amount: 1250 }, { label: 'Skatteåterbäring', amount: 5050 }],
+    incomesB: [{ label: 'Lön', amount: 38900 }],
+    personAName: 'Alan', personBName: 'Partner', note: 'June'
+  });
+  assert.equal(row.month, '2026-06');
+  assert.equal(row.income_a, 46000 + 1250 + 5050); // 52300 total
+  assert.equal(row.income_b, 38900);
+  // breakdown keeps every item, tagged by owner, A's first then B's
+  assert.equal(row.income_items.length, 4);
+  assert.deepEqual(row.income_items[1], { owner: 'a', label: 'Barnbidrag', amount: 1250 });
+  assert.deepEqual(row.income_items[3], { owner: 'b', label: 'Lön', amount: 38900 });
+  // transfer is half the gap of the totals; higher earner pays
+  assert.equal(row.transfer_amount, (52300 - 38900) / 2); // 6700
+  assert.equal(row.transfer_from, 'a');
+  assert.equal(row.transfer_to, 'b');
+  assert.equal(row.equal_share, (52300 + 38900) / 2); // 45600
+  assert.equal(row.note, 'June');
+  // id + created_at are stamped by the data-access layer, not the pure builder
+  assert.ok(!('id' in row) && !('created_at' in row));
+});
+
+test('buildSubmission drops empty items, defaults note to null, flips direction for lower earner', () => {
+  const row = budget.buildSubmission({
+    incomesA: [{ label: 'Lön', amount: 30000 }, { label: '', amount: 0 }], // blank row ignored
+    incomesB: [{ label: 'Lön', amount: 45000 }]
+  });
+  assert.equal(row.income_a, 30000);
+  assert.equal(row.income_items.length, 2);
+  assert.equal(row.transfer_from, 'b');
+  assert.equal(row.transfer_to, 'a');
+  assert.equal(row.transfer_amount, 7500);
+  assert.equal(row.note, null);
+});
+
+test('buildSubmission keeps scalar back-compat (incomeA/incomeB => one salary item each)', () => {
+  const even = budget.buildSubmission({ month: '2026-07', incomeA: 40000, incomeB: 40000 });
+  assert.equal(even.income_a, 40000);
+  assert.equal(even.transfer_amount, 0);
+  assert.deepEqual(even.income_items, [
+    { owner: 'a', label: 'Lön / Salary', amount: 40000 },
+    { owner: 'b', label: 'Lön / Salary', amount: 40000 }
+  ]);
+});

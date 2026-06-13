@@ -169,9 +169,59 @@
     };
   }
 
+  // Build a Supabase-shaped salary submission row from a month's incomes.
+  // Each person can have several income items (salary, barnbidrag, tax rebate…):
+  // pass incomesA / incomesB as arrays of { label, amount }. The scalar
+  // income_a / income_b totals are kept as clean summary columns and the per-item
+  // breakdown is emitted as income_items ([{ owner, label, amount }]) — jsonb today,
+  // a `salary_submission_incomes` child table after the Supabase move.
+  // Pure: reuses computeBudget for the settle-up transfer + equal share, so the
+  // math has a single home. id + created_at are stamped later by the data-access
+  // layer (the DB would default them). note defaults to null.
+  function buildSubmission(input) {
+    input = input || {};
+
+    function items(arr, scalar) {
+      if (Array.isArray(arr)) {
+        return arr
+          .map(function (it) { return { label: (it.label || '').trim(), amount: it.amount || 0 }; })
+          .filter(function (it) { return it.label || it.amount; });
+      }
+      // back-compat: a single scalar salary
+      return typeof scalar === 'number' ? [{ label: 'Lön / Salary', amount: scalar }] : [];
+    }
+    function total(list) {
+      return list.reduce(function (t, it) { return t + (it.amount || 0); }, 0);
+    }
+
+    var itemsA = items(input.incomesA, input.incomeA);
+    var itemsB = items(input.incomesB, input.incomeB);
+    var incomeA = total(itemsA);
+    var incomeB = total(itemsB);
+    var r = computeBudget({ incomes: [{ amount: incomeA, owner: 'a' }, { amount: incomeB, owner: 'b' }] });
+
+    var income_items = itemsA.map(function (it) { return { owner: 'a', label: it.label, amount: it.amount }; })
+      .concat(itemsB.map(function (it) { return { owner: 'b', label: it.label, amount: it.amount }; }));
+
+    return {
+      month: input.month || '',
+      income_a: incomeA,
+      income_b: incomeB,
+      income_items: income_items,
+      person_a_name: input.personAName || '',
+      person_b_name: input.personBName || '',
+      transfer_amount: r.transfer.amount,
+      transfer_from: r.transfer.from,
+      transfer_to: r.transfer.to,
+      equal_share: r.equalShare,
+      note: input.note ? input.note : null
+    };
+  }
+
   var api = {
     defaultState: defaultState,
-    computeBudget: computeBudget
+    computeBudget: computeBudget,
+    buildSubmission: buildSubmission
   };
 
   if (typeof module !== 'undefined') module.exports = api;
@@ -832,6 +882,394 @@
   if (expandBtn)    expandBtn.addEventListener('click', openChart);
   if (overlayClose) overlayClose.addEventListener('click', closeChart);
   if (overlay)      overlay.addEventListener('click', function (e) { if (e.target === overlay) closeChart(); });
+
+  // ── Monthly salary submission + history ───────────────────────────
+  // Salaries vary slightly month to month. The pot section stays a static
+  // budgeting baseline; submitting a month does NOT touch state.incomes — we
+  // only read the baseline to pre-fill, then write an append-only record via
+  // the data-access module (window.App.salaryStore).
+
+  var salaryStore = window.App.salaryStore;
+  var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+  var salaryModal       = document.getElementById('salaryModal');
+  var salaryHistory     = document.getElementById('salaryHistory');
+  var salaryMonthEl     = document.getElementById('salaryMonth');
+  var salaryNoteEl      = document.getElementById('salaryNote');
+  var salaryPreviewEl   = document.getElementById('salaryPreview');
+  var salaryHistoryList = document.getElementById('salaryHistoryList');
+  var openSalaryBtn     = document.getElementById('submitSalaryBtn');
+  var openHistoryBtn    = document.getElementById('salaryHistoryBtn');
+  var salaryConfirmBtn  = document.getElementById('salaryConfirmBtn');
+  var salaryExportBtn   = document.getElementById('salaryExportBtn');
+
+  function salaryListEl(owner) { return document.getElementById('salaryIncomeList' + owner.toUpperCase()); }
+  function salarySubEl(owner)  { return document.getElementById('salarySub' + owner.toUpperCase()); }
+
+  function monthLabel(ym) {
+    var m = /^(\d{4})-(\d{2})$/.exec(ym || '');
+    if (!m) return ym || '—';
+    return (MONTHS[parseInt(m[2], 10) - 1] || '?') + ' ' + m[1];
+  }
+
+  function currentMonth() { return new Date().toISOString().slice(0, 7); } // YYYY-MM
+
+  function flashSaved() {
+    var el = document.getElementById('saveState');
+    el.classList.add('show');
+    clearTimeout(savedFlashTimer);
+    savedFlashTimer = setTimeout(function () { el.classList.remove('show'); }, 1400);
+  }
+
+  // Play the close animation, then hide. The .closing class drives the fade-out
+  // (see budget.css); we hide on animationend so the transition is visible.
+  function dismissModal(el) {
+    if (!el || el.hidden) return;
+    el.classList.add('closing');
+    var finish = function (e) {
+      if (e && e.target !== el) return; // ignore the card's bubbling animationend
+      el.removeEventListener('animationend', finish);
+      if (!el.classList.contains('closing')) return; // reopened mid-close
+      el.classList.remove('closing');
+      el.hidden = true;
+    };
+    el.addEventListener('animationend', finish);
+  }
+
+  function showModal(el) {
+    el.classList.remove('closing'); // cancel any in-flight fade-out before reopening
+    el.hidden = false;
+  }
+
+  // One editable income row in the modal (label + amount + remove). These rows
+  // are modal-local (NOT in state), so they use their own classes — reusing
+  // .b-row would trip budget.js's global row add/remove/input handlers.
+  function buildSalaryRow(item) {
+    var row = document.createElement('div');
+    row.classList.add('sal-row');
+
+    var label = document.createElement('input');
+    label.type = 'text';
+    label.value = (item && item.label) || '';
+    label.placeholder = 'e.g. Lön, Barnbidrag, skatt';
+    label.classList.add('sal-row-label');
+    label.setAttribute('aria-label', 'Income name');
+    row.appendChild(label);
+
+    var amount = document.createElement('input');
+    amount.type = 'text';
+    amount.inputMode = 'numeric';
+    amount.value = App.calc.formatWithSpaces((item && item.amount) || 0);
+    amount.classList.add('sal-row-amount');
+    amount.setAttribute('aria-label', 'Amount, kr');
+    row.appendChild(amount);
+
+    var rm = document.createElement('button');
+    rm.type = 'button';
+    rm.classList.add('sal-row-remove');
+    rm.setAttribute('aria-label', 'Remove income');
+    rm.textContent = '×';
+    row.appendChild(rm);
+
+    return row;
+  }
+
+  function renderSalaryRows(owner, items) {
+    var list = salaryListEl(owner);
+    list.replaceChildren();
+    (items || []).forEach(function (it) { list.appendChild(buildSalaryRow(it)); });
+  }
+
+  function readItems(owner) {
+    var rows = salaryListEl(owner).querySelectorAll('.sal-row');
+    return Array.prototype.map.call(rows, function (rowEl) {
+      return {
+        label: rowEl.querySelector('.sal-row-label').value.trim(),
+        amount: App.calc.parseFormatted(rowEl.querySelector('.sal-row-amount').value)
+      };
+    }).filter(function (it) { return it.label || it.amount; });
+  }
+
+  function sumItems(list) {
+    return list.reduce(function (t, it) { return t + (it.amount || 0); }, 0);
+  }
+
+  function readSalaryInputs() {
+    return {
+      month: salaryMonthEl.value || currentMonth(),
+      incomesA: readItems('a'),
+      incomesB: readItems('b'),
+      personAName: state.people[0],
+      personBName: state.people[1],
+      note: (salaryNoteEl.value || '').trim()
+    };
+  }
+
+  function updateSalaryPreview() {
+    var input = readSalaryInputs();
+    var incomeA = sumItems(input.incomesA);
+    var incomeB = sumItems(input.incomesB);
+    salarySubEl('a').textContent = fmt(incomeA);
+    salarySubEl('b').textContent = fmt(incomeB);
+    var sub = computeBudget({ incomes: [{ amount: incomeA, owner: 'a' }, { amount: incomeB, owner: 'b' }] });
+    var tr = sub.transfer;
+    if (tr.amount < 0.5) {
+      salaryPreviewEl.textContent = 'Even — nothing to transfer. You each take home ' + fmt(sub.equalShare) + '.';
+    } else {
+      salaryPreviewEl.replaceChildren(
+        nameStrong(tr.from), document.createTextNode(' pays '),
+        nameStrong(tr.to), document.createTextNode(' '),
+        moneyStrong(fmt(tr.amount)),
+        document.createTextNode(' · each takes home ' + fmt(sub.equalShare))
+      );
+    }
+  }
+
+  function onSalaryKey(e) { if (e.key === 'Escape') closeSalaryModal(); }
+
+  // Read-only snapshot of the static baseline income rows for a person, used to
+  // pre-fill the modal. The user can then tweak amounts and add extra income
+  // (barnbidrag, tax rebate…) without touching the baseline.
+  function baselineItems(owner) {
+    var items = (state.incomes || [])
+      .filter(function (r) { return owner === 'b' ? r.owner === 'b' : r.owner !== 'b'; })
+      .map(function (r) { return { label: r.label, amount: r.amount }; });
+    return items.length ? items : [{ label: 'Lön / Salary', amount: 0 }];
+  }
+
+  function openSalaryModal() {
+    salaryMonthEl.value = currentMonth();
+    renderSalaryRows('a', baselineItems('a'));
+    renderSalaryRows('b', baselineItems('b'));
+    salaryNoteEl.value = '';
+    updateSalaryPreview();
+    showModal(salaryModal);
+    document.addEventListener('keydown', onSalaryKey);
+    var first = salaryListEl('a').querySelector('.sal-row-amount');
+    if (first) { first.focus(); first.select(); }
+  }
+
+  function closeSalaryModal() {
+    document.removeEventListener('keydown', onSalaryKey);
+    dismissModal(salaryModal);
+    if (openSalaryBtn) openSalaryBtn.focus();
+  }
+
+  function submitSalary() {
+    var record = App.budget.buildSubmission(readSalaryInputs());
+    salaryStore.add(record).then(function () {
+      closeSalaryModal();
+      flashSaved();
+      if (salaryHistory && !salaryHistory.hidden) renderHistory();
+    });
+  }
+
+  function onHistoryKey(e) { if (e.key === 'Escape') closeHistory(); }
+
+  function openHistory() {
+    renderHistory();
+    showModal(salaryHistory);
+    document.addEventListener('keydown', onHistoryKey);
+    var close = document.getElementById('salaryHistoryClose');
+    if (close) close.focus();
+  }
+
+  function closeHistory() {
+    document.removeEventListener('keydown', onHistoryKey);
+    dismissModal(salaryHistory);
+    if (openHistoryBtn) openHistoryBtn.focus();
+  }
+
+  function personFromRow(row, key) {
+    return row[key] === 'b' ? (row.person_b_name || 'B') : (row.person_a_name || 'A');
+  }
+
+  function transferText(row) {
+    if ((row.transfer_amount || 0) < 0.5) return 'Even — no transfer';
+    return personFromRow(row, 'transfer_from') + ' → ' + personFromRow(row, 'transfer_to') + '  ' + fmt(row.transfer_amount);
+  }
+
+  function submittedLabel(iso) {
+    var m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso || '');
+    if (!m) return '—';
+    return parseInt(m[3], 10) + ' ' + (MONTHS[parseInt(m[2], 10) - 1] || '?') + ' ' + m[1];
+  }
+
+  function detailRow(label, value) {
+    var r = document.createElement('div');
+    r.classList.add('detail-row');
+    var l = document.createElement('span'); l.classList.add('detail-label'); l.textContent = label;
+    var v = document.createElement('span'); v.classList.add('detail-val'); v.textContent = value;
+    r.appendChild(l); r.appendChild(v);
+    return r;
+  }
+
+  function detailSubhead(text) {
+    var h = document.createElement('div');
+    h.classList.add('detail-subhead');
+    h.textContent = text;
+    return h;
+  }
+
+  // The full submission, revealed when its row is expanded. The grid-rows
+  // accordion in budget.css animates the inner wrapper's height open/closed.
+  function buildHistoryDetail(row) {
+    var detail = document.createElement('div');
+    detail.classList.add('history-detail');
+
+    var inner = document.createElement('div');
+    inner.classList.add('history-detail-inner');
+
+    inner.appendChild(detailRow('Submitted', submittedLabel(row.created_at)));
+    inner.appendChild(detailRow((row.person_a_name || 'A') + ' total', fmt(row.income_a || 0)));
+    inner.appendChild(detailRow((row.person_b_name || 'B') + ' total', fmt(row.income_b || 0)));
+    inner.appendChild(detailRow('Each takes home', fmt(row.equal_share || 0)));
+    inner.appendChild(detailRow('Transfer', transferText(row)));
+
+    var items = Array.isArray(row.income_items) ? row.income_items : [];
+    ['a', 'b'].forEach(function (owner) {
+      var its = items.filter(function (it) { return it.owner === owner; });
+      if (!its.length) return;
+      inner.appendChild(detailSubhead((owner === 'b' ? (row.person_b_name || 'B') : (row.person_a_name || 'A')) + ' income'));
+      its.forEach(function (it) { inner.appendChild(detailRow(it.label || 'Income', fmt(it.amount || 0))); });
+    });
+
+    if (row.note) {
+      inner.appendChild(detailSubhead('Note'));
+      var n = document.createElement('p');
+      n.classList.add('detail-note');
+      n.textContent = row.note;
+      inner.appendChild(n);
+    }
+
+    detail.appendChild(inner);
+    return detail;
+  }
+
+  // Collapsed row: month + the settle-up, click to expand the full submission.
+  function buildHistoryItem(row) {
+    var item = document.createElement('div');
+    item.classList.add('history-item');
+
+    var head = document.createElement('div');
+    head.classList.add('history-head');
+
+    var toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.classList.add('history-toggle');
+    toggle.setAttribute('aria-expanded', 'false');
+
+    var month = document.createElement('span');
+    month.classList.add('history-month');
+    month.textContent = monthLabel(row.month);
+    toggle.appendChild(month);
+
+    var amount = document.createElement('span');
+    amount.classList.add('history-amount');
+    amount.textContent = transferText(row);
+    toggle.appendChild(amount);
+
+    var chevron = document.createElement('span');
+    chevron.classList.add('history-chevron');
+    chevron.setAttribute('aria-hidden', 'true');
+    chevron.textContent = '⌄';
+    toggle.appendChild(chevron);
+
+    head.appendChild(toggle);
+
+    var rm = document.createElement('button');
+    rm.type = 'button';
+    rm.classList.add('history-delete');
+    rm.dataset.id = row.id;
+    rm.setAttribute('aria-label', 'Delete this submission');
+    rm.textContent = '×';
+    head.appendChild(rm);
+
+    item.appendChild(head);
+    item.appendChild(buildHistoryDetail(row));
+
+    return item;
+  }
+
+  function renderHistory() {
+    salaryStore.list().then(function (rows) {
+      salaryHistoryList.replaceChildren();
+      if (!rows.length) {
+        var empty = document.createElement('p');
+        empty.classList.add('history-empty');
+        empty.textContent = 'No months submitted yet — use “Submit this month’s salaries” to log one.';
+        salaryHistoryList.appendChild(empty);
+        return;
+      }
+      rows.forEach(function (row) { salaryHistoryList.appendChild(buildHistoryItem(row)); });
+    });
+  }
+
+  function deleteSubmission(id) {
+    if (!confirm('Delete this submission? This can’t be undone.')) return;
+    salaryStore.remove(id).then(renderHistory);
+  }
+
+  function downloadJSON() {
+    salaryStore.exportJSON().then(function (json) {
+      var blob = new Blob([json], { type: 'application/json' });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = 'salary-submissions.json';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    });
+  }
+
+  if (openSalaryBtn)    openSalaryBtn.addEventListener('click', openSalaryModal);
+  if (openHistoryBtn)   openHistoryBtn.addEventListener('click', openHistory);
+  if (salaryConfirmBtn) salaryConfirmBtn.addEventListener('click', submitSalary);
+  if (salaryExportBtn)  salaryExportBtn.addEventListener('click', downloadJSON);
+
+  if (salaryModal) {
+    salaryModal.addEventListener('click', function (e) {
+      if (e.target === salaryModal || e.target.closest('[data-close-salary]')) { closeSalaryModal(); return; }
+      var add = e.target.closest('[data-salary-add]');
+      if (add) {
+        var rowEl = buildSalaryRow({ label: '', amount: 0 });
+        salaryListEl(add.dataset.salaryAdd).appendChild(rowEl);
+        rowEl.querySelector('.sal-row-label').focus();
+        updateSalaryPreview();
+        return;
+      }
+      var rm = e.target.closest('.sal-row-remove');
+      if (rm) { rm.closest('.sal-row').remove(); updateSalaryPreview(); }
+    });
+    salaryModal.addEventListener('input', function (e) {
+      var t = e.target;
+      if (t === salaryMonthEl || (t.classList && (t.classList.contains('sal-row-label') || t.classList.contains('sal-row-amount')))) {
+        updateSalaryPreview();
+      }
+    });
+    salaryModal.addEventListener('focusout', function (e) {
+      if (e.target.classList && e.target.classList.contains('sal-row-amount')) {
+        e.target.value = App.calc.formatWithSpaces(App.calc.parseFormatted(e.target.value));
+      }
+    });
+  }
+
+  if (salaryHistory) {
+    salaryHistory.addEventListener('click', function (e) {
+      if (e.target === salaryHistory || e.target.closest('[data-close-history]')) { closeHistory(); return; }
+      var del = e.target.closest('.history-delete');
+      if (del) { deleteSubmission(del.dataset.id); return; }
+      var toggle = e.target.closest('.history-toggle');
+      if (toggle) {
+        var item = toggle.closest('.history-item');
+        var opening = !item.classList.contains('open');
+        item.classList.toggle('open', opening);
+        toggle.setAttribute('aria-expanded', opening ? 'true' : 'false');
+      }
+    });
+  }
 
   // ── Theme (same storage key as the rest of Hemma) ────────────────
 
