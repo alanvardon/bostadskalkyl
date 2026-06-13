@@ -70,7 +70,7 @@
             <span class="income-col-sub" id="subA">—</span>
           </div>
           <div class="income-list" data-owner="a"></div>
-          <button type="button" class="btn btn-ghost row-add-btn" data-add-income="a">+ Add income</button>
+          <button type="button" class="btn btn-ghost row-add-btn" data-add="income" data-owner="a">+ Add income</button>
         </div>
 
         <div class="income-col">
@@ -79,7 +79,7 @@
             <span class="income-col-sub" id="subB">—</span>
           </div>
           <div class="income-list" data-owner="b"></div>
-          <button type="button" class="btn btn-ghost row-add-btn" data-add-income="b">+ Add income</button>
+          <button type="button" class="btn btn-ghost row-add-btn" data-add="income" data-owner="b">+ Add income</button>
         </div>
 
         <div class="income-col income-col-joint">
@@ -88,7 +88,7 @@
             <span class="income-col-sub" id="subJoint">—</span>
           </div>
           <div class="income-list" data-owner="joint"></div>
-          <button type="button" class="btn btn-ghost row-add-btn" data-add-income="joint">+ Add income</button>
+          <button type="button" class="btn btn-ghost row-add-btn" data-add="income" data-owner="joint">+ Add income</button>
         </div>
       </div>
 
@@ -133,10 +133,38 @@
         <span class="section-total" id="costsTotal">—</span>
       </div>
       <p class="section-note">
-        Mark each cost as <strong>Joint</strong> (split 50/50) or as one person's own.
-        Grouped by category — add as many rows as you like.
+        <strong>Joint</strong> costs are split 50/50 from the pot. Each person's
+        <strong>own</strong> costs come out of their own share.
       </p>
-      <div id="costGroups"></div>
+
+      <div class="owner-block">
+        <div class="owner-block-head">
+          <span class="owner-block-title">Joint costs <span class="owner-block-tag">split 50/50</span></span>
+          <span class="owner-block-sub" id="costsJointSub">—</span>
+        </div>
+        <div class="b-list" id="jointCostList"></div>
+        <button type="button" class="btn btn-ghost row-add-btn" data-add="cost" data-owner="joint">+ Add joint cost</button>
+      </div>
+
+      <p class="owner-split-label">Individual costs</p>
+      <div class="owner-cols">
+        <div class="owner-col">
+          <div class="owner-block-head">
+            <span class="owner-block-title" data-name-for="a">Alan</span>
+            <span class="owner-block-sub" id="costsASub">—</span>
+          </div>
+          <div class="b-list" id="ownCostListA"></div>
+          <button type="button" class="btn btn-ghost row-add-btn" data-add="cost" data-owner="a">+ Add</button>
+        </div>
+        <div class="owner-col">
+          <div class="owner-block-head">
+            <span class="owner-block-title" data-name-for="b">Partner</span>
+            <span class="owner-block-sub" id="costsBSub">—</span>
+          </div>
+          <div class="b-list" id="ownCostListB"></div>
+          <button type="button" class="btn btn-ghost row-add-btn" data-add="cost" data-owner="b">+ Add</button>
+        </div>
+      </div>
     </div>
 
     <!-- Section 3: Savings -->
@@ -147,11 +175,38 @@
         <span class="section-total" id="savingsTotal">—</span>
       </div>
       <p class="section-note">
-        Money you set aside each month. Joint pots are split 50/50; personal pensions
-        and ISK sit with their owner.
+        Money you set aside each month. <strong>Joint</strong> pots are split 50/50;
+        personal pension and ISK sit with their owner.
       </p>
-      <div id="savingsList"></div>
-      <button type="button" class="btn btn-ghost row-add-btn" id="addSavingsBtn">+ Add savings</button>
+
+      <div class="owner-block">
+        <div class="owner-block-head">
+          <span class="owner-block-title">Joint savings <span class="owner-block-tag">split 50/50</span></span>
+          <span class="owner-block-sub" id="savingsJointSub">—</span>
+        </div>
+        <div class="b-list" id="jointSavingsList"></div>
+        <button type="button" class="btn btn-ghost row-add-btn" data-add="saving" data-owner="joint">+ Add joint savings</button>
+      </div>
+
+      <p class="owner-split-label">Individual savings</p>
+      <div class="owner-cols">
+        <div class="owner-col">
+          <div class="owner-block-head">
+            <span class="owner-block-title" data-name-for="a">Alan</span>
+            <span class="owner-block-sub" id="savingsASub">—</span>
+          </div>
+          <div class="b-list" id="ownSavingsListA"></div>
+          <button type="button" class="btn btn-ghost row-add-btn" data-add="saving" data-owner="a">+ Add</button>
+        </div>
+        <div class="owner-col">
+          <div class="owner-block-head">
+            <span class="owner-block-title" data-name-for="b">Partner</span>
+            <span class="owner-block-sub" id="savingsBSub">—</span>
+          </div>
+          <div class="b-list" id="ownSavingsListB"></div>
+          <button type="button" class="btn btn-ghost row-add-btn" data-add="saving" data-owner="b">+ Add</button>
+        </div>
+      </div>
     </div>
 
   </div>
@@ -265,7 +320,7 @@
     </div>
 
     <div class="sum-card">
-      <div class="sum-card-title">Where the money goes</div>
+      <div class="sum-card-title">Where the pot goes</div>
       <div class="chart-wrap">
         <canvas id="costChart"></canvas>
       </div>

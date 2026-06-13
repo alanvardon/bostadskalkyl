@@ -279,22 +279,6 @@ input[type="text"]:hover { border-color: var(--ink-faint); }
 input[type="text"]:focus { border-color: var(--accent-light); background: var(--input-focus-bg); box-shadow: var(--ring); }
 input::placeholder { color: var(--ink-faint); }
 
-select {
-  font-family: var(--font-ui);
-  font-size: 12.5px;
-  font-weight: 500;
-  color: var(--ink-mid);
-  background: var(--input-bg);
-  border: 1px solid var(--rule);
-  border-radius: 9px;
-  padding: 8px 9px;
-  outline: none;
-  cursor: pointer;
-  transition: border-color 0.18s, box-shadow 0.18s;
-}
-select:hover { border-color: var(--ink-faint); }
-select:focus { border-color: var(--accent-light); box-shadow: var(--ring); }
-
 /* ── Who's in the household ─────────────────────────────────── */
 .who-row {
   display: flex;
@@ -358,6 +342,64 @@ select:focus { border-color: var(--accent-light); box-shadow: var(--ring); }
 
 .income-list { display: flex; flex-direction: column; gap: 7px; margin-bottom: 7px; }
 
+/* ── Owner blocks (joint / individual side-by-side) ─────────── */
+.owner-block {
+  background: var(--paper-warm);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-md);
+  padding: 0.9rem 1rem 0.8rem;
+}
+.owner-block-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  margin-bottom: 0.7rem;
+  padding-bottom: 0.45rem;
+  border-bottom: 1px solid var(--rule);
+}
+.owner-block-title {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--ink-mid);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.owner-block-tag {
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  color: var(--accent);
+}
+.owner-block-sub {
+  margin-left: auto;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.owner-split-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  margin: 1.1rem 0 0.6rem;
+}
+.owner-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 0.9rem; }
+.owner-col {
+  background: var(--paper-warm);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-md);
+  padding: 0.85rem 0.85rem 0.7rem;
+}
+
+.b-list { display: flex; flex-direction: column; gap: 7px; margin-bottom: 7px; }
+
 /* ── Editable rows (income / cost / saving) ─────────────────── */
 .b-row {
   display: grid;
@@ -365,7 +407,6 @@ select:focus { border-color: var(--accent-light); box-shadow: var(--ring); }
   align-items: center;
   gap: 6px;
 }
-.b-row.has-owner { grid-template-columns: 1fr 96px 96px auto; }
 
 .b-row-label { font-size: 13px !important; padding: 7px 9px !important; }
 .b-row-amount { text-align: right; font-size: 13px !important; padding: 7px 9px !important; font-variant-numeric: tabular-nums; }
@@ -384,10 +425,13 @@ select:focus { border-color: var(--accent-light); box-shadow: var(--ring); }
 }
 .b-row-remove:hover { color: var(--warn); background: var(--warn-faint); border-color: var(--warn); }
 
-/* In the narrow income columns, stack amount under label */
-.income-col .b-row { grid-template-columns: 1fr auto; }
-.income-col .b-row-amount { grid-column: 1; }
-.income-col .b-row-remove { grid-column: 2; grid-row: 1 / span 2; }
+/* In the narrow income & individual columns, stack amount under label */
+.income-col .b-row,
+.owner-col .b-row { grid-template-columns: 1fr auto; }
+.income-col .b-row-amount,
+.owner-col .b-row-amount { grid-column: 1; }
+.income-col .b-row-remove,
+.owner-col .b-row-remove { grid-column: 2; grid-row: 1 / span 2; }
 
 .row-add-btn {
   align-self: flex-start;
@@ -464,45 +508,6 @@ select:focus { border-color: var(--accent-light); box-shadow: var(--ring); }
 .pot-transfer.even .pot-transfer-icon { background: var(--rule); color: var(--ink-soft); }
 .pot-transfer-note { font-size: 11px; color: var(--ink-soft); margin-top: 0.45rem; line-height: 1.45; }
 .pot-transfer-note:empty { display: none; }
-
-/* ── Cost groups ────────────────────────────────────────────── */
-.cost-group { margin-bottom: 1.1rem; }
-.cost-group:last-child { margin-bottom: 0; }
-
-.cost-group-head {
-  display: flex;
-  align-items: baseline;
-  gap: 0.6rem;
-  margin-bottom: 0.55rem;
-  padding-bottom: 0.35rem;
-  border-bottom: 1px solid var(--rule);
-}
-.cost-group-title {
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  color: var(--ink-mid);
-}
-.cost-group-link {
-  font-size: 11px;
-  color: var(--accent-light);
-  text-decoration: none;
-  font-weight: 550;
-}
-.cost-group-link:hover { text-decoration: underline; }
-.cost-group-sub {
-  margin-left: auto;
-  font-size: 12.5px;
-  font-weight: 550;
-  color: var(--ink);
-  font-variant-numeric: tabular-nums;
-}
-
-.cost-list { display: flex; flex-direction: column; gap: 7px; margin-bottom: 7px; }
-
-/* ── Savings list ───────────────────────────────────────────── */
-#savingsList { display: flex; flex-direction: column; gap: 7px; margin-bottom: 7px; }
 
 /* ── Summary cards ──────────────────────────────────────────── */
 .summary-title {
@@ -656,13 +661,16 @@ select:focus { border-color: var(--accent-light); box-shadow: var(--ring); }
 }
 
 @media (max-width: 560px) {
+  /* Income + individual columns go full-width; their rows return to a
+     single wide line (label | amount | remove). */
   .income-cols { grid-template-columns: 1fr; }
-  .income-col .b-row { grid-template-columns: 1fr 110px auto; }
-  .income-col .b-row-amount { grid-column: auto; }
-  .income-col .b-row-remove { grid-column: auto; grid-row: auto; }
-  /* Cost/savings rows: label on its own line, amount + owner + remove below */
-  .b-row.has-owner { grid-template-columns: 1fr 1fr 30px; }
-  .b-row.has-owner .b-row-label { grid-column: 1 / -1; }
+  .owner-cols { grid-template-columns: 1fr; }
+  .income-col .b-row,
+  .owner-col .b-row { grid-template-columns: 1fr 110px auto; }
+  .income-col .b-row-amount,
+  .owner-col .b-row-amount { grid-column: auto; }
+  .income-col .b-row-remove,
+  .owner-col .b-row-remove { grid-column: auto; grid-row: auto; }
 }
 
 @media (max-width: 480px) {

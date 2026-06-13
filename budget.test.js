@@ -12,9 +12,14 @@ test('defaultState is internally consistent', () => {
   assert.equal(s.version, 1);
   assert.equal(s.people.length, 2);
   assert.ok(s.incomes.length > 0 && s.costs.length > 0 && s.savings.length > 0);
-  // every cost row carries a category that exists in CATEGORIES
-  const keys = new Set(budget.CATEGORIES.map(c => c.key));
-  for (const row of s.costs) assert.ok(keys.has(row.category), 'unknown category ' + row.category);
+  // every row is owned by joint, a or b (the only grouping axis now)
+  const owners = new Set(['joint', 'a', 'b']);
+  for (const row of [...s.costs, ...s.savings, ...s.incomes]) {
+    assert.ok(owners.has(row.owner), 'unknown owner ' + row.owner);
+  }
+  // defaults exercise both joint and individual rows for costs and savings
+  assert.ok(s.costs.some(r => r.owner === 'joint') && s.costs.some(r => r.owner === 'a') && s.costs.some(r => r.owner === 'b'));
+  assert.ok(s.savings.some(r => r.owner === 'joint') && s.savings.some(r => r.owner === 'a') && s.savings.some(r => r.owner === 'b'));
 });
 
 test('pools all income and splits it equally', () => {
@@ -102,18 +107,17 @@ test('leftover accounts for joint + own savings', () => {
   assert.equal(r.personB.leftover, 23000);
 });
 
-test('byCategory groups costs and surplus is income − costs − savings', () => {
+test('surplus is income − costs − savings; savingsRate is of total income', () => {
   const r = budget.computeBudget(st({
     incomes: [{ amount: 50000, owner: 'a' }, { amount: 50000, owner: 'b' }],
     costs: [
-      { amount: 8000, owner: 'joint', category: 'boende' },
-      { amount: 2000, owner: 'joint', category: 'boende' },
-      { amount: 5000, owner: 'joint', category: 'mat' }
+      { amount: 8000, owner: 'joint' },
+      { amount: 2000, owner: 'joint' },
+      { amount: 5000, owner: 'joint' }
     ],
     savings: [{ amount: 10000, owner: 'joint' }]
   }));
-  assert.equal(r.byCategory.boende, 10000);
-  assert.equal(r.byCategory.mat, 5000);
+  assert.equal(r.totalCosts, 15000);
   assert.equal(r.surplus, 100000 - 15000 - 10000); // 75000
   assert.equal(r.savingsRate, 10000 / 100000); // 0.1
 });
@@ -124,7 +128,7 @@ test('empty state yields all zeros and no divide-by-zero', () => {
   assert.equal(r.equalShare, 0);
   assert.equal(r.surplus, 0);
   assert.equal(r.savingsRate, 0);
-  assert.deepEqual(r.byCategory, {});
+  assert.equal(r.transfer.amount, 0);
 });
 
 test('handles missing arrays and rows without amounts', () => {
