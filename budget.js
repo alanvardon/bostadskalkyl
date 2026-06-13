@@ -921,6 +921,26 @@
     savedFlashTimer = setTimeout(function () { el.classList.remove('show'); }, 1400);
   }
 
+  // Play the close animation, then hide. The .closing class drives the fade-out
+  // (see budget.css); we hide on animationend so the transition is visible.
+  function dismissModal(el) {
+    if (!el || el.hidden) return;
+    el.classList.add('closing');
+    var finish = function (e) {
+      if (e && e.target !== el) return; // ignore the card's bubbling animationend
+      el.removeEventListener('animationend', finish);
+      if (!el.classList.contains('closing')) return; // reopened mid-close
+      el.classList.remove('closing');
+      el.hidden = true;
+    };
+    el.addEventListener('animationend', finish);
+  }
+
+  function showModal(el) {
+    el.classList.remove('closing'); // cancel any in-flight fade-out before reopening
+    el.hidden = false;
+  }
+
   // One editable income row in the modal (label + amount + remove). These rows
   // are modal-local (NOT in state), so they use their own classes — reusing
   // .b-row would trip budget.js's global row add/remove/input handlers.
@@ -1023,15 +1043,15 @@
     renderSalaryRows('b', baselineItems('b'));
     salaryNoteEl.value = '';
     updateSalaryPreview();
-    salaryModal.hidden = false;
+    showModal(salaryModal);
     document.addEventListener('keydown', onSalaryKey);
     var first = salaryListEl('a').querySelector('.sal-row-amount');
     if (first) { first.focus(); first.select(); }
   }
 
   function closeSalaryModal() {
-    salaryModal.hidden = true;
     document.removeEventListener('keydown', onSalaryKey);
+    dismissModal(salaryModal);
     if (openSalaryBtn) openSalaryBtn.focus();
   }
 
@@ -1048,15 +1068,15 @@
 
   function openHistory() {
     renderHistory();
-    salaryHistory.hidden = false;
+    showModal(salaryHistory);
     document.addEventListener('keydown', onHistoryKey);
     var close = document.getElementById('salaryHistoryClose');
     if (close) close.focus();
   }
 
   function closeHistory() {
-    salaryHistory.hidden = true;
     document.removeEventListener('keydown', onHistoryKey);
+    dismissModal(salaryHistory);
     if (openHistoryBtn) openHistoryBtn.focus();
   }
 
@@ -1091,34 +1111,38 @@
     return h;
   }
 
-  // The full submission, shown when its row is expanded.
+  // The full submission, revealed when its row is expanded. The grid-rows
+  // accordion in budget.css animates the inner wrapper's height open/closed.
   function buildHistoryDetail(row) {
     var detail = document.createElement('div');
     detail.classList.add('history-detail');
-    detail.hidden = true;
 
-    detail.appendChild(detailRow('Submitted', submittedLabel(row.created_at)));
-    detail.appendChild(detailRow((row.person_a_name || 'A') + ' total', fmt(row.income_a || 0)));
-    detail.appendChild(detailRow((row.person_b_name || 'B') + ' total', fmt(row.income_b || 0)));
-    detail.appendChild(detailRow('Each takes home', fmt(row.equal_share || 0)));
-    detail.appendChild(detailRow('Transfer', transferText(row)));
+    var inner = document.createElement('div');
+    inner.classList.add('history-detail-inner');
+
+    inner.appendChild(detailRow('Submitted', submittedLabel(row.created_at)));
+    inner.appendChild(detailRow((row.person_a_name || 'A') + ' total', fmt(row.income_a || 0)));
+    inner.appendChild(detailRow((row.person_b_name || 'B') + ' total', fmt(row.income_b || 0)));
+    inner.appendChild(detailRow('Each takes home', fmt(row.equal_share || 0)));
+    inner.appendChild(detailRow('Transfer', transferText(row)));
 
     var items = Array.isArray(row.income_items) ? row.income_items : [];
     ['a', 'b'].forEach(function (owner) {
       var its = items.filter(function (it) { return it.owner === owner; });
       if (!its.length) return;
-      detail.appendChild(detailSubhead((owner === 'b' ? (row.person_b_name || 'B') : (row.person_a_name || 'A')) + ' income'));
-      its.forEach(function (it) { detail.appendChild(detailRow(it.label || 'Income', fmt(it.amount || 0))); });
+      inner.appendChild(detailSubhead((owner === 'b' ? (row.person_b_name || 'B') : (row.person_a_name || 'A')) + ' income'));
+      its.forEach(function (it) { inner.appendChild(detailRow(it.label || 'Income', fmt(it.amount || 0))); });
     });
 
     if (row.note) {
-      detail.appendChild(detailSubhead('Note'));
+      inner.appendChild(detailSubhead('Note'));
       var n = document.createElement('p');
       n.classList.add('detail-note');
       n.textContent = row.note;
-      detail.appendChild(n);
+      inner.appendChild(n);
     }
 
+    detail.appendChild(inner);
     return detail;
   }
 
@@ -1240,11 +1264,9 @@
       var toggle = e.target.closest('.history-toggle');
       if (toggle) {
         var item = toggle.closest('.history-item');
-        var detail = item.querySelector('.history-detail');
-        var opening = detail.hidden;
-        detail.hidden = !opening;
-        toggle.setAttribute('aria-expanded', opening ? 'true' : 'false');
+        var opening = !item.classList.contains('open');
         item.classList.toggle('open', opening);
+        toggle.setAttribute('aria-expanded', opening ? 'true' : 'false');
       }
     });
   }
