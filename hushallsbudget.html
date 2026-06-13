@@ -327,14 +327,23 @@
         <label for="salaryMonth">Month</label>
         <input type="month" id="salaryMonth">
       </div>
-      <div class="field-row">
-        <div class="field">
-          <label for="salaryIncomeA" data-name-for="a">Alan</label>
-          <input type="text" id="salaryIncomeA" inputmode="numeric" autocomplete="off">
+      <p class="field-label">Income this month — salary plus barnbidrag, tax rebates, anything else</p>
+      <div class="income-cols salary-income-cols">
+        <div class="income-col">
+          <div class="income-col-head">
+            <span class="income-col-name" data-name-for="a">Alan</span>
+            <span class="income-col-sub" id="salarySubA">—</span>
+          </div>
+          <div class="sal-list" id="salaryIncomeListA"></div>
+          <button type="button" class="btn btn-ghost row-add-btn" data-salary-add="a">+ Add income</button>
         </div>
-        <div class="field">
-          <label for="salaryIncomeB" data-name-for="b">Partner</label>
-          <input type="text" id="salaryIncomeB" inputmode="numeric" autocomplete="off">
+        <div class="income-col">
+          <div class="income-col-head">
+            <span class="income-col-name" data-name-for="b">Partner</span>
+            <span class="income-col-sub" id="salarySubB">—</span>
+          </div>
+          <div class="sal-list" id="salaryIncomeListB"></div>
+          <button type="button" class="btn btn-ghost row-add-btn" data-salary-add="b">+ Add income</button>
         </div>
       </div>
       <div class="field">

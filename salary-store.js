@@ -8,7 +8,19 @@
   'use strict';
 
   var STORAGE_KEY = 'bostadskalkyl_salary_log_v1';
-  var VERSION = 1;
+  var VERSION = 2; // v2 adds income_items (itemised income per person)
+
+  // Forward-migrate a stored row to the current shape. v1 rows have scalar
+  // income_a/income_b but no income_items — synthesise a single salary item per
+  // person so older submissions still render and export with a breakdown.
+  function _migrate(row) {
+    if (!row || Array.isArray(row.income_items)) return row;
+    row.income_items = [
+      { owner: 'a', label: 'Lön / Salary', amount: row.income_a || 0 },
+      { owner: 'b', label: 'Lön / Salary', amount: row.income_b || 0 }
+    ];
+    return row;
+  }
 
   // Read the whole log as { version, submissions }. Tolerates a missing or
   // corrupt key by returning an empty log so the UI never throws.
@@ -18,7 +30,7 @@
       if (!raw) return { version: VERSION, submissions: [] };
       var data = JSON.parse(raw);
       if (!data || !Array.isArray(data.submissions)) return { version: VERSION, submissions: [] };
-      return { version: VERSION, submissions: data.submissions };
+      return { version: VERSION, submissions: data.submissions.map(_migrate) };
     } catch (_) {
       return { version: VERSION, submissions: [] };
     }

@@ -907,6 +907,49 @@ input[type="month"]::-webkit-calendar-picker-indicator { cursor: pointer; opacit
 .salary-preview strong { color: var(--ink); font-weight: 600; }
 .salary-preview .pot-transfer-amount { color: var(--accent); font-weight: 600; font-variant-numeric: tabular-nums; }
 
+/* Itemised income lists inside the submit modal */
+.field-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  margin-bottom: 0.5rem;
+}
+.salary-income-cols { margin-bottom: 0.9rem; }
+.salary-income-cols .income-col { padding: 0.75rem 0.75rem 0.6rem; }
+
+.sal-list { display: flex; flex-direction: column; gap: 7px; margin-bottom: 7px; min-width: 0; }
+.sal-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 4px 6px;
+  align-items: center;
+  min-width: 0;
+}
+.sal-row-label { grid-column: 1; font-size: 13px !important; padding: 7px 9px !important; }
+.sal-row-amount {
+  grid-column: 1;
+  text-align: right;
+  font-size: 13px !important;
+  padding: 7px 9px !important;
+  font-variant-numeric: tabular-nums;
+}
+.sal-row-remove {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  width: 26px; height: 26px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--ink-faint);
+  border-radius: 7px;
+  font-size: 17px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+.sal-row-remove:hover { color: var(--warn); background: var(--warn-faint); border-color: var(--warn); }
+
 /* ── Salary history list ────────────────────────────────────── */
 .history-list { display: flex; flex-direction: column; gap: 0.5rem; }
 .history-empty { font-size: 13px; color: var(--ink-soft); text-align: center; padding: 1.5rem 0.5rem; line-height: 1.5; }
@@ -932,6 +975,7 @@ input[type="month"]::-webkit-calendar-picker-indicator { cursor: pointer; opacit
   white-space: nowrap;
 }
 .history-sub { font-size: 11.5px; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
+.history-breakdown { font-size: 11px; color: var(--ink-soft); line-height: 1.45; }
 .history-note { font-size: 11.5px; color: var(--ink-mid); font-style: italic; }
 .history-delete {
   flex-shrink: 0;
