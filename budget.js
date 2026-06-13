@@ -628,6 +628,13 @@
       document.getElementById('pcard' + k + 'Sav').textContent = '−' + fmt(p.jointSavingsShare + p.ownSavings);
     });
 
+    // Household cashflow — both people's leftover combined (equals the surplus):
+    // what the household has left over after every cost and saving is covered.
+    var householdLeft = r.personA.leftover + r.personB.leftover;
+    var hhEl = document.getElementById('pcardHouseholdLeft');
+    hhEl.textContent = fmtSigned(householdLeft);
+    setPosNeg(hhEl, householdLeft);
+
     // Summary: savings rate
     document.getElementById('s-savingsRate').textContent = (r.savingsRate * 100).toFixed(1) + '%';
     setMoney('s-savA', r.savingsA);
