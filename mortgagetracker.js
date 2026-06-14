@@ -1349,7 +1349,7 @@
       grid: get('--rule'), tick: get('--ink-soft'),
       tooltipBg: get('--paper-card'), tooltipBorder: get('--rule'),
       tooltipTitle: get('--ink'), tooltipBody: get('--ink-mid'), legend: get('--ink-mid'),
-      a: get('--accent'), b: get('--accent-light'), bank: get('--warn-light')
+      a: get('--chart-mine'), b: get('--chart-partner'), bank: get('--chart-bank')
     };
   }
   function hexToRgba(hex, alpha) {
@@ -1388,9 +1388,12 @@
           borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4, pointHitRadius: 10, tension: 0.25, fill: true
         };
       };
+      // My equity is always the green base of the stack (matches the "Min andel"
+      // headline), partner's teal sits on top, the bank's clay debt caps it.
+      var me = settings.i_am === 'b' ? 'b' : 'a', other = me === 'a' ? 'b' : 'a';
       var datasets = [
-        ds(nameOf('a') + '’s equity', 'a_equity', cc.a),
-        ds(nameOf('b') + '’s equity', 'b_equity', cc.b),
+        ds(nameOf(me) + '’s equity', me + '_equity', cc.a),
+        ds(nameOf(other) + '’s equity', other + '_equity', cc.b),
         ds('Banken · Bank', 'bank', cc.bank)
       ];
       chartInstance = new window.Chart(canvas.getContext('2d'), {

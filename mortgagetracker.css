@@ -19,6 +19,10 @@
   --warn: #9c4d17;
   --warn-light: #c07a36;
   --warn-faint: #f6ecdf;
+  /* equity chart — three distinct hues: my equity (green), partner (teal), bank debt (clay) */
+  --chart-mine: #357a4c;
+  --chart-partner: #3d7e94;
+  --chart-bank: #c08a44;
   --rule: #dcd8ca;
   --on-accent: #ffffff;
   --input-bg: #fbfaf5;
@@ -49,6 +53,9 @@
   --warn: #cb7a3c;
   --warn-light: #dd9a52;
   --warn-faint: #2c2115;
+  --chart-mine: #62ab78;
+  --chart-partner: #5fa3bd;
+  --chart-bank: #d29e5c;
   --rule: #2d2f27;
   --on-accent: #ffffff;
   --input-bg: #1e201a;
