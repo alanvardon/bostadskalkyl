@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Konsultkalkyl — Hemma</title>
+<script>
+  // Pre-paint theme to avoid a light-mode flash (shared key with the rest of Hemma)
+  try { document.documentElement.dataset.theme = localStorage.getItem('bostadskalkyl_theme') === 'dark' ? 'dark' : 'light'; } catch (_) {}
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter:wght@300..600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="konsultkalkyl.css">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon.svg">
+<meta name="theme-color" content="">
+</head>
+<body>
+
+<div class="page-header">
+  <div class="header-brand">
+    <a class="hub-link" href="index.html">‹ Hemma</a>
+    <div>
+      <h1>Konsultkalkyl</h1>
+      <p class="tagline">What contracting through your own AB could pay — Sweden, 2026</p>
+    </div>
+  </div>
+  <div class="header-actions">
+    <span id="saveState" class="save-state">Saved ✓</span>
+    <button id="themeToggleBtn" class="btn btn-ghost theme-toggle-btn" title="Toggle dark mode">☀</button>
+    <button class="btn btn-ghost" id="resetBtn" title="Reset to the example">Reset</button>
+  </div>
+</div>
+
+<div class="layout">
+
+  <!-- INPUTS (left rail) -->
+  <div class="inputs-col">
+
+    <!-- Section 1: Billing -->
+    <div class="section">
+      <div class="section-label">
+        <span class="section-num">1</span>
+        <span class="section-title">Debitering · Billing</span>
+      </div>
+
+      <div class="field-grid">
+        <div class="field">
+          <label for="in-rate">Timpris <span class="field-en">Rate</span></label>
+          <div class="input-wrap"><input type="text" id="in-rate" inputmode="decimal" autocomplete="off"><span class="unit">kr/h</span></div>
+        </div>
+        <div class="field">
+          <label for="in-hours">Timmar / vecka <span class="field-en">Hours/week</span></label>
+          <div class="input-wrap"><input type="text" id="in-hours" inputmode="decimal" autocomplete="off"><span class="unit">h</span></div>
+        </div>
+        <div class="field">
+          <label for="in-weeks">Veckor / år <span class="field-en">Weeks/year</span></label>
+          <div class="input-wrap"><input type="text" id="in-weeks" inputmode="decimal" autocomplete="off"><span class="unit">v</span></div>
+        </div>
+        <div class="field">
+          <label for="in-holidays">Semester <span class="field-en">Holiday</span></label>
+          <div class="input-wrap"><input type="text" id="in-holidays" inputmode="decimal" autocomplete="off"><span class="unit">v</span></div>
+        </div>
+        <div class="field">
+          <label for="in-sick">Sjuk / VAB <span class="field-en">Sick</span></label>
+          <div class="input-wrap"><input type="text" id="in-sick" inputmode="decimal" autocomplete="off"><span class="unit">v</span></div>
+        </div>
+      </div>
+
+      <div class="mini-readout">
+        <div class="mini-stat">
+          <span class="mini-stat-label">Debiterbara timmar</span>
+          <span class="mini-stat-val" id="o-billableHours">—</span>
+        </div>
+        <div class="mini-stat">
+          <span class="mini-stat-label">Omsättning / år</span>
+          <span class="mini-stat-val" id="o-revenueMini">—</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Section 2: Salary -->
+    <div class="section">
+      <div class="section-label">
+        <span class="section-num">2</span>
+        <span class="section-title">Lön · Salary</span>
+      </div>
+      <p class="section-note">
+        The gross salary you draw each month. <strong>Löneväxling</strong> swaps part
+        of it into a pension premium (lower tax), so cash salary = gross − löneväxling.
+      </p>
+      <div class="field-grid">
+        <div class="field">
+          <label for="in-gross">Bruttolön / mån <span class="field-en">Gross/month</span></label>
+          <div class="input-wrap"><input type="text" id="in-gross" inputmode="decimal" autocomplete="off"><span class="unit">kr</span></div>
+        </div>
+        <div class="field">
+          <label for="in-lonevaxling">Löneväxling / mån <span class="field-en">To pension</span></label>
+          <div class="input-wrap"><input type="text" id="in-lonevaxling" inputmode="decimal" autocomplete="off"><span class="unit">kr</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Section 3: Company costs -->
+    <div class="section">
+      <div class="section-label">
+        <span class="section-num">3</span>
+        <span class="section-title">Företagskostnader · Costs</span>
+      </div>
+      <p class="section-note">
+        Accountant, insurance, work computer, phone — everything the company pays for
+        besides your salary.
+      </p>
+      <div class="field-grid">
+        <div class="field field-wide">
+          <label for="in-other">Övriga kostnader / mån <span class="field-en">Other costs/month</span></label>
+          <div class="input-wrap"><input type="text" id="in-other" inputmode="decimal" autocomplete="off"><span class="unit">kr</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Section 4: Tax rates -->
+    <details class="section section-rates">
+      <summary class="section-label section-label-summary">
+        <span class="section-num">4</span>
+        <span class="section-title">Skattesatser · Rates 2026</span>
+        <span class="summary-caret" aria-hidden="true">▾</span>
+      </summary>
+      <p class="section-note">
+        Pre-filled with the correct 2026 figures. Adjust your <strong>kommunalskatt</strong>
+        to your municipality — the rest rarely change.
+      </p>
+      <div class="field-grid">
+        <div class="field">
+          <label for="in-employerFee">Arbetsgivaravgift <span class="field-en">Employer fee</span></label>
+          <div class="input-wrap"><input type="text" id="in-employerFee" inputmode="decimal" autocomplete="off"><span class="unit">%</span></div>
+        </div>
+        <div class="field">
+          <label for="in-sarskild">Särskild löneskatt <span class="field-en">On pension</span></label>
+          <div class="input-wrap"><input type="text" id="in-sarskild" inputmode="decimal" autocomplete="off"><span class="unit">%</span></div>
+        </div>
+        <div class="field">
+          <label for="in-corpTax">Bolagsskatt <span class="field-en">Corporate</span></label>
+          <div class="input-wrap"><input type="text" id="in-corpTax" inputmode="decimal" autocomplete="off"><span class="unit">%</span></div>
+        </div>
+        <div class="field">
+          <label for="in-municipalTax">Kommunalskatt <span class="field-en">Municipal</span></label>
+          <div class="input-wrap"><input type="text" id="in-municipalTax" inputmode="decimal" autocomplete="off"><span class="unit">%</span></div>
+        </div>
+        <div class="field">
+          <label for="in-dividendAllowance">Gränsbelopp <span class="field-en">3:12 allowance</span></label>
+          <div class="input-wrap"><input type="text" id="in-dividendAllowance" inputmode="decimal" autocomplete="off"><span class="unit">kr</span></div>
+        </div>
+        <div class="field">
+          <label for="in-dividendTax">Utdelningsskatt <span class="field-en">Dividend tax</span></label>
+          <div class="input-wrap"><input type="text" id="in-dividendTax" inputmode="decimal" autocomplete="off"><span class="unit">%</span></div>
+        </div>
+      </div>
+    </details>
+
+  </div>
+
+  <!-- LEDGER (right, the P&L) -->
+  <div class="ledger-col">
+
+    <div class="hero-card">
+      <div class="hero-label">Total nettoinkomst · in your pocket</div>
+      <div class="hero-big" id="o-totalNet-m">—</div>
+      <div class="hero-sub">per month · <span id="o-totalNet-y">—</span> per year</div>
+      <div class="hero-split" role="img" aria-label="Salary vs dividend split">
+        <span class="hero-seg hero-salary" id="hsSalary"></span>
+        <span class="hero-seg hero-dividend" id="hsDividend"></span>
+      </div>
+      <div class="hero-legend">
+        <span class="hero-key"><span class="hero-dot hero-salary"></span>Nettolön <em id="hl-salary">—</em></span>
+        <span class="hero-key"><span class="hero-dot hero-dividend"></span>Utdelning <em id="hl-dividend">—</em></span>
+      </div>
+      <div class="hero-stats">
+        <div class="hero-stat">
+          <span class="hero-stat-val" id="o-takeHomeRate">—</span>
+          <span class="hero-stat-label">av omsättningen<br>to you</span>
+        </div>
+        <div class="hero-stat">
+          <span class="hero-stat-val" id="o-retained-m">—</span>
+          <span class="hero-stat-label">kvar i bolaget<br>retained/month</span>
+        </div>
+        <div class="hero-stat">
+          <span class="hero-stat-val" id="o-effTax">—</span>
+          <span class="hero-stat-label">effektiv skatt<br>effective tax</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="ledger">
+      <div class="ledger-head">
+        <span class="ledger-head-item">Line item</span>
+        <span class="ledger-head-num">Per månad</span>
+        <span class="ledger-head-num">Per år</span>
+      </div>
+
+      <!-- Revenue -->
+      <div class="ledger-group">Intäkter</div>
+      <div class="lr lr-strong">
+        <span class="lr-label">Omsättning <span class="lr-en">Revenue</span></span>
+        <span class="lr-num" id="o-revenue-m">—</span>
+        <span class="lr-num" id="o-revenue-y">—</span>
+      </div>
+
+      <!-- Salary -->
+      <div class="ledger-group">Lön</div>
+      <div class="lr">
+        <span class="lr-label">Bruttolön <span class="lr-en">Gross salary</span></span>
+        <span class="lr-num" id="o-grossSalary-m">—</span>
+        <span class="lr-num" id="o-grossSalary-y">—</span>
+      </div>
+      <div class="lr lr-minus">
+        <span class="lr-label">Löneväxling <span class="lr-en">to pension</span></span>
+        <span class="lr-num" id="o-lonevaxling-m">—</span>
+        <span class="lr-num" id="o-lonevaxling-y">—</span>
+      </div>
+      <div class="lr lr-sub">
+        <span class="lr-label">Kontant lön <span class="lr-en">Cash salary</span></span>
+        <span class="lr-num" id="o-cashSalary-m">—</span>
+        <span class="lr-num" id="o-cashSalary-y">—</span>
+      </div>
+
+      <!-- Company costs -->
+      <div class="ledger-group">Företagets kostnader</div>
+      <div class="lr">
+        <span class="lr-label">Arbetsgivaravgift <span class="lr-en" id="lbl-employerFee">31,42 %</span></span>
+        <span class="lr-num" id="o-employerFee-m">—</span>
+        <span class="lr-num" id="o-employerFee-y">—</span>
+      </div>
+      <div class="lr">
+        <span class="lr-label">Särskild löneskatt <span class="lr-en" id="lbl-sarskild">24,26 %</span></span>
+        <span class="lr-num" id="o-sarskildLoneskatt-m">—</span>
+        <span class="lr-num" id="o-sarskildLoneskatt-y">—</span>
+      </div>
+      <div class="lr">
+        <span class="lr-label">Övriga kostnader <span class="lr-en">Other costs</span></span>
+        <span class="lr-num" id="o-otherCost-m">—</span>
+        <span class="lr-num" id="o-otherCost-y">—</span>
+      </div>
+      <div class="lr lr-sub">
+        <span class="lr-label">Total lönekostnad <span class="lr-en">Total salary cost</span></span>
+        <span class="lr-num" id="o-totalSalaryCost-m">—</span>
+        <span class="lr-num" id="o-totalSalaryCost-y">—</span>
+      </div>
+
+      <!-- Profit & corporate tax -->
+      <div class="ledger-group">Resultat &amp; bolagsskatt</div>
+      <div class="lr lr-strong">
+        <span class="lr-label">Resultat före skatt <span class="lr-en">Profit before tax</span></span>
+        <span class="lr-num" id="o-profitBeforeTax-m">—</span>
+        <span class="lr-num" id="o-profitBeforeTax-y">—</span>
+      </div>
+      <div class="lr">
+        <span class="lr-label">Bolagsskatt <span class="lr-en" id="lbl-corpTax">20,6 %</span></span>
+        <span class="lr-num" id="o-corporateTax-m">—</span>
+        <span class="lr-num" id="o-corporateTax-y">—</span>
+      </div>
+      <div class="lr lr-sub">
+        <span class="lr-label">Resultat efter skatt <span class="lr-en">Profit after tax</span></span>
+        <span class="lr-num" id="o-profitAfterTax-m">—</span>
+        <span class="lr-num" id="o-profitAfterTax-y">—</span>
+      </div>
+
+      <!-- Dividend -->
+      <div class="ledger-group">Utdelning · 3:12</div>
+      <div class="lr">
+        <span class="lr-label">Utdelning inom gränsbelopp <span class="lr-en">Dividend</span></span>
+        <span class="lr-num" id="o-dividend-m">—</span>
+        <span class="lr-num" id="o-dividend-y">—</span>
+      </div>
+      <div class="lr">
+        <span class="lr-label">Skatt på utdelning <span class="lr-en" id="lbl-dividendTax">20 %</span></span>
+        <span class="lr-num" id="o-dividendTax-m">—</span>
+        <span class="lr-num" id="o-dividendTax-y">—</span>
+      </div>
+      <div class="lr lr-sub lr-good">
+        <span class="lr-label">Netto utdelning <span class="lr-en">Net dividend</span></span>
+        <span class="lr-num" id="o-netDividend-m">—</span>
+        <span class="lr-num" id="o-netDividend-y">—</span>
+      </div>
+      <div class="lr lr-muted">
+        <span class="lr-label">Kvar i bolaget <span class="lr-en">Retained profit</span></span>
+        <span class="lr-num" id="o-retainedProfit-m">—</span>
+        <span class="lr-num" id="o-retainedProfit-y">—</span>
+      </div>
+
+      <!-- Personal tax on salary -->
+      <div class="ledger-group">Lön till dig</div>
+      <div class="lr">
+        <span class="lr-label">Kommunalskatt <span class="lr-en" id="lbl-municipalTax">32,38 %</span></span>
+        <span class="lr-num" id="o-municipalTax-m">—</span>
+        <span class="lr-num" id="o-municipalTax-y">—</span>
+      </div>
+      <div class="lr">
+        <span class="lr-label">Statlig skatt <span class="lr-en">State 20 % over 643 000</span></span>
+        <span class="lr-num" id="o-stateTax-m">—</span>
+        <span class="lr-num" id="o-stateTax-y">—</span>
+      </div>
+      <div class="lr lr-plus">
+        <span class="lr-label">Jobbskatteavdrag <span class="lr-en">Work tax credit</span></span>
+        <span class="lr-num" id="o-workTaxCredit-m">—</span>
+        <span class="lr-num" id="o-workTaxCredit-y">—</span>
+      </div>
+      <div class="lr lr-sub lr-good">
+        <span class="lr-label">Nettolön <span class="lr-en">Net salary</span></span>
+        <span class="lr-num" id="o-netSalary-m">—</span>
+        <span class="lr-num" id="o-netSalary-y">—</span>
+      </div>
+
+      <!-- Total -->
+      <div class="lr lr-total">
+        <span class="lr-label">Total nettoinkomst <span class="lr-en">Net salary + dividend</span></span>
+        <span class="lr-num" id="o-totalNetLedger-m">—</span>
+        <span class="lr-num" id="o-totalNetLedger-y">—</span>
+      </div>
+    </div>
+
+    <p class="ledger-foot">
+      Estimate for a single-owner AB, owner under 66, income year 2026. Uses the new
+      unified 3:12 rule (grundbelopp 4 × inkomstbasbelopp). Pension (löneväxling) is
+      deducted from profit and carries särskild löneskatt. Not tax advice.
+    </p>
+  </div>
+</div>
+
+<!-- Mobile key-figures bar -->
+<div class="mobile-bar">
+  <div class="mobile-bar-inner">
+    <div class="mobile-stat">
+      <span class="mobile-stat-label">Netto / mån</span>
+      <span class="mobile-stat-val" id="m-net">—</span>
+    </div>
+    <div class="mobile-stat">
+      <span class="mobile-stat-label">Av omsättning</span>
+      <span class="mobile-stat-val" id="m-rate">—</span>
+    </div>
+  </div>
+</div>
+
+<script src="calc.js"></script>
+<script src="konsultkalkyl.js"></script>
+</body>
+</html>

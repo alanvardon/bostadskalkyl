@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Månadsavslut — Hemma</title>
+<script>
+  // Pre-paint theme to avoid a light-mode flash (shared key with the rest of Hemma)
+  try { document.documentElement.dataset.theme = localStorage.getItem('bostadskalkyl_theme') === 'dark' ? 'dark' : 'light'; } catch (_) {}
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter:wght@300..600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="manadsavslut.css">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon.svg">
+<meta name="theme-color" content="">
+</head>
+<body>
+
+<div class="page-header">
+  <div class="header-brand">
+    <a class="hub-link" href="index.html">‹ Hemma</a>
+    <div>
+      <h1>Månadsavslut</h1>
+      <p class="tagline">Reconcile shared spending and settle up — the month-end close</p>
+    </div>
+  </div>
+  <div class="header-actions">
+    <span id="saveState" class="save-state">Saved ✓</span>
+    <button id="settingsBtn" class="btn btn-ghost theme-toggle-btn" title="Settings" aria-label="Settings">⚙</button>
+    <button id="themeToggleBtn" class="btn btn-ghost theme-toggle-btn" title="Toggle dark mode">☀</button>
+  </div>
+</div>
+
+<main class="wrap">
+
+  <!-- ── Outstanding balance + settle ────────────────────────── -->
+  <section class="card balance-card">
+    <div class="balance-main">
+      <p class="balance-label" id="balanceLabel">Outstanding</p>
+      <p class="balance-amount" id="balanceAmount">—</p>
+      <p class="balance-sub" id="balanceSub">No open items yet.</p>
+    </div>
+    <button type="button" class="btn btn-primary balance-settle" id="settleBtn" disabled>Settle up</button>
+  </section>
+
+  <!-- ── Import a card statement ─────────────────────────────── -->
+  <section class="card import-card">
+    <div class="card-head">
+      <h2>Importera kontoutdrag <span class="card-en">· Import a statement</span></h2>
+    </div>
+
+    <!-- Empty state: drop / browse -->
+    <div class="dropzone" id="dropzone">
+      <input type="file" id="fileInput" accept=".csv,text/csv,text/plain" hidden>
+      <div class="dropzone-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 16V4"/><path d="m7 9 5-5 5 5"/><path d="M5 20h14"/>
+        </svg>
+      </div>
+      <p class="dropzone-lead">Drop a card-statement <strong>.csv</strong> here, or <button type="button" class="link-btn" id="browseBtn">browse</button>.</p>
+      <p class="dropzone-hint">Swedish or English headers · comma or semicolon · we map the columns for you.</p>
+    </div>
+
+    <!-- Config + triage: shown once a file is parsed -->
+    <div class="import-config" id="importConfig" hidden>
+      <div class="import-filebar">
+        <span class="file-pill"><span id="fileName">statement.csv</span> · <span id="fileMeta">—</span></span>
+        <button type="button" class="link-btn" id="changeFileBtn">Choose a different file</button>
+      </div>
+
+      <div class="config-grid">
+        <div class="config-field">
+          <label for="mapDate">Date column</label>
+          <select id="mapDate" class="select"></select>
+        </div>
+        <div class="config-field">
+          <label for="mapDesc">Description column</label>
+          <select id="mapDesc" class="select"></select>
+        </div>
+        <div class="config-field">
+          <label for="mapAmount">Amount column</label>
+          <select id="mapAmount" class="select"></select>
+        </div>
+      </div>
+
+      <div class="config-grid">
+        <div class="config-field">
+          <label>Whose card is this?</label>
+          <div class="segmented" id="frontedBy" role="radiogroup" aria-label="Whose card">
+            <button type="button" class="seg is-active" data-person="a" role="radio" aria-checked="true">Alex</button>
+            <button type="button" class="seg" data-person="b" role="radio" aria-checked="false">Sam</button>
+          </div>
+          <p class="config-note" id="frontedHint">The other partner owes their share of these.</p>
+        </div>
+        <div class="config-field">
+          <label>Default treatment per row</label>
+          <div class="segmented" id="defaultClass" role="radiogroup" aria-label="Default treatment">
+            <button type="button" class="seg is-active" data-class="split" role="radio" aria-checked="true">Split 50/50</button>
+            <button type="button" class="seg" data-class="full" role="radio" aria-checked="false">Owes all</button>
+            <button type="button" class="seg" data-class="exclude" role="radio" aria-checked="false">Exclude</button>
+          </div>
+          <p class="config-note">Set per row below, or change them all at once.</p>
+        </div>
+      </div>
+
+      <div class="triage-bar">
+        <span class="triage-summary" id="triageSummary">—</span>
+        <span class="triage-hint">Tip: change “Default treatment” to set every row at once.</span>
+      </div>
+
+      <div class="table-wrap triage-wrap">
+        <table class="data-table triage-table">
+          <thead>
+            <tr>
+              <th class="col-treat">Treatment</th>
+              <th class="col-date">Date</th>
+              <th>Description</th>
+              <th class="num">Amount</th>
+            </tr>
+          </thead>
+          <tbody id="triageBody"></tbody>
+        </table>
+      </div>
+
+      <div class="import-actions">
+        <button type="button" class="btn btn-ghost" id="cancelImport">Cancel</button>
+        <button type="button" class="btn btn-primary" id="confirmImport" disabled>Add items</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Items ────────────────────────────────────────────────── -->
+  <section class="card">
+    <div class="card-head">
+      <h2>Poster <span class="card-en">· Items</span></h2>
+      <span class="count-pill" id="itemsCount">0</span>
+      <div class="card-actions">
+        <div class="segmented" id="itemFilter" role="radiogroup" aria-label="Filter items">
+          <button type="button" class="seg is-active" data-filter="open" role="radio" aria-checked="true">Open</button>
+          <button type="button" class="seg" data-filter="all" role="radio" aria-checked="false">All</button>
+          <button type="button" class="seg" data-filter="a" role="radio" aria-checked="false">Alex</button>
+          <button type="button" class="seg" data-filter="b" role="radio" aria-checked="false">Sam</button>
+        </div>
+        <button type="button" class="btn btn-ghost" id="addItemBtn">+ Add item</button>
+        <button type="button" class="btn btn-ghost btn-danger" id="clearOpenBtn">Delete all open</button>
+      </div>
+    </div>
+    <div id="itemsHost"></div>
+  </section>
+
+  <!-- ── Insights ─────────────────────────────────────────────── -->
+  <section class="card">
+    <div class="card-head">
+      <h2>Insikter <span class="card-en">· Insights</span></h2>
+    </div>
+    <div id="insightsHost"></div>
+  </section>
+
+  <!-- ── Settlement history ───────────────────────────────────── -->
+  <section class="card">
+    <div class="card-head">
+      <h2>Tidigare avslut <span class="card-en">· History</span></h2>
+      <span class="count-pill" id="historyCount">0</span>
+    </div>
+    <div id="historyHost"></div>
+  </section>
+
+</main>
+
+<!-- ── Item add/edit dialog ──────────────────────────────────── -->
+<dialog id="itemDialog" class="dialog">
+  <form id="itemForm" class="dialog-body">
+    <h3 class="dialog-title" id="itemDialogTitle">Add item</h3>
+    <div class="form-grid">
+      <label class="form-field"><span>Date</span><input type="date" id="f-date"></label>
+      <label class="form-field form-wide"><span>Description</span><input type="text" id="f-desc" autocomplete="off" placeholder="e.g. Groceries"></label>
+      <label class="form-field"><span>Charge (full amount)</span><input type="text" id="f-amount" inputmode="decimal" autocomplete="off" placeholder="0"></label>
+      <div class="form-field">
+        <span>Paid by</span>
+        <div class="segmented" id="f-fronted" role="radiogroup" aria-label="Paid by">
+          <button type="button" class="seg is-active" data-person="a" role="radio" aria-checked="true">Alex</button>
+          <button type="button" class="seg" data-person="b" role="radio" aria-checked="false">Sam</button>
+        </div>
+      </div>
+      <div class="form-field">
+        <span>Treatment</span>
+        <div class="segmented" id="f-split" role="radiogroup" aria-label="Treatment">
+          <button type="button" class="seg is-active" data-class="split" role="radio" aria-checked="true">Split 50/50</button>
+          <button type="button" class="seg" data-class="full" role="radio" aria-checked="false">Owes all</button>
+        </div>
+      </div>
+      <label class="form-field form-wide"><span>Note (optional)</span><input type="text" id="f-note" autocomplete="off"></label>
+    </div>
+    <p class="form-hint" id="f-hint"></p>
+    <div class="dialog-actions">
+      <button type="button" class="btn btn-ghost" data-close>Cancel</button>
+      <button type="submit" class="btn btn-primary">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- ── Settle dialog ─────────────────────────────────────────── -->
+<dialog id="settleDialog" class="dialog">
+  <form id="settleForm" class="dialog-body">
+    <h3 class="dialog-title">Settle up</h3>
+    <div class="form-grid">
+      <label class="form-field form-wide"><span>Settle which month?</span><select id="f-settle-month" class="select"></select></label>
+    </div>
+    <p class="settle-line" id="settleLine">—</p>
+    <div class="form-grid">
+      <label class="form-field form-wide"><span>Period label</span><input type="text" id="f-period" autocomplete="off" placeholder="e.g. Juni 2026"></label>
+      <label class="form-field form-wide"><span>Note (optional)</span><input type="text" id="f-settle-note" autocomplete="off"></label>
+    </div>
+    <p class="form-hint">Closes just the chosen month's open items under one payment — a true month-end. Pick “All open items” to settle everything. Reopen later from History.</p>
+    <div class="dialog-actions">
+      <button type="button" class="btn btn-ghost" data-close>Cancel</button>
+      <button type="submit" class="btn btn-primary" id="settleConfirm">Confirm settlement</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- ── Settings dialog ───────────────────────────────────────── -->
+<dialog id="settingsDialog" class="dialog">
+  <form id="settingsForm" class="dialog-body">
+    <h3 class="dialog-title">Settings</h3>
+    <div class="form-grid">
+      <label class="form-field"><span>Name A</span><input type="text" id="s-nameA" autocomplete="off"></label>
+      <label class="form-field"><span>Name B</span><input type="text" id="s-nameB" autocomplete="off"></label>
+      <div class="form-field form-wide">
+        <span>Default treatment for new / imported rows</span>
+        <div class="segmented" id="s-default" role="radiogroup" aria-label="Default treatment">
+          <button type="button" class="seg is-active" data-class="split" role="radio" aria-checked="true">Split 50/50</button>
+          <button type="button" class="seg" data-class="full" role="radio" aria-checked="false">Owes all</button>
+        </div>
+      </div>
+      <div class="form-field form-wide">
+        <span>Backup</span>
+        <div class="settings-data-row">
+          <button type="button" class="btn btn-ghost" id="exportBtn">Export JSON</button>
+          <button type="button" class="btn btn-ghost" id="importBtn">Import JSON</button>
+          <input type="file" id="importInput" accept=".json,application/json" hidden>
+        </div>
+        <p class="config-note">Download everything — items, settlements and settings — or restore a backup (merges by id, so re-importing is safe).</p>
+      </div>
+    </div>
+    <div class="dialog-actions">
+      <button type="button" class="btn btn-ghost" data-close>Cancel</button>
+      <button type="submit" class="btn btn-primary">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- toast -->
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+<script src="manadsavslut-store.js"></script>
+<script src="manadsavslut.js"></script>
+</body>
+</html>
