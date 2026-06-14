@@ -527,18 +527,25 @@ test('paymentsToCsv emits a semicolon file with a header and escapes specials', 
 });
 
 // ── #9 Reconciliation ──
-test('reconcileBalance reports drift between derived and the imported Saldo', () => {
-  const parts = [{ id: 'p1', start_balance: 1000000 }, { id: 'p2', start_balance: 500000 }];
+test('reconcileBalance checks the start balance against the ledger start, not amortering rows', () => {
+  const parts = [
+    { id: 'p1', start_balance: 1200000, start_date: '2024-07-01' }, // full import, amortises via Saldo
+    { id: 'p2', start_balance: 1200000, start_date: '2024-07-01' }, // partial import: ledger starts lower
+    { id: 'p3', start_balance: 0 }                                  // no start balance → nothing to check
+  ];
   const pays = [
-    { loan_part_id: 'p1', date: '2025-02-01', kind: 'amortization', amount: 30000 },
-    { loan_part_id: 'p1', date: '2025-03-01', kind: 'payment', amount: 1, balance_after: 980000 }
+    // p1: principal falls 1.2M → 1.032M through plain "payment" rows (no typed amortering)
+    { loan_part_id: 'p1', date: '2024-07-24', kind: 'loan', amount: 1200000, balance_after: 1200000 },
+    { loan_part_id: 'p1', date: '2025-06-30', kind: 'payment', amount: 4000, balance_after: 1032000 },
+    // p2: only recent rows imported — earliest Saldo 1.08M < entered start balance
+    { loan_part_id: 'p2', date: '2025-01-31', kind: 'payment', amount: 4000, balance_after: 1080000 },
+    { loan_part_id: 'p2', date: '2025-06-30', kind: 'payment', amount: 4000, balance_after: 1032000 }
   ];
   const r = m.reconcileBalance(parts, pays);
-  assert.equal(r[0].derived, 970000, '1.0M − 30k amortering');
-  assert.equal(r[0].csv, 980000);
-  assert.equal(r[0].drift, -10000);
-  assert.equal(r[1].csv, null, 'no payments → nothing to reconcile');
-  assert.equal(r[1].drift, null);
+  assert.equal(r[0].drift, 0, 'amortising via Saldo with a matching start balance does NOT drift');
+  assert.equal(r[0].current, 1032000, 'current balance still tracks the latest Saldo');
+  assert.equal(r[1].drift, 120000, 'partial import: start 1.2M vs ledger start 1.08M');
+  assert.equal(r[2].drift, null, 'no start balance → nothing to reconcile');
 });
 
 // ── #10 Contribution-based ownership ──

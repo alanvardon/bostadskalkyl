@@ -730,25 +730,39 @@
     return rows.map(function (r) { return r.map(_csvCell).join(';'); }).join('\n');
   }
 
-  // #9 — Reconciliation. The derived balance (start − Σ amortering) vs the
-  // imported running Saldo we trust. A non-zero drift on a part flags a partial
-  // or malformed import. Only meaningful when a start balance is set.
+  // #9 — Reconciliation. The Saldo is trusted for the CURRENT balance, so the
+  // meaningful cross-check is the manual start balance against where the imported
+  // ledger actually begins (the earliest settled Saldo on/after start_date). A
+  // drift means a partial import or a start balance that needs updating — NOT a
+  // loan that simply amortises via Saldo steps (which is the normal case and must
+  // stay silent). Only evaluated when a start balance is set.
+  function _settledAtEdge(rows, newest) {
+    if (!rows.length) return null;
+    var edge = rows.reduce(function (acc, x) {
+      var d = String(x.date || '');
+      if (acc == null) return d;
+      return newest ? (d > acc ? d : acc) : (d < acc ? d : acc);
+    }, null);
+    var same = rows.filter(function (x) { return String(x.date || '') === edge; });
+    return same.reduce(function (mn, x) { var b = Number(x.balance_after) || 0; return (mn == null || b < mn) ? b : mn; }, null);
+  }
   function reconcileBalance(parts, payments) {
     return (parts || []).filter(function (p) { return p && !p.archived; }).map(function (p) {
       var entries = (payments || []).filter(function (x) { return x && x.loan_part_id === p.id; });
-      var withBal = entries.filter(function (x) { return x.balance_after != null; });
-      var csv = null;
-      if (withBal.length) {
-        var latestDate = withBal.reduce(function (mx, x) { var d = String(x.date || ''); return d > mx ? d : mx; }, '');
-        var sameDate = withBal.filter(function (x) { return String(x.date || '') === latestDate; });
-        csv = sameDate.reduce(function (mn, x) { var b = Number(x.balance_after) || 0; return (mn == null || b < mn) ? b : mn; }, null);
-      }
+      var withBal = entries.filter(function (x) { return x.balance_after != null && x.date; });
+      var startDate = String(p.start_date || '');
+      var scoped = startDate ? withBal.filter(function (x) { return String(x.date || '') >= startDate; }) : withBal;
+      if (!scoped.length) scoped = withBal;
+      var current = withBal.length ? _round2(_settledAtEdge(withBal, true)) : null;
+      var startSaldo = scoped.length ? _round2(_settledAtEdge(scoped, false)) : null;
       var hasStart = Number(p.start_balance) > 0;
-      var amort = 0;
-      entries.forEach(function (x) { if (x.kind === 'amortization') amort += Number(x.amount) || 0; });
-      var derived = hasStart ? _round2(Number(p.start_balance) - amort) : null;
-      var drift = (csv != null && derived != null) ? _round2(derived - csv) : null;
-      return { loan_part_id: p.id, label: p.label || '', csv: csv != null ? _round2(csv) : null, derived: derived, drift: drift };
+      var drift = (hasStart && startSaldo != null) ? _round2(Number(p.start_balance) - startSaldo) : null;
+      return {
+        loan_part_id: p.id, label: p.label || '',
+        current: current,
+        start_balance: hasStart ? _round2(Number(p.start_balance)) : null,
+        start_saldo: startSaldo, drift: drift
+      };
     });
   }
 
@@ -1470,14 +1484,15 @@
   function renderReconcile() {
     return Promise.all([store.listLoanParts(), store.listPayments()]).then(function (res) {
       var banner = $('reconcileBanner');
+      // Ignore sub-1-kr rounding; only flag a genuine start-vs-ledger gap.
       var rows = reconcileBalance(res[0], res[1]).filter(function (r) { return r.drift != null && Math.abs(r.drift) >= 1; });
       if (!rows.length) { banner.hidden = true; banner.innerHTML = ''; return; }
       var items = rows.map(function (r) {
-        return '<li>' + escapeHtml(r.label || 'Loan part') + ': derived ' + formatMoney(r.derived)
-          + ' vs Saldo ' + formatMoney(r.csv) + ' — off by ' + formatMoney(Math.abs(r.drift)) + '</li>';
+        return '<li>' + escapeHtml(r.label || 'Loan part') + ': start balance ' + formatMoney(r.start_balance)
+          + ' vs the ledger’s earliest Saldo ' + formatMoney(r.start_saldo) + ' — off by ' + formatMoney(Math.abs(r.drift)) + '</li>';
       }).join('');
-      banner.innerHTML = 'Balance check — the imported Saldo and the start-minus-amortering figure disagree '
-        + '(likely a partial import or a missing start balance):<ul>' + items + '</ul>';
+      banner.innerHTML = 'Start-balance check — your entered start balance doesn’t match where the imported ledger begins '
+        + '(a partial import, or a start balance to update — today’s balance still tracks the Saldo correctly):<ul>' + items + '</ul>';
       banner.hidden = false;
     });
   }
