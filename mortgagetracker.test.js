@@ -479,6 +479,24 @@ test('effectiveRate steps to the latest change, weightedAvgRate blends by balanc
   assert.equal(m.weightedAvgRate([p1, p2], [], pays), 1.5, '(3×1M + 1×3M) / 4M');
 });
 
+test('derivedRate annualises interest ÷ balance over the actual days between charges', () => {
+  const part = { id: 'p1' };
+  // interest-only: each Ränta cancelled by a Betalning, principal flat at 1.2M
+  const pays = [
+    { loan_part_id: 'p1', date: '2024-12-30', kind: 'interest', amount: 3668, balance_after: 1203668 },
+    { loan_part_id: 'p1', date: '2024-12-30', kind: 'payment', amount: 3668, balance_after: 1200000 },
+    { loan_part_id: 'p1', date: '2025-01-31', kind: 'interest', amount: 4061, balance_after: 1204061 },
+    { loan_part_id: 'p1', date: '2025-01-31', kind: 'payment', amount: 4061, balance_after: 1200000 },
+    { loan_part_id: 'p1', date: '2025-02-28', kind: 'interest', amount: 3537, balance_after: 1203537 },
+    { loan_part_id: 'p1', date: '2025-02-28', kind: 'payment', amount: 3537, balance_after: 1200000 },
+    { loan_part_id: 'p1', date: '2025-03-31', kind: 'interest', amount: 4323, balance_after: 1204323 },
+    { loan_part_id: 'p1', date: '2025-03-31', kind: 'payment', amount: 4323, balance_after: 1200000 }
+  ];
+  const r = m.derivedRate(part, pays, { trailing: 3 });
+  assert.ok(r > 3.8 && r < 4.1, 'trailing-3 day-weighted lands ~3.98 %, got ' + r);
+  assert.equal(m.derivedRate({ id: 'p1' }, pays.slice(0, 2)), null, 'one charge → not enough to bound a period');
+});
+
 // ── #6 Amorteringskrav ──
 test('amorteringskrav encodes the LTV bands and the 4.5× income add-on', () => {
   assert.equal(m.amorteringskrav(80, 0), 2);

@@ -660,6 +660,34 @@
     });
     return den > 0 ? _round2(num / den) : 0;
   }
+  // The rate implied by the ledger itself: each Ränta charge ÷ the settled
+  // balance it accrued on, annualised by the ACTUAL days since the previous
+  // charge (not a flat 1/12 — months differ in length). A single period is
+  // noisy (the bank's exact accrual convention is unknown and öre-rounding
+  // bites), so we day-weight the trailing few charges. A reliable *headline*
+  // cross-check, not a precise per-month series. Returns null without ≥2 charges.
+  function derivedRate(part, payments, opts) {
+    opts = opts || {};
+    var trailing = opts.trailing || 3;
+    var ints = (payments || []).filter(function (p) {
+      return p && p.loan_part_id === (part && part.id) && p.kind === 'interest' && p.date && Math.abs(Number(p.amount)) > 0;
+    }).slice().sort(function (a, b) { return String(a.date).localeCompare(String(b.date)); });
+    if (ints.length < 2) return null;
+    var periods = [];
+    for (var i = 1; i < ints.length; i++) {
+      var d0 = String(ints[i - 1].date), d1 = String(ints[i].date);
+      var n = _daysBetween(d0, d1);
+      if (!n || n <= 0) continue;
+      var bal = partBalanceAsOf(part, payments, d0);
+      if (bal <= 0) continue;
+      periods.push({ rate: Math.abs(Number(ints[i].amount)) / bal * 365 / n, days: n });
+    }
+    if (!periods.length) return null;
+    var use = periods.slice(-trailing);
+    var num = 0, den = 0;
+    use.forEach(function (p) { num += p.rate * p.days; den += p.days; });
+    return den > 0 ? _round2(num / den * 100) : null;
+  }
 
   // #6 — Amorteringskrav. Sweden's required amortisation as a % of the loan per
   // year: >70% LTV → 2%, 50–70% → 1%, plus 1% if debt exceeds 4.5× gross income.
@@ -849,6 +877,7 @@
     bindingStatus: bindingStatus,
     effectiveRate: effectiveRate,
     weightedAvgRate: weightedAvgRate,
+    derivedRate: derivedRate,
     amorteringskrav: amorteringskrav,
     amorteringskravStatus: amorteringskravStatus,
     headerSignature: headerSignature,
@@ -1370,8 +1399,8 @@
   // ── loan parts ──────────────────────────────────────────────────────────────
   var partsHost = $('partsHost'), partsCount = $('partsCount');
   function renderParts() {
-    return Promise.all([store.listLoanParts(), store.listPayments()]).then(function (res) {
-      var parts = res[0], pays = res[1];
+    return Promise.all([store.listLoanParts(), store.listPayments(), store.listRateChanges()]).then(function (res) {
+      var parts = res[0], pays = res[1], rates = res[2];
       partsCount.textContent = parts.length;
       if (!parts.length) {
         partsHost.innerHTML = '<p class="empty">No loan parts yet. Add your lånedelar — one per loan account — to begin.</p>';
@@ -1381,12 +1410,19 @@
       var body = parts.map(function (p) {
         var bal = partBalance(p, pays);
         var pct = total > 0 ? bal / total * 100 : 0;
-        var rate = p.interest_rate == null ? '—' : formatPct(p.interest_rate);
+        // Headline = latest logged rate (else the part's base rate); ledger-derived
+        // rate shown alongside as a cross-check.
+        var eff = effectiveRate(p, rates, null);
+        var der = derivedRate(p, pays);
+        var rateCell;
+        if (eff != null) rateCell = formatPct(eff) + (der != null ? ' <span class="row-note">· ~' + formatPct(der) + ' ledger</span>' : '');
+        else if (der != null) rateCell = '<span class="row-note">~' + formatPct(der) + ' ledger</span>';
+        else rateCell = '—';
         return '<tr' + (p.archived ? ' class="is-settled"' : '') + '>'
           + '<td>' + escapeHtml(p.label || '(no name)') + (p.loan_number ? ' <span class="row-note">#' + escapeHtml(p.loan_number) + '</span>' : '') + '</td>'
           + '<td class="num">' + formatMoney(bal) + '</td>'
           + '<td class="num">' + formatPct(pct) + '</td>'
-          + '<td>' + rate + '</td>'
+          + '<td>' + rateCell + '</td>'
           + '<td class="col-act">'
           + '<button type="button" class="icon-btn" data-edit-part="' + escapeHtml(p.id) + '" title="Edit" aria-label="Edit">✎</button>'
           + '<button type="button" class="icon-btn" data-del-part="' + escapeHtml(p.id) + '" title="Delete" aria-label="Delete">✕</button>'
@@ -1584,35 +1620,6 @@
     });
   }
 
-  // ── rate history ──────────────────────────────────────────────────────────
-  function renderRateHistory() {
-    return Promise.all([store.listRateChanges(), store.listLoanParts(), store.listPayments()]).then(function (res) {
-      var rates = res[0], parts = res[1], pays = res[2];
-      $('rateCount').textContent = rates.length;
-      var partName = {};
-      parts.forEach(function (p) { partName[p.id] = p.label || '(part)'; });
-      var blended = weightedAvgRate(parts, rates, pays);
-      var head = blended > 0 ? '<p class="contrib-note">Blended rate now: <b>' + formatPct(blended) + '</b> — weighted by each part’s balance.</p>' : '';
-      if (!rates.length) {
-        $('rateHost').innerHTML = head + '<p class="empty">No rate changes logged. Add one whenever a part’s rate moves — the blended rate and cost view follow it.</p>';
-        return;
-      }
-      var body = rates.map(function (r) {
-        return '<tr>'
-          + '<td class="col-date">' + escapeHtml(r.date || '—') + '</td>'
-          + '<td>' + escapeHtml(partName[r.loan_part_id] || '—') + '</td>'
-          + '<td class="num">' + (r.rate != null ? formatPct(r.rate) : '—') + '</td>'
-          + '<td class="col-act">'
-          + '<button type="button" class="icon-btn" data-edit-rate="' + escapeHtml(r.id) + '" title="Edit" aria-label="Edit">✎</button>'
-          + '<button type="button" class="icon-btn" data-del-rate="' + escapeHtml(r.id) + '" title="Delete" aria-label="Delete">✕</button>'
-          + '</td></tr>';
-      }).join('');
-      $('rateHost').innerHTML = head + '<div class="table-wrap"><table class="data-table">'
-        + '<thead><tr><th class="col-date">Date</th><th>Loan part</th><th class="num">Rate</th><th class="col-act"></th></tr></thead>'
-        + '<tbody>' + body + '</tbody></table></div>';
-    });
-  }
-
   // ── contributions (only when tracking is on) ──────────────────────────────
   function contribSplitCard(person, amount, pct, accent) {
     return '<div class="split-card' + (accent ? ' is-accent' : '') + '">'
@@ -1668,7 +1675,6 @@
     renderInsights();
     renderProjection();
     renderParts();
-    renderRateHistory();
     renderValuations();
     renderPayments();
     renderContributions();
@@ -1679,8 +1685,41 @@
   var partDialog = $('partDialog'), partForm = $('partForm'), partDialogTitle = $('partDialogTitle');
   var pLabel = $('p-label'), pLoanNo = $('p-loanno'), pStart = $('p-start'), pStartDate = $('p-startdate'), pRate = $('p-rate');
   var pRateType = $('p-ratetype'), pBindingField = $('p-binding-field'), pBinding = $('p-binding');
+  var pRatesSection = $('p-rates-section'), pRateList = $('p-rate-list'), pRateDerived = $('p-rate-derived'),
+      pRateDate = $('p-rate-date'), pRateVal = $('p-rate-val');
   var editingPartId = null;
   function updateBindingField() { pBindingField.hidden = segValue(pRateType) !== 'bunden'; }
+  // Rate history lives in the part dialog: the logged changes (latest is the
+  // headline rate) with the ledger-derived rate alongside as a cross-check.
+  // Available once the part is saved — a new part has no id to attach changes to.
+  function renderPartRates() {
+    if (!editingPartId) { pRatesSection.hidden = true; return; }
+    pRatesSection.hidden = false;
+    Promise.all([store.listRateChanges(), store.listPayments(), store.listLoanParts()]).then(function (res) {
+      var rates = res[0].filter(function (r) { return r.loan_part_id === editingPartId; });
+      var part = res[2].filter(function (x) { return x.id === editingPartId; })[0];
+      var der = part ? derivedRate(part, res[1]) : null;
+      pRateDerived.textContent = der != null ? 'Ledger ≈ ' + formatPct(der) : '';
+      if (!rates.length) {
+        pRateList.innerHTML = '<li class="rate-empty">No changes logged — the base rate above is used.</li>';
+        return;
+      }
+      pRateList.innerHTML = rates.map(function (r) {
+        return '<li><span class="rate-when">' + escapeHtml(r.date || '—') + '</span>'
+          + '<span class="rate-pct">' + (r.rate != null ? formatPct(r.rate) : '—') + '</span>'
+          + '<button type="button" class="icon-btn" data-del-rate="' + escapeHtml(r.id) + '" title="Delete" aria-label="Delete">✕</button></li>';
+      }).join('');
+    });
+  }
+  function addPartRate() {
+    if (!editingPartId) { toast('Save the loan part first, then log rate changes.'); return; }
+    var v = parseAmount(pRateVal.value);
+    if (!isFinite(v)) { toast('Enter the new rate.'); return; }
+    store.addRateChange({ loan_part_id: editingPartId, date: clean(pRateDate.value) || todayISO(), rate: round2(v) }).then(function () {
+      pRateVal.value = '';
+      renderPartRates(); refresh(); flashSaved();
+    });
+  }
   function openPartDialog(id) {
     editingPartId = id || null;
     partDialogTitle.textContent = id ? 'Edit loan part' : 'Add loan part';
@@ -1693,6 +1732,9 @@
       setSeg(pRateType, (p && p.rate_type) === 'bunden' ? 'bunden' : 'rörlig');
       pBinding.value = (p && p.rate_binding_until) || '';
       updateBindingField();
+      pRateDate.value = todayISO();
+      pRateVal.value = '';
+      renderPartRates();
       partDialog.showModal();
     }
     if (id) store.listLoanParts().then(function (parts) { var p = parts.filter(function (x) { return x.id === id; })[0]; if (p) show(p); });
@@ -1803,39 +1845,6 @@
   function deletePayment(id) {
     if (!window.confirm('Delete this payment?')) return;
     store.removePayment(id).then(function () { refresh(); flashSaved(); toast('Payment deleted.'); });
-  }
-
-  // ── rate-change dialog ────────────────────────────────────────────────────
-  var rateDialog = $('rateDialog'), rateForm = $('rateForm'), rateDialogTitle = $('rateDialogTitle');
-  var rPart = $('r-part'), rDate = $('r-date'), rRate = $('r-rate');
-  var editingRateId = null;
-  function openRateDialog(id) {
-    editingRateId = id || null;
-    rateDialogTitle.textContent = id ? 'Edit rate change' : 'Add rate change';
-    store.listLoanParts().then(function (parts) {
-      if (!parts.length) { toast('Add a loan part first.'); return; }
-      rPart.innerHTML = parts.map(function (p) { return '<option value="' + escapeHtml(p.id) + '">' + escapeHtml(p.label || '(loan part)') + '</option>'; }).join('');
-      function show(r) {
-        rPart.value = (r && r.loan_part_id) || parts[0].id;
-        rDate.value = (r && r.date) || todayISO();
-        rRate.value = r && r.rate != null ? String(r.rate) : '';
-        rateDialog.showModal();
-      }
-      if (id) store.listRateChanges().then(function (rs) { var r = rs.filter(function (x) { return x.id === id; })[0]; if (r) show(r); });
-      else show(null);
-    });
-  }
-  function submitRate(e) {
-    e.preventDefault();
-    var rate = parseAmount(rRate.value);
-    if (!isFinite(rate)) { toast('Enter the new rate.'); return; }
-    var rec = { loan_part_id: rPart.value, date: clean(rDate.value), rate: round2(rate) };
-    var op = editingRateId ? store.updateRateChange(editingRateId, rec) : store.addRateChange(rec);
-    op.then(function () { rateDialog.close(); refresh(); flashSaved(); toast(editingRateId ? 'Rate change updated.' : 'Rate change added.'); });
-  }
-  function deleteRate(id) {
-    if (!window.confirm('Delete this rate change?')) return;
-    store.removeRateChange(id).then(function () { refresh(); flashSaved(); toast('Rate change deleted.'); });
   }
 
   // ── contribution dialog ───────────────────────────────────────────────────
@@ -2009,7 +2018,6 @@
   $('addPartBtn').addEventListener('click', function () { openPartDialog(null); });
   $('addValuationBtn').addEventListener('click', function () { openValuationDialog(null); });
   $('addPaymentBtn').addEventListener('click', function () { openPaymentDialog(null); });
-  $('addRateBtn').addEventListener('click', function () { openRateDialog(null); });
   $('addContribBtn').addEventListener('click', function () { openContribDialog(null); });
   clearPaymentsBtn.addEventListener('click', function () {
     Promise.all([store.listPayments(), store.listLoanParts()]).then(function (res) {
@@ -2044,10 +2052,6 @@
     var ed = e.target.closest('[data-edit-pay]'); if (ed) { openPaymentDialog(ed.getAttribute('data-edit-pay')); return; }
     var dl = e.target.closest('[data-del-pay]'); if (dl) { deletePayment(dl.getAttribute('data-del-pay')); }
   });
-  $('rateHost').addEventListener('click', function (e) {
-    var ed = e.target.closest('[data-edit-rate]'); if (ed) { openRateDialog(ed.getAttribute('data-edit-rate')); return; }
-    var dl = e.target.closest('[data-del-rate]'); if (dl) { deleteRate(dl.getAttribute('data-del-rate')); }
-  });
   $('contribHost').addEventListener('click', function (e) {
     var ed = e.target.closest('[data-edit-contrib]'); if (ed) { openContribDialog(ed.getAttribute('data-edit-contrib')); return; }
     var dl = e.target.closest('[data-del-contrib]'); if (dl) { deleteContrib(dl.getAttribute('data-del-contrib')); }
@@ -2061,11 +2065,20 @@
   partForm.addEventListener('submit', submitPart);
   valuationForm.addEventListener('submit', submitValuation);
   paymentForm.addEventListener('submit', submitPayment);
-  rateForm.addEventListener('submit', submitRate);
   contribForm.addEventListener('submit', submitContrib);
   payAmount.addEventListener('input', fillPayHint);
   payType.addEventListener('change', fillPayHint);
   wireSeg(pRateType, updateBindingField);
+
+  // Loan-part dialog: nested rate-history add / delete
+  $('p-rate-add').addEventListener('click', addPartRate);
+  pRateList.addEventListener('click', function (e) {
+    var dl = e.target.closest('[data-del-rate]'); if (!dl) return;
+    store.removeRateChange(dl.getAttribute('data-del-rate')).then(function () { renderPartRates(); refresh(); flashSaved(); });
+  });
+  [pRateVal, pRateDate].forEach(function (el) {
+    el.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); addPartRate(); } });
+  });
 
   // Insights period + projection what-if
   wireSeg($('bridgePeriod'), function (v) { bridgePeriod = v; renderInsights(); });

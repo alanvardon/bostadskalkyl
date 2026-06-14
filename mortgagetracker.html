@@ -197,18 +197,6 @@
     <div id="partsHost"></div>
   </section>
 
-  <!-- ── Rate history ────────────────────────────────────────── -->
-  <section class="card">
-    <div class="card-head">
-      <h2>Räntehistorik <span class="card-en">· Rate history</span></h2>
-      <span class="count-pill" id="rateCount">0</span>
-      <div class="card-actions">
-        <button type="button" class="btn btn-ghost" id="addRateBtn">+ Add rate change</button>
-      </div>
-    </div>
-    <div id="rateHost"></div>
-  </section>
-
   <!-- ── Property value ──────────────────────────────────────── -->
   <section class="card">
     <div class="card-head">
@@ -273,6 +261,21 @@
       <label class="form-field"><span>As of date</span><input type="date" id="p-startdate"></label>
     </div>
     <p class="form-hint">The start balance is the part's debt on the "as of" date. Imported amortering since then is subtracted to get today's balance.</p>
+
+    <!-- Rate history — only for a saved part; the latest entry is the headline rate -->
+    <div class="rate-history" id="p-rates-section" hidden>
+      <div class="rate-history-head">
+        <span>Rate history</span>
+        <span class="rate-derived" id="p-rate-derived"></span>
+      </div>
+      <ul class="rate-list" id="p-rate-list"></ul>
+      <div class="rate-add">
+        <input type="date" id="p-rate-date" class="rate-add-date" aria-label="Rate change date">
+        <input type="text" id="p-rate-val" class="rate-add-val" inputmode="decimal" autocomplete="off" placeholder="rate %" aria-label="New rate">
+        <button type="button" class="btn btn-ghost" id="p-rate-add">+ Add</button>
+      </div>
+    </div>
+
     <div class="dialog-actions">
       <button type="button" class="btn btn-ghost" data-close>Cancel</button>
       <button type="submit" class="btn btn-primary">Save</button>
@@ -378,23 +381,6 @@
         <p class="config-note">Download everything as JSON — loan parts, payments, valuations and settings — or restore a backup (merges by id, so re-importing is safe). Export CSV writes the payment ledger for Excel/Sheets or your tax return.</p>
       </div>
     </div>
-    <div class="dialog-actions">
-      <button type="button" class="btn btn-ghost" data-close>Cancel</button>
-      <button type="submit" class="btn btn-primary">Save</button>
-    </div>
-  </form>
-</dialog>
-
-<!-- ── Rate-change dialog ─────────────────────────────────────── -->
-<dialog id="rateDialog" class="dialog">
-  <form id="rateForm" class="dialog-body">
-    <h3 class="dialog-title" id="rateDialogTitle">Add rate change</h3>
-    <div class="form-grid">
-      <label class="form-field form-wide"><span>Loan part</span><select id="r-part" class="select"></select></label>
-      <label class="form-field"><span>Date</span><input type="date" id="r-date"></label>
-      <label class="form-field"><span>Interest rate %</span><input type="text" id="r-rate" inputmode="decimal" autocomplete="off" placeholder="e.g. 2.54"></label>
-    </div>
-    <p class="form-hint">The new rate applies from this date forward — it feeds the blended rate and the cost view.</p>
     <div class="dialog-actions">
       <button type="button" class="btn btn-ghost" data-close>Cancel</button>
       <button type="submit" class="btn btn-primary">Save</button>
