@@ -1545,10 +1545,14 @@
       }
       var blended = weightedAvgRate(parts, rates, pays);
       if (blended > 0) chips += chip('Blended rate', formatPct(blended), true);
+      // Amorteringskrav as a REFERENCE, not a compliance verdict: the tool can't
+      // see grandfathering/nyproduktion exemptions, and the observed amortisation
+      // from a partial import is too noisy to judge "met/below" reliably. Show the
+      // bracket the LTV implies and the annual amount it works out to.
       var krav = amorteringskravStatus(parts, pays, vals, settings);
       if (krav.has_value) {
-        if (krav.exempt) chips += chip('Amorteringskrav', 'Exempt · 0 %');
-        else chips += chip('Amorteringskrav', krav.required_pct + ' % · ' + (krav.meets ? 'met' : 'below'), false, !krav.meets);
+        if (krav.exempt) chips += chip('Amorteringskrav (est.)', 'None · LTV ≤ 50 %');
+        else chips += chip('Amorteringskrav (est.)', krav.required_pct + ' % · ' + formatMoney(krav.required_annual) + '/år');
       }
       $('insightChips').innerHTML = chips;
     });
