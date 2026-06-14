@@ -169,6 +169,56 @@
     };
   }
 
+  // ── Import: sign inference & duplicate spotting ──────────────────────────
+  // Banks disagree on sign: some export purchases as positive, some as negative
+  // (with refunds the opposite sign). Infer the "money spent" direction from the
+  // majority of non-zero amounts; a row whose sign is OPPOSITE the majority is a
+  // refund/credit. Returns +1 or -1 — the sign that means "spent". Ties → +1.
+  function inferSpendSign(amounts) {
+    var pos = 0, neg = 0;
+    (amounts || []).forEach(function (n) {
+      n = Number(n);
+      if (!isFinite(n) || n === 0) return;
+      if (n > 0) pos++; else neg++;
+    });
+    return neg > pos ? -1 : 1;
+  }
+
+  // A stable key for spotting the same row across imports: date + normalised
+  // description + signed amount + which card. Deliberately NOT unique — two
+  // genuinely separate identical purchases share a fingerprint — so callers must
+  // WARN (and let the user decide), never silently drop. The sign is KEPT so a
+  // charge and a same-size refund (a credit on the card) aren't treated as each
+  // other; amounts are stored sign-normalised (positive = spent) upstream.
+  function itemFingerprint(it) {
+    it = it || {};
+    var date = String(it.date_purchased == null ? '' : it.date_purchased).trim();
+    var desc = String(it.description == null ? '' : it.description).trim().toLowerCase().replace(/\s+/g, ' ');
+    var amt = Math.round((Number(it.enter_amount) || 0) * 100) / 100;
+    var card = it.fronted_by === 'b' ? 'b' : 'a';
+    return date + '|' + desc + '|' + amt + '|' + card;
+  }
+
+  // Multiplicity-aware duplicate flags for a batch of candidate items against
+  // what's already stored. The Nth identical candidate is only flagged once at
+  // least N copies already exist, so a legitimate repeat purchase (your second
+  // identical coffee) isn't mistaken for a re-import. Falsy candidates (refund /
+  // amount-less rows) never flag. Returns a boolean[] parallel to `candidates`.
+  function flagDuplicates(existing, candidates) {
+    var counts = {};
+    (existing || []).forEach(function (it) {
+      if (!it) return;
+      var k = itemFingerprint(it);
+      counts[k] = (counts[k] || 0) + 1;
+    });
+    return (candidates || []).map(function (c) {
+      if (!c) return false;
+      var k = itemFingerprint(c);
+      if (counts[k] > 0) { counts[k]--; return true; }
+      return false;
+    });
+  }
+
   // ── Netting & settlement ────────────────────────────────────────────────
   // Net the directed debts across a set of items into a single transfer. Each
   // item: debtor (owed_by) owes creditor (fronted_by) `amount`. Returns who pays
@@ -215,7 +265,7 @@
     var s = String(dateStr == null ? '' : dateStr).trim();
     var m = /(\d{4})[-/](\d{2})/.exec(s);
     if (m) return m[1] + '-' + m[2];
-    m = /(\d{2})[.](\d{2})[.](\d{4})/.exec(s); // DD.MM.YYYY
+    m = /(\d{2})[./](\d{2})[./](\d{4})/.exec(s); // DD.MM.YYYY or DD/MM/YYYY
     if (m) return m[3] + '-' + m[2];
     return '';
   }
@@ -294,6 +344,27 @@
       .sort(function (a, b) { return String(a.month).localeCompare(String(b.month)); });
   }
 
+  // Fill in zero-total entries for any calendar months missing between the first
+  // and last month present, so a trend reads continuously instead of skipping
+  // empty months. Input/output sorted oldest→newest, rows shaped like
+  // grocerySpendByMonth. Undated ('') rows are dropped; <2 dated rows pass through.
+  function fillMonthGaps(rows) {
+    var dated = (rows || []).filter(function (r) { return r && /^\d{4}-\d{2}$/.test(r.month); })
+      .sort(function (a, b) { return String(a.month).localeCompare(String(b.month)); });
+    if (dated.length < 2) return dated;
+    var byKey = {};
+    dated.forEach(function (r) { byKey[r.month] = r; });
+    var y = Number(dated[0].month.slice(0, 4)), mo = Number(dated[0].month.slice(5, 7));
+    var endY = Number(dated[dated.length - 1].month.slice(0, 4)), endMo = Number(dated[dated.length - 1].month.slice(5, 7));
+    var out = [];
+    while (y < endY || (y === endY && mo <= endMo)) {
+      var mk = y + '-' + (mo < 10 ? '0' : '') + mo;
+      out.push(byKey[mk] || { month: mk, label: monthLabel(mk), total: 0, count: 0 });
+      mo++; if (mo > 12) { mo = 1; y++; }
+    }
+    return out;
+  }
+
   var api = {
     defaultSettings: defaultSettings,
     otherPerson: otherPerson,
@@ -304,6 +375,9 @@
     computeOwedAmount: computeOwedAmount,
     classifyToItemFields: classifyToItemFields,
     makeItem: makeItem,
+    inferSpendSign: inferSpendSign,
+    itemFingerprint: itemFingerprint,
+    flagDuplicates: flagDuplicates,
     netBalance: netBalance,
     buildSettlement: buildSettlement,
     monthKey: monthKey,
@@ -313,7 +387,8 @@
     categorize: categorize,
     categoryLabel: categoryLabel,
     spendByCategory: spendByCategory,
-    grocerySpendByMonth: grocerySpendByMonth
+    grocerySpendByMonth: grocerySpendByMonth,
+    fillMonthGaps: fillMonthGaps
   };
 
   // Export for node tests…
@@ -336,10 +411,15 @@
     });
   }
   function clean(v) { return String(v == null ? '' : v).trim(); }
+  function round2(n) { return Math.round((Number(n) || 0) * 100) / 100; }
+  // Currency suffix per stored setting; falls back to kr. (Number grouping stays
+  // sv-SE — this is a Swedish-household tool — only the unit changes.)
+  var CURRENCY_SUFFIX = { SEK: 'kr', NOK: 'kr', DKK: 'kr', EUR: '€', USD: '$', GBP: '£' };
   function formatMoney(n) {
     var num = Number(n) || 0;
     var hasOre = Math.abs(num - Math.round(num)) > 0.005;
-    return num.toLocaleString('sv-SE', { minimumFractionDigits: hasOre ? 2 : 0, maximumFractionDigits: 2 }) + ' kr';
+    var suffix = CURRENCY_SUFFIX[settings && settings.currency] || 'kr';
+    return num.toLocaleString('sv-SE', { minimumFractionDigits: hasOre ? 2 : 0, maximumFractionDigits: 2 }) + ' ' + suffix;
   }
 
   var toastEl = $('toast');
@@ -362,10 +442,11 @@
   // ── state ────────────────────────────────────────────────────────────────
   var settings = defaultSettings();
   var parsed = null;          // { headers, rows, delimiter }
-  var triage = [];            // parallel to parsed.rows: { classification }
+  var triage = [];            // parallel to parsed.rows: { classification, kind, charge, duplicate }
   var frontedBy = 'a';
   var defaultClass = 'split';
   var fileName = '';
+  var importExisting = [];     // items already stored, for duplicate spotting on import
 
   function nameOf(p) { return p === 'b' ? settings.person_b_name : settings.person_a_name; }
 
@@ -417,7 +498,18 @@
       $('fileMeta').textContent = p.rows.length + ' rows · “' + (p.delimiter === '\t' ? 'tab' : p.delimiter) + '” delimited';
       dropzone.hidden = true;
       importConfig.hidden = false;
-      renderTriage();
+
+      // Pull existing items so we can flag rows that look like a re-import and
+      // default those to "Skip" before the first render. Refunds are kept (they
+      // offset the matching charge) — only likely re-imports start excluded.
+      store.listItems().then(function (items) {
+        importExisting = items;
+        computeTriageMeta();
+        triage.forEach(function (t) {
+          t.classification = t.duplicate ? 'exclude' : defaultClass;
+        });
+        renderTriage();
+      });
     }).catch(function (e) { toast(e.message || 'Could not read that file.'); });
   }
 
@@ -439,22 +531,60 @@
   function seg(c, label, active) {
     return '<button type="button" class="seg' + (c === active ? ' is-active' : '') + '" data-class="' + c + '">' + label + '</button>';
   }
+  // Classify every parsed row against the current column mapping + chosen card:
+  //   kind = 'charge' | 'refund' | 'noamount', charge = signed spend (positive
+  //   for a real charge), duplicate = looks like a re-import. Writes onto triage
+  //   in place. Re-run whenever the mapping or the card changes (the fingerprint
+  //   and the inferred spend-sign both depend on them).
+  function computeTriageMeta() {
+    var map = selectedMapping();
+    var amounts = parsed.rows.map(function (r) {
+      return map.enter_amount == null ? NaN : parseAmount(r[map.enter_amount]);
+    });
+    var spendSign = inferSpendSign(amounts);
+    var candidates = parsed.rows.map(function (r, i) {
+      var t = triage[i];
+      var amt = amounts[i];
+      var charge = isFinite(amt) ? round2(amt * spendSign) : NaN;
+      if (!isFinite(charge) || charge === 0) { t.kind = 'noamount'; t.charge = 0; return null; }
+      t.kind = charge < 0 ? 'refund' : 'charge'; // negative = a credit/refund on the card
+      t.charge = charge;
+      return {
+        date_purchased: clean(cellAt(r, map.date_purchased)),
+        description: clean(cellAt(r, map.description)),
+        enter_amount: charge,
+        fronted_by: frontedBy
+      };
+    });
+    flagDuplicates(importExisting, candidates).forEach(function (f, i) { triage[i].duplicate = !!f; });
+  }
+
   function renderTriage() {
     var map = selectedMapping();
     var html = '';
     parsed.rows.forEach(function (row, i) {
-      var amt = map.enter_amount == null ? NaN : parseAmount(row[map.enter_amount]);
-      var valid = isFinite(amt);
-      var cls = triage[i].classification;
-      var treat = valid
-        ? '<div class="segmented segmented-sm" data-index="' + i + '">' + seg('split', 'Split', cls) + seg('full', 'All', cls) + seg('exclude', 'Skip', cls) + '</div>'
-        : '<span class="treat-na">no amount</span>';
-      var excluded = !valid || cls === 'exclude';
-      html += '<tr' + (excluded ? ' class="is-excluded"' : '') + '>'
+      var t = triage[i];
+      var treat, rowClass = '', neg = false, amtCell;
+      if (t.kind === 'charge' || t.kind === 'refund') {
+        var cls = t.classification;
+        treat = '<div class="segmented segmented-sm" data-index="' + i + '">' + seg('split', 'Split', cls) + seg('full', 'All', cls) + seg('exclude', 'Skip', cls) + '</div>';
+        if (t.duplicate) rowClass = ' is-dup';
+        else if (cls === 'exclude') rowClass = ' is-excluded';
+        neg = t.kind === 'refund';
+        amtCell = formatMoney(t.charge);
+      } else {
+        treat = '<span class="treat-na">no amount</span>';
+        rowClass = ' is-excluded';
+        amtCell = '—';
+      }
+      var badges = '';
+      if (t.kind === 'refund') badges += ' <span class="row-flag row-flag-refund">refund</span>';
+      if ((t.kind === 'charge' || t.kind === 'refund') && t.duplicate) badges += ' <span class="row-flag">possible duplicate</span>';
+      html += '<tr' + (rowClass ? ' class="' + rowClass.trim() + '"' : '') + '>'
         + '<td class="col-treat">' + treat + '</td>'
         + '<td class="col-date">' + escapeHtml(cellAt(row, map.date_purchased)) + '</td>'
-        + '<td>' + escapeHtml(cellAt(row, map.description)) + '</td>'
-        + '<td class="num' + (amt < 0 ? ' is-neg' : '') + '">' + (valid ? formatMoney(amt) : '—') + '</td>'
+        + '<td>' + escapeHtml(cellAt(row, map.description)) + badges + '</td>'
+        + '<td class="num' + (neg ? ' is-neg' : '') + '">' + amtCell + '</td>'
         + '</tr>';
     });
     triageBody.innerHTML = html;
@@ -462,13 +592,17 @@
   }
   function updateSummary() {
     var map = selectedMapping();
-    var add = 0, excl = 0, invalid = 0;
-    parsed.rows.forEach(function (row, i) {
-      var valid = map.enter_amount != null && isFinite(parseAmount(row[map.enter_amount]));
-      if (!valid) { invalid++; return; }
-      if (triage[i].classification === 'exclude') excl++; else add++;
+    var add = 0, excl = 0, refundIncl = 0, invalid = 0, dup = 0;
+    triage.forEach(function (t) {
+      if (t.kind === 'noamount') { invalid++; return; }
+      if (t.classification === 'exclude') { excl++; return; }
+      add++;
+      if (t.kind === 'refund') refundIncl++;
+      if (t.duplicate) dup++;
     });
     var parts = [add + ' item' + (add === 1 ? '' : 's') + ' to add'];
+    if (refundIncl) parts.push(refundIncl + ' refund' + (refundIncl === 1 ? '' : 's') + ' included');
+    if (dup) parts.push(dup + ' possible duplicate' + (dup === 1 ? '' : 's'));
     if (excl) parts.push(excl + ' excluded');
     if (invalid) parts.push(invalid + ' without an amount');
     triageSummary.textContent = parts.join(' · ');
@@ -476,7 +610,7 @@
     confirmBtn.disabled = add === 0 || map.enter_amount == null;
   }
 
-  function segVal(b) { return b.getAttribute('data-person') || b.getAttribute('data-class') || b.getAttribute('data-filter'); }
+  function segVal(b) { return b.getAttribute('data-person') || b.getAttribute('data-class') || b.getAttribute('data-filter') || b.getAttribute('data-period'); }
   function setSeg(container, val) {
     Array.prototype.forEach.call(container.querySelectorAll('.seg'), function (b) {
       var on = segVal(b) === val;
@@ -507,14 +641,14 @@
     if (map.enter_amount == null) { toast('Pick the amount column first.'); return; }
     var drafts = [];
     parsed.rows.forEach(function (row, i) {
-      var amt = parseAmount(row[map.enter_amount]);
-      if (!isFinite(amt)) return;
-      var fields = classifyToItemFields(triage[i].classification, frontedBy);
+      var t = triage[i];
+      if (t.kind !== 'charge' && t.kind !== 'refund') return; // skip amount-less rows only
+      var fields = classifyToItemFields(t.classification, frontedBy);
       if (!fields) return; // excluded
       drafts.push(makeItem({
         date_purchased: clean(cellAt(row, map.date_purchased)),
         description: clean(cellAt(row, map.description)) || '(no description)',
-        enter_amount: Math.abs(amt),
+        enter_amount: t.charge,
         split: fields.split,
         fronted_by: frontedBy,
         owed_by: fields.owed_by,
@@ -550,12 +684,13 @@
   var settleDialog = $('settleDialog'), settleForm = $('settleForm'), settleLine = $('settleLine');
   var fPeriod = $('f-period'), fSettleNote = $('f-settle-note');
   var fSettleMonth = $('f-settle-month'), settleConfirm = $('settleConfirm');
-  var insightsHost = $('insightsHost');
+  var insightsHost = $('insightsHost'), insightsPeriodEl = $('insightsPeriod');
   var settingsDialog = $('settingsDialog'), settingsForm = $('settingsForm');
-  var sNameA = $('s-nameA'), sNameB = $('s-nameB'), sDefault = $('s-default');
+  var sNameA = $('s-nameA'), sNameB = $('s-nameB'), sDefault = $('s-default'), sCurrency = $('s-currency');
   var exportBtn = $('exportBtn'), importBtn = $('importBtn'), importInput = $('importInput');
 
   var currentFilter = 'open';
+  var insightsPeriod = 'all';
   var editingId = null;
   var pendingSettle = null;
   var settleOpenItems = [];
@@ -684,10 +819,30 @@
         + '<span class="bar-val num">' + formatMoney(r.total) + '</span></div>';
     }).join('') + '</div>';
   }
+  // The set of 'YYYY-MM' keys covered by the chosen insights period (this month
+  // / last 3 months); 'all' returns everything unfiltered.
+  function periodMonthKeys(n) {
+    var keys = {}, now = new Date();
+    for (var k = 0; k < n; k++) {
+      var d = new Date(now.getFullYear(), now.getMonth() - k, 1);
+      var mo = d.getMonth() + 1;
+      keys[d.getFullYear() + '-' + (mo < 10 ? '0' : '') + mo] = true;
+    }
+    return keys;
+  }
+  function periodItems(items) {
+    if (insightsPeriod === 'all') return items;
+    var keys = periodMonthKeys(insightsPeriod === '3m' ? 3 : 1);
+    return items.filter(function (it) { return keys[monthKey(it.date_purchased)]; });
+  }
+
   function renderInsights() {
-    return store.listItems().then(function (items) {
+    return store.listItems().then(function (allItems) {
+      var items = periodItems(allItems);
       if (!items.length) {
-        insightsHost.innerHTML = '<p class="empty">No spending to analyse yet. Import a statement to see where the money goes.</p>';
+        insightsHost.innerHTML = '<p class="empty">' + (allItems.length
+          ? 'No spending in this period.'
+          : 'No spending to analyse yet. Import a statement to see where the money goes.') + '</p>';
         return;
       }
       var cats = spendByCategory(items);
@@ -695,20 +850,23 @@
       var groc = cats.filter(function (c) { return c.key === 'groceries'; })[0];
       var grocTotal = groc ? groc.total : 0;
       var grocPct = total > 0 ? Math.round(grocTotal / total * 100) : 0;
-      var byMonth = grocerySpendByMonth(items);
+      var byMonth = fillMonthGaps(grocerySpendByMonth(items));
 
-      var html = '<div class="insight-highlight">'
-        + '<span class="ih-icon" aria-hidden="true">🛒</span>'
-        + '<div class="ih-main">'
-        + '<span class="ih-label">Groceries — your biggest shared cost</span>'
-        + '<span class="ih-amount">' + formatMoney(grocTotal) + '</span>'
-        + '<span class="ih-sub">' + grocPct + '% of all shared spending · ' + (groc ? groc.count : 0) + ' purchase' + ((groc ? groc.count : 0) === 1 ? '' : 's') + '</span>'
-        + '</div></div>';
+      var html = '';
+      if (grocTotal > 0) {
+        html += '<div class="insight-highlight">'
+          + '<span class="ih-icon" aria-hidden="true">🛒</span>'
+          + '<div class="ih-main">'
+          + '<span class="ih-label">Groceries</span>'
+          + '<span class="ih-amount">' + formatMoney(grocTotal) + '</span>'
+          + '<span class="ih-sub">' + grocPct + '% of shared spending · ' + groc.count + ' purchase' + (groc.count === 1 ? '' : 's') + '</span>'
+          + '</div></div>';
+      }
 
       html += '<h3 class="insight-h">Spending by category</h3>'
         + bars(cats, cats.length ? cats[0].total : 0, 'groceries');
 
-      if (byMonth.length) {
+      if (byMonth.length > 1) {
         var maxM = byMonth.reduce(function (m, x) { return Math.max(m, x.total); }, 0);
         html += '<h3 class="insight-h">Groceries by month</h3>' + bars(byMonth, maxM, null);
       }
@@ -722,10 +880,12 @@
   function fillItemHint() {
     var fronted = segValue(fFronted) || 'a';
     var split = (segValue(fSplit) || 'split') === 'split';
-    var amt = Math.abs(parseAmount(fAmount.value));
+    var amt = parseAmount(fAmount.value);
     var owed = otherPerson(fronted);
     if (!isFinite(amt) || amt === 0) { fHint.textContent = ''; return; }
-    fHint.textContent = nameOf(owed) + ' will owe ' + formatMoney(computeOwedAmount(amt, split)) + (split ? ' (half of ' + formatMoney(amt) + ')' : '');
+    var share = computeOwedAmount(amt, split);
+    var verb = amt < 0 ? ' is credited ' : ' will owe '; // negative = a refund/credit
+    fHint.textContent = nameOf(owed) + verb + formatMoney(Math.abs(share)) + (split ? ' (half of ' + formatMoney(Math.abs(amt)) + ')' : '');
   }
   function openItemDialog(id) {
     editingId = id || null;
@@ -745,8 +905,8 @@
   }
   function submitItem(e) {
     e.preventDefault();
-    var amt = Math.abs(parseAmount(fAmount.value));
-    if (!isFinite(amt) || amt === 0) { toast('Enter a valid charge amount.'); return; }
+    var amt = parseAmount(fAmount.value);
+    if (!isFinite(amt) || amt === 0) { toast('Enter a valid amount (use a minus for a refund).'); return; }
     var fronted = segValue(fFronted) || 'a';
     var split = (segValue(fSplit) || 'split') === 'split';
     var rec = makeItem({
@@ -814,6 +974,7 @@
     sNameA.value = settings.person_a_name;
     sNameB.value = settings.person_b_name;
     setSeg(sDefault, settings.default_split ? 'split' : 'full');
+    if (sCurrency) sCurrency.value = settings.currency || 'SEK';
     settingsDialog.showModal();
   }
   function submitSettings(e) {
@@ -821,6 +982,7 @@
     store.saveSettings({
       person_a_name: clean(sNameA.value) || 'Alex',
       person_b_name: clean(sNameB.value) || 'Sam',
+      currency: (sCurrency && sCurrency.value) || 'SEK',
       default_split: (segValue(sDefault) || 'split') !== 'full'
     }).then(function (s) {
       settings = s;
@@ -894,7 +1056,7 @@
   });
 
   [elDate, elDesc, elAmount].forEach(function (sel) {
-    sel.addEventListener('change', function () { if (parsed) renderTriage(); });
+    sel.addEventListener('change', function () { if (parsed) { computeTriageMeta(); renderTriage(); } });
   });
 
   frontedByEl.addEventListener('click', function (e) {
@@ -902,6 +1064,7 @@
     frontedBy = b.getAttribute('data-person');
     setSeg(frontedByEl, frontedBy);
     updateFrontedHint();
+    if (parsed) { computeTriageMeta(); renderTriage(); }
   });
   defaultClassEl.addEventListener('click', function (e) {
     var b = e.target.closest('.seg'); if (!b) return;
@@ -919,6 +1082,7 @@
 
   // Phase-3 wiring: items table, dialogs, filters, settle, history, settings.
   wireSeg(itemFilterEl, function (v) { currentFilter = v; renderItems(); });
+  if (insightsPeriodEl) wireSeg(insightsPeriodEl, function (v) { insightsPeriod = v; renderInsights(); });
   addItemBtn.addEventListener('click', function () { openItemDialog(null); });
   clearOpenBtn.addEventListener('click', function () {
     store.listItems().then(function (items) {

@@ -81,6 +81,8 @@ test('computeOwedAmount halves a split and keeps a full charge whole', () => {
   assert.equal(m.computeOwedAmount(500, true), 250);
   assert.equal(m.computeOwedAmount(500, false), 500);
   assert.equal(m.computeOwedAmount(99.99, true), 50);   // rounded to öre
+  assert.equal(m.computeOwedAmount(-200, true), -100);  // a refund splits as a credit
+  assert.equal(m.computeOwedAmount(-200, false), -200);
 });
 
 test('classifyToItemFields maps triage choices; debtor is the non-card owner', () => {
@@ -113,6 +115,15 @@ test('netBalance returns a null transfer when everything cancels', () => {
     { amount: 100, fronted_by: 'b', owed_by: 'a' }
   ];
   assert.deepEqual(m.netBalance(items), { from: null, to: null, amount: 0 });
+});
+
+test('netBalance offsets a refund (negative amount) against the charge it credits', () => {
+  // b owed a 100; a 40 refund lands on a's card and is split → b owes 40 less
+  const items = [
+    { amount: 100, fronted_by: 'a', owed_by: 'b' },
+    { amount: -40, fronted_by: 'a', owed_by: 'b' }
+  ];
+  assert.deepEqual(m.netBalance(items), { from: 'b', to: 'a', amount: 60 });
 });
 
 test('buildSettlement nets only unpaid items and links their ids', () => {
@@ -193,6 +204,53 @@ test('grocerySpendByMonth groups grocery charges by month, chronological', () =>
   ];
   const byMonth = m.grocerySpendByMonth(items);
   assert.deepEqual(byMonth.map((x) => [x.month, x.total]), [['2026-05', 300], ['2026-06', 600]]);
+});
+
+test('monthKey also reads slash D/M/Y dates', () => {
+  assert.equal(m.monthKey('14/06/2026'), '2026-06'); // DD/MM/YYYY
+  assert.equal(m.monthKey('14.06.2026'), '2026-06'); // DD.MM.YYYY
+});
+
+test('fillMonthGaps inserts zero months between first and last, drops undated', () => {
+  const rows = [
+    { month: '2026-03', label: 'Mars 2026', total: 300, count: 1 },
+    { month: '2026-06', label: 'Juni 2026', total: 600, count: 2 }
+  ];
+  assert.deepEqual(m.fillMonthGaps(rows).map((r) => [r.month, r.total]), [
+    ['2026-03', 300], ['2026-04', 0], ['2026-05', 0], ['2026-06', 600]
+  ]);
+  assert.equal(m.fillMonthGaps([{ month: '2026-06', total: 1 }]).length, 1); // <2 dated → unchanged
+  assert.deepEqual(m.fillMonthGaps([{ month: '', total: 5 }]), []);            // undated dropped
+});
+
+// ─────────────────── import: sign & duplicate spotting ───────────────────
+
+test('inferSpendSign reads the majority sign as "money spent"', () => {
+  assert.equal(m.inferSpendSign([249, 39, 1200]), 1);            // purchases positive
+  assert.equal(m.inferSpendSign([-249, -39, -1200, 500]), -1);  // bank exports spend as negative
+  assert.equal(m.inferSpendSign([100, -100]), 1);               // tie → positive
+  assert.equal(m.inferSpendSign([]), 1);
+});
+
+test('itemFingerprint ignores case/spacing but keeps sign and card', () => {
+  const a = m.itemFingerprint({ date_purchased: '2026-06-01', description: 'ICA  Maxi', enter_amount: 249.9, fronted_by: 'a' });
+  const b = m.itemFingerprint({ date_purchased: '2026-06-01', description: 'ica maxi', enter_amount: 249.9, fronted_by: 'a' });
+  assert.equal(a, b, 'normalised desc → same key');
+  const refund = m.itemFingerprint({ date_purchased: '2026-06-01', description: 'ica maxi', enter_amount: -249.9, fronted_by: 'a' });
+  assert.notEqual(a, refund, 'a charge and a same-size refund are NOT duplicates of each other');
+  const otherCard = m.itemFingerprint({ date_purchased: '2026-06-01', description: 'ica maxi', enter_amount: 249.9, fronted_by: 'b' });
+  assert.notEqual(a, otherCard);
+});
+
+test('flagDuplicates is multiplicity-aware: only the N+1th identical row flags', () => {
+  const existing = [{ date_purchased: '2026-06-01', description: 'ICA', enter_amount: 100, fronted_by: 'a' }];
+  const incoming = [
+    { date_purchased: '2026-06-01', description: 'ICA', enter_amount: 100, fronted_by: 'a' }, // matches stored
+    { date_purchased: '2026-06-01', description: 'ICA', enter_amount: 100, fronted_by: 'a' }  // genuinely new
+  ];
+  assert.deepEqual(m.flagDuplicates(existing, incoming), [true, false]);
+  assert.deepEqual(m.flagDuplicates([], incoming), [false, false], 'nothing stored → nothing flagged');
+  assert.deepEqual(m.flagDuplicates(existing, [null]), [false], 'refund/no-amount rows never flag');
 });
 
 // ───────────────────────── store ─────────────────────────
@@ -277,6 +335,13 @@ test('settings round-trip and default to the dummy names', async () => {
   assert.equal(saved.person_a_name, 'Mia');
   assert.equal(saved.person_b_name, 'Hugo');
   assert.equal(saved.currency, 'SEK', 'untouched fields keep their value');
+});
+
+test('saveSettings persists a chosen currency', async () => {
+  const { store } = freshStore();
+  const saved = await store.saveSettings({ currency: 'EUR' });
+  assert.equal(saved.currency, 'EUR');
+  assert.equal(saved.person_a_name, 'Alex', 'unset fields keep defaults');
 });
 
 test('a corrupt stored value yields an empty store instead of throwing', async () => {
