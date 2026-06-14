@@ -256,6 +256,7 @@ body::after {
   .reveal-5 { animation-delay: 0.41s; }
   .reveal-6 { animation-delay: 0.5s; }
   .reveal-7 { animation-delay: 0.59s; }
+  .reveal-8 { animation-delay: 0.68s; }
 }
 
 @keyframes rise-in {
