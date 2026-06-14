@@ -880,14 +880,8 @@
   function clean(v) { return String(v == null ? '' : v).trim(); }
   function round2(n) { return Math.round((Number(n) || 0) * 100) / 100; }
   var CURRENCY_SUFFIX = { SEK: 'kr', NOK: 'kr', DKK: 'kr', EUR: '€', USD: '$', GBP: '£' };
-  // Exact balances (and percentages) show two decimals.
+  // Money is always whole kronor (no öre); percentages keep two decimals.
   function formatMoney(n) {
-    var suffix = CURRENCY_SUFFIX[settings && settings.currency] || 'kr';
-    return (Number(n) || 0).toLocaleString('sv-SE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' ' + suffix;
-  }
-  // Whole kronor — for summary/estimate figures (interest paid, ränteavdrag,
-  // monthly cost) where the öre is just noise.
-  function formatMoney0(n) {
     var suffix = CURRENCY_SUFFIX[settings && settings.currency] || 'kr';
     return Math.round(Number(n) || 0).toLocaleString('sv-SE', { minimumFractionDigits: 0, maximumFractionDigits: 0 }) + ' ' + suffix;
   }
@@ -1279,8 +1273,8 @@
       chips += chip('Property value', hasValuation ? formatMoney(value) : '—');
       chips += chip('Loan-to-value', hasValuation ? formatPct(ltv) : '—');
       chips += chip('Total amortised', formatMoney(amortized));
-      chips += chip('Interest paid', formatMoney0(interest));
-      if (settings.ranteavdrag) chips += chip('Ränteavdrag (est.)', formatMoney0(deduction));
+      chips += chip('Interest paid', formatMoney(interest));
+      if (settings.ranteavdrag) chips += chip('Ränteavdrag (est.)', formatMoney(deduction));
       // Soonest bound-rate (bunden) expiry across the parts — the next omförhandling.
       var soon = null;
       parts.forEach(function (p) {
@@ -1361,7 +1355,7 @@
               titleColor: cc.tooltipTitle, bodyColor: cc.tooltipBody,
               titleFont: { family: 'Inter', size: 12, weight: '500' }, bodyFont: { family: 'Inter', size: 12 },
               padding: 10, cornerRadius: 10, boxPadding: 4,
-              callbacks: { label: function (item) { return ' ' + item.dataset.label + ': ' + Number(item.raw).toLocaleString('sv-SE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' kr'; } }
+              callbacks: { label: function (item) { return ' ' + item.dataset.label + ': ' + Math.round(Number(item.raw) || 0).toLocaleString('sv-SE') + ' kr'; } }
             }
           },
           scales: {
@@ -1548,7 +1542,7 @@
       var costRows = monthlyCost(pays, { ranteavdrag: settings.ranteavdrag });
       if (costRows.length) {
         var last = costRows[costRows.length - 1];
-        chips += chip(settings.ranteavdrag ? 'Latest mo · net cost' : 'Latest mo · cost', formatMoney0(last.net));
+        chips += chip(settings.ranteavdrag ? 'Latest mo · net cost' : 'Latest mo · cost', formatMoney(last.net));
       }
       var blended = weightedAvgRate(parts, rates, pays);
       if (blended > 0) chips += chip('Blended rate', formatPct(blended), true);
