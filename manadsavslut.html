@@ -155,6 +155,13 @@
   <section class="card">
     <div class="card-head">
       <h2>Insikter <span class="card-en">· Insights</span></h2>
+      <div class="card-actions">
+        <div class="segmented" id="insightsPeriod" role="radiogroup" aria-label="Insights period">
+          <button type="button" class="seg" data-period="month" role="radio" aria-checked="false">This month</button>
+          <button type="button" class="seg" data-period="3m" role="radio" aria-checked="false">3 mo</button>
+          <button type="button" class="seg is-active" data-period="all" role="radio" aria-checked="true">All</button>
+        </div>
+      </div>
     </div>
     <div id="insightsHost"></div>
   </section>
@@ -177,7 +184,7 @@
     <div class="form-grid">
       <label class="form-field"><span>Date</span><input type="date" id="f-date"></label>
       <label class="form-field form-wide"><span>Description</span><input type="text" id="f-desc" autocomplete="off" placeholder="e.g. Groceries"></label>
-      <label class="form-field"><span>Charge (full amount)</span><input type="text" id="f-amount" inputmode="decimal" autocomplete="off" placeholder="0"></label>
+      <label class="form-field"><span>Charge — minus for a refund</span><input type="text" id="f-amount" inputmode="decimal" autocomplete="off" placeholder="0"></label>
       <div class="form-field">
         <span>Paid by</span>
         <div class="segmented" id="f-fronted" role="radiogroup" aria-label="Paid by">
@@ -236,6 +243,16 @@
           <button type="button" class="seg" data-class="full" role="radio" aria-checked="false">Owes all</button>
         </div>
       </div>
+      <label class="form-field form-wide"><span>Currency</span>
+        <select id="s-currency" class="select">
+          <option value="SEK">SEK · kr</option>
+          <option value="NOK">NOK · kr</option>
+          <option value="DKK">DKK · kr</option>
+          <option value="EUR">EUR · €</option>
+          <option value="USD">USD · $</option>
+          <option value="GBP">GBP · £</option>
+        </select>
+      </label>
       <div class="form-field form-wide">
         <span>Backup</span>
         <div class="settings-data-row">
