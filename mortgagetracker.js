@@ -880,13 +880,14 @@
   function clean(v) { return String(v == null ? '' : v).trim(); }
   function round2(n) { return Math.round((Number(n) || 0) * 100) / 100; }
   var CURRENCY_SUFFIX = { SEK: 'kr', NOK: 'kr', DKK: 'kr', EUR: '€', USD: '$', GBP: '£' };
+  // Always two decimals, everywhere — money and percentages alike.
   function formatMoney(n) {
-    var num = Number(n) || 0;
-    var hasOre = Math.abs(num - Math.round(num)) > 0.005;
     var suffix = CURRENCY_SUFFIX[settings && settings.currency] || 'kr';
-    return num.toLocaleString('sv-SE', { minimumFractionDigits: hasOre ? 2 : 0, maximumFractionDigits: 2 }) + ' ' + suffix;
+    return (Number(n) || 0).toLocaleString('sv-SE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' ' + suffix;
   }
-  function formatPct(n) { return (Math.round((Number(n) || 0) * 10) / 10).toLocaleString('sv-SE') + ' %'; }
+  function formatPct(n) {
+    return (Number(n) || 0).toLocaleString('sv-SE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' %';
+  }
   function todayISO() {
     var d = new Date(), p = function (n) { return (n < 10 ? '0' : '') + n; };
     return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
@@ -1354,7 +1355,7 @@
               titleColor: cc.tooltipTitle, bodyColor: cc.tooltipBody,
               titleFont: { family: 'Inter', size: 12, weight: '500' }, bodyFont: { family: 'Inter', size: 12 },
               padding: 10, cornerRadius: 10, boxPadding: 4,
-              callbacks: { label: function (item) { return ' ' + item.dataset.label + ': ' + Math.round(item.raw).toLocaleString('sv-SE') + ' kr'; } }
+              callbacks: { label: function (item) { return ' ' + item.dataset.label + ': ' + Number(item.raw).toLocaleString('sv-SE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' kr'; } }
             }
           },
           scales: {
@@ -1379,12 +1380,12 @@
       var total = totalBalance(parts, pays);
       var body = parts.map(function (p) {
         var bal = partBalance(p, pays);
-        var pct = total > 0 ? Math.round(bal / total * 100) : 0;
+        var pct = total > 0 ? bal / total * 100 : 0;
         var rate = p.interest_rate == null ? '—' : formatPct(p.interest_rate);
         return '<tr' + (p.archived ? ' class="is-settled"' : '') + '>'
           + '<td>' + escapeHtml(p.label || '(no name)') + (p.loan_number ? ' <span class="row-note">#' + escapeHtml(p.loan_number) + '</span>' : '') + '</td>'
           + '<td class="num">' + formatMoney(bal) + '</td>'
-          + '<td class="num">' + pct + ' %</td>'
+          + '<td class="num">' + formatPct(pct) + '</td>'
           + '<td>' + rate + '</td>'
           + '<td class="col-act">'
           + '<button type="button" class="icon-btn" data-edit-part="' + escapeHtml(p.id) + '" title="Edit" aria-label="Edit">✎</button>'
@@ -1552,7 +1553,7 @@
       var krav = amorteringskravStatus(parts, pays, vals, settings);
       if (krav.has_value) {
         if (krav.exempt) chips += chip('Amorteringskrav (est.)', 'None · LTV ≤ 50 %');
-        else chips += chip('Amorteringskrav (est.)', krav.required_pct + ' % · ' + formatMoney(krav.required_annual) + '/år');
+        else chips += chip('Amorteringskrav (est.)', formatPct(krav.required_pct) + ' · ' + formatMoney(krav.required_annual) + '/år');
       }
       $('insightChips').innerHTML = chips;
     });
