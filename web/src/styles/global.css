@@ -201,45 +201,7 @@ body {
   color: var(--ink-mid);
 }
 
-/* ── Summary (Phase-0 placeholders → real cards in Phase 2) ──── */
-.summary-title {
-  font-family: var(--font-display);
-  font-weight: 400;
-  font-size: 1.4rem;
-  color: var(--ink);
-  margin-bottom: 1.1rem;
-}
-
-.sum-card {
-  background: var(--paper-warm);
-  border: 1px solid var(--rule);
-  border-radius: var(--r-md);
-  padding: 1rem 1.1rem;
-  margin-bottom: 0.85rem;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.sum-card-label {
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
-  color: var(--ink-soft);
-}
-
-.sum-card-figure {
-  font-family: var(--font-display);
-  font-size: 1.6rem;
-  color: var(--ink-faint);
-}
-
-.shell-placeholder {
-  color: var(--ink-soft);
-  font-size: 13px;
-  font-style: italic;
-}
+/* Summary column + all component styles live in components.css */
 
 /* ── Section / card entrance ────────────────────────────────── */
 @media (prefers-reduced-motion: no-preference) {
@@ -258,9 +220,4 @@ body {
   to   { opacity: 1; transform: none; }
 }
 
-/* ── Mobile ─────────────────────────────────────────────────── */
-@media (max-width: 900px) {
-  .layout { grid-template-columns: 1fr; }
-  .summary-col { border-left: none; border-top: 1px solid var(--rule); }
-  .page-header { padding: 1.1rem 1.25rem; }
-}
+/* Responsive rules live in components.css */
