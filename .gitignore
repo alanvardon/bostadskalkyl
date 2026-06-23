@@ -17,4 +17,4 @@ dist/
 .playwright-mcp/
 bk-*.png
 hub-*.png
-react-shell-*.png
+react-*.png

@@ -1,4 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import { DEFAULT_INPUTS, derive, type Inputs } from './lib/calc'
+import { fmt } from './lib/format'
+import InputsColumn from './components/InputsColumn'
+import SummaryColumn from './components/SummaryColumn'
 
 type Theme = 'light' | 'dark'
 
@@ -10,21 +14,17 @@ function getInitialTheme(): Theme {
   return document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light'
 }
 
-const SECTIONS = [
-  { num: 1, title: 'Selling your current property' },
-  { num: 2, title: 'Buying your new property' },
-  { num: 3, title: 'Monthly costs' },
-] as const
-
-const SUMMARY_CARDS = [
-  'Cash surplus / shortfall',
-  'Net from sale',
-  'Total upfront needed',
-  'New mortgage',
-] as const
+const sign = (n: number) => (n >= 0 ? '+' : '')
 
 export default function App() {
   const [theme, setTheme] = useState<Theme>(getInitialTheme)
+  const [inputs, setInputs] = useState<Inputs>(DEFAULT_INPUTS)
+
+  const figures = useMemo(() => derive(inputs), [inputs])
+
+  function setField<K extends keyof Inputs>(key: K, value: Inputs[K]) {
+    setInputs((prev) => ({ ...prev, [key]: value }))
+  }
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme
@@ -33,12 +33,9 @@ export default function App() {
     } catch {
       /* private mode / storage disabled — ignore */
     }
-    // Browser chrome follows the page background (matches the vanilla app)
     const meta = document.querySelector('meta[name="theme-color"]')
     if (meta) {
-      const paper = getComputedStyle(document.documentElement)
-        .getPropertyValue('--paper')
-        .trim()
+      const paper = getComputedStyle(document.documentElement).getPropertyValue('--paper').trim()
       meta.setAttribute('content', paper)
     }
   }, [theme])
@@ -66,33 +63,35 @@ export default function App() {
           >
             {theme === 'dark' ? '☾' : '☀'}
           </button>
-          <button className="btn btn-ghost" disabled>Scenarios</button>
-          <button className="btn btn-primary" disabled>Save</button>
+          <button className="btn btn-ghost" disabled title="Scenarios (Phase 3)">
+            Scenarios
+          </button>
+          <button className="btn btn-primary" disabled title="Save (Phase 3)">
+            Save
+          </button>
         </div>
       </header>
 
       <div className="layout">
-        <div className="inputs-col">
-          {SECTIONS.map((s) => (
-            <section className="section" key={s.num}>
-              <div className="section-label">
-                <span className="section-num">{s.num}</span>
-                <span className="section-title">{s.title}</span>
-              </div>
-              <p className="shell-placeholder">Inputs arrive in Phase 2.</p>
-            </section>
-          ))}
-        </div>
+        <InputsColumn inputs={inputs} setField={setField} figures={figures} />
+        <SummaryColumn inputs={inputs} setField={setField} figures={figures} />
+      </div>
 
-        <aside className="summary-col">
-          <h2 className="summary-title">Summary</h2>
-          {SUMMARY_CARDS.map((label) => (
-            <div className="sum-card" key={label}>
-              <span className="sum-card-label">{label}</span>
-              <span className="sum-card-figure">— kr</span>
-            </div>
-          ))}
-        </aside>
+      {/* Mobile key-figures bar */}
+      <div className="mobile-bar">
+        <div className="mobile-bar-inner">
+          <div className="mobile-stat">
+            <span className="mobile-stat-label">Monthly</span>
+            <span className="mobile-stat-val">{fmt(figures.totalMonthly)}</span>
+          </div>
+          <div className="mobile-stat">
+            <span className="mobile-stat-label">Surplus / shortfall</span>
+            <span className={`mobile-stat-val ${figures.cashBalance >= 0 ? 'positive' : 'negative'}`}>
+              {sign(figures.cashBalance)}
+              {fmt(figures.cashBalance)}
+            </span>
+          </div>
+        </div>
       </div>
     </>
   )
