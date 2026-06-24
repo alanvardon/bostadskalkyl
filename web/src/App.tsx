@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { derive } from './lib/calc'
-import { fmt } from './lib/format'
 import { useStore, type DeletedInfo } from './store/useStore'
 import InputsColumn from './components/InputsColumn'
 import SummaryColumn from './components/SummaryColumn'
 import ScenariosModal from './components/ScenariosModal'
 import SavePrompt from './components/SavePrompt'
 import UndoToast from './components/UndoToast'
+import { Money } from './components/AnimatedNumber'
 
 type Theme = 'light' | 'dark'
 
@@ -17,8 +17,6 @@ const THEME_KEY = 'bostadskalkyl_theme'
 function getInitialTheme(): Theme {
   return document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light'
 }
-
-const sign = (n: number) => (n >= 0 ? '+' : '')
 
 export default function App() {
   const [theme, setTheme] = useState<Theme>(getInitialTheme)
@@ -148,13 +146,14 @@ export default function App() {
         <div className="mobile-bar-inner">
           <div className="mobile-stat">
             <span className="mobile-stat-label">Monthly</span>
-            <span className="mobile-stat-val">{fmt(figures.totalMonthly)}</span>
+            <span className="mobile-stat-val">
+              <Money value={figures.totalMonthly} />
+            </span>
           </div>
           <div className="mobile-stat">
             <span className="mobile-stat-label">Surplus / shortfall</span>
             <span className={`mobile-stat-val ${figures.cashBalance >= 0 ? 'positive' : 'negative'}`}>
-              {sign(figures.cashBalance)}
-              {fmt(figures.cashBalance)}
+              <Money value={figures.cashBalance} signed />
             </span>
           </div>
         </div>

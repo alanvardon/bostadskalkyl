@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Dialog } from 'radix-ui'
+import AnimatedDialog from './AnimatedDialog'
 
 interface Props {
   open: boolean
@@ -25,43 +26,37 @@ export default function SavePrompt({ open, mode, activeName, onOpenChange, onSav
   }
 
   return (
-    <Dialog.Root open={open} onOpenChange={onOpenChange}>
-      <Dialog.Portal>
-        <Dialog.Overlay className="modal-backdrop">
-          <Dialog.Content className="save-prompt-box" aria-describedby={undefined}>
-            <Dialog.Title className="save-prompt-title">
-              {mode === 'update' ? (
-                <>
-                  Update <em>{activeName}</em> or save as new?
-                </>
-              ) : (
-                'Save scenario'
-              )}
-            </Dialog.Title>
-            <input
-              type="text"
-              autoFocus
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') confirm()
-              }}
-              placeholder={
-                mode === 'update'
-                  ? 'Leave blank to update, or enter a new name…'
-                  : 'e.g. Lidingö house, Scenario A…'
-              }
-              aria-label="Scenario name"
-            />
-            <div className="save-prompt-actions">
-              <Dialog.Close className="btn btn-ghost">Cancel</Dialog.Close>
-              <button className="btn btn-primary" onClick={confirm}>
-                Save
-              </button>
-            </div>
-          </Dialog.Content>
-        </Dialog.Overlay>
-      </Dialog.Portal>
-    </Dialog.Root>
+    <AnimatedDialog open={open} onOpenChange={onOpenChange} contentClassName="save-prompt-box">
+      <Dialog.Title className="save-prompt-title">
+        {mode === 'update' ? (
+          <>
+            Update <em>{activeName}</em> or save as new?
+          </>
+        ) : (
+          'Save scenario'
+        )}
+      </Dialog.Title>
+      <input
+        type="text"
+        autoFocus
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') confirm()
+        }}
+        placeholder={
+          mode === 'update'
+            ? 'Leave blank to update, or enter a new name…'
+            : 'e.g. Lidingö house, Scenario A…'
+        }
+        aria-label="Scenario name"
+      />
+      <div className="save-prompt-actions">
+        <Dialog.Close className="btn btn-ghost">Cancel</Dialog.Close>
+        <button className="btn btn-primary" onClick={confirm}>
+          Save
+        </button>
+      </div>
+    </AnimatedDialog>
   )
 }

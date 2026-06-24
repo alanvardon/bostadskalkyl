@@ -1,6 +1,6 @@
 /* Modal / scenario / save-prompt / undo styles — ported from styles.css,
-   adapted for Radix Dialog (Radix mounts only when open, so no .open toggle;
-   entry animations run on mount). */
+   adapted for Radix Dialog. Enter/exit animation is owned by Motion via
+   AnimatedDialog (AnimatePresence), so no CSS keyframes here. */
 
 /* Active-scenario label in the header */
 .active-scenario-label {
@@ -37,7 +37,6 @@
   justify-content: center;
   padding: 1rem;
   overflow-y: auto;
-  animation: fade-in 0.22s ease;
 }
 
 .modal {
@@ -50,11 +49,7 @@
   display: flex;
   flex-direction: column;
   box-shadow: var(--shadow-lg);
-  animation: modal-in 0.28s cubic-bezier(0.22, 1, 0.36, 1);
 }
-
-@keyframes fade-in { from { opacity: 0; } }
-@keyframes modal-in { from { opacity: 0; transform: translateY(12px) scale(0.97); } }
 
 .modal-header {
   display: flex;
@@ -156,7 +151,6 @@
   width: 380px;
   max-width: calc(100vw - 2rem);
   box-shadow: var(--shadow-lg);
-  animation: modal-in 0.28s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .save-prompt-title {
