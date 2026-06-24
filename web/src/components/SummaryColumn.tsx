@@ -1,13 +1,11 @@
 import type { Inputs, Figures } from '../lib/calc'
-import { fmt, pct } from '../lib/format'
+import { Money, Percent } from './AnimatedNumber'
 
 interface Props {
   inputs: Inputs
   setField: <K extends keyof Inputs>(key: K, value: Inputs[K]) => void
   figures: Figures
 }
-
-const sign = (n: number) => (n >= 0 ? '+' : '')
 
 export default function SummaryColumn({ inputs: i, setField, figures: f }: Props) {
   // Phase 2: no savings store yet → savings total is 0, so total = cashBalance.
@@ -27,17 +25,20 @@ export default function SummaryColumn({ inputs: i, setField, figures: f }: Props
       <div className={pnlClass}>
         <div className="sum-card-title">Cash surplus / shortfall</div>
         <div className={`sum-big ${totalBalance >= 0 ? 'positive' : 'negative'}`}>
-          {sign(totalBalance)}
-          {fmt(totalBalance)}
+          <Money value={totalBalance} signed />
         </div>
         <div className="sum-rows">
           <div className="sum-row">
             <span className="sum-row-label">Net from sale</span>
-            <span className="sum-row-val">{fmt(f.netProceeds)}</span>
+            <span className="sum-row-val">
+              <Money value={f.netProceeds} />
+            </span>
           </div>
           <div className="sum-row">
             <span className="sum-row-label">Less upfront costs</span>
-            <span className="sum-row-val">{'−' + fmt(f.totalUpfront)}</span>
+            <span className="sum-row-val">
+              <Money value={f.totalUpfront} prefix="−" />
+            </span>
           </div>
         </div>
       </div>
@@ -45,15 +46,21 @@ export default function SummaryColumn({ inputs: i, setField, figures: f }: Props
       {/* Net from sale */}
       <div className="sum-card">
         <div className="sum-card-title">Net from sale</div>
-        <div className="sum-big positive">{fmt(f.netProceeds)}</div>
+        <div className="sum-big positive">
+          <Money value={f.netProceeds} />
+        </div>
         <div className="sum-rows">
           <div className="sum-row">
             <span className="sum-row-label">Total takeaway</span>
-            <span className="sum-row-val">{fmt(f.totalTakeaway)}</span>
+            <span className="sum-row-val">
+              <Money value={f.totalTakeaway} />
+            </span>
           </div>
           <div className="sum-row">
             <span className="sum-row-label">Less agent &amp; moving</span>
-            <span className="sum-row-val">{'−' + fmt(i.agentCost + i.movingCost)}</span>
+            <span className="sum-row-val">
+              <Money value={i.agentCost + i.movingCost} prefix="−" />
+            </span>
           </div>
         </div>
       </div>
@@ -61,19 +68,27 @@ export default function SummaryColumn({ inputs: i, setField, figures: f }: Props
       {/* Total upfront needed */}
       <div className="sum-card">
         <div className="sum-card-title">Total upfront needed</div>
-        <div className="sum-big">{fmt(f.totalUpfront)}</div>
+        <div className="sum-big">
+          <Money value={f.totalUpfront} />
+        </div>
         <div className="sum-rows">
           <div className="sum-row">
             <span className="sum-row-label">Deposit</span>
-            <span className="sum-row-val">{fmt(i.deposit)}</span>
+            <span className="sum-row-val">
+              <Money value={i.deposit} />
+            </span>
           </div>
           <div className="sum-row">
             <span className="sum-row-label">Lagfart</span>
-            <span className="sum-row-val">{fmt(f.lagfart)}</span>
+            <span className="sum-row-val">
+              <Money value={f.lagfart} />
+            </span>
           </div>
           <div className="sum-row">
             <span className="sum-row-label">Pantbrev cost</span>
-            <span className="sum-row-val">{fmt(f.pantbrevCost)}</span>
+            <span className="sum-row-val">
+              <Money value={f.pantbrevCost} />
+            </span>
           </div>
         </div>
       </div>
@@ -81,14 +96,19 @@ export default function SummaryColumn({ inputs: i, setField, figures: f }: Props
       {/* New mortgage + equity bar */}
       <div className="sum-card">
         <div className="sum-card-title">New mortgage</div>
-        <div className="sum-big">{fmt(f.loanAmount)}</div>
+        <div className="sum-big">
+          <Money value={f.loanAmount} />
+        </div>
         <div className="ltv-bar-wrap">
           <div className="ltv-bar-bg">
             <div className="ltv-bar-fill" style={{ width: `${equity}%`, background: ltvColor }} />
           </div>
           <div className="ltv-labels">
             <span>
-              Equity: <strong>{pct(f.equityShare)}</strong>
+              Equity:{' '}
+              <strong>
+                <Percent value={f.equityShare} />
+              </strong>
             </span>
             <span>15% min</span>
           </div>
@@ -100,23 +120,33 @@ export default function SummaryColumn({ inputs: i, setField, figures: f }: Props
       {/* Total monthly cost */}
       <div className="sum-card">
         <div className="sum-card-title">Total monthly cost</div>
-        <div className="sum-big">{fmt(f.totalMonthly)}</div>
+        <div className="sum-big">
+          <Money value={f.totalMonthly} />
+        </div>
         <div className="sum-rows">
           <div className="sum-row">
             <span className="sum-row-label">Interest</span>
-            <span className="sum-row-val">{fmt(f.bankA.interest)}</span>
+            <span className="sum-row-val">
+              <Money value={f.bankA.interest} />
+            </span>
           </div>
           <div className="sum-row">
             <span className="sum-row-label">Amortisation</span>
-            <span className="sum-row-val">{fmt(f.monthlyAmort)}</span>
+            <span className="sum-row-val">
+              <Money value={f.monthlyAmort} />
+            </span>
           </div>
           <div className="sum-row">
             <span className="sum-row-label">Property tax</span>
-            <span className="sum-row-val">{fmt(f.taxMonthly)}</span>
+            <span className="sum-row-val">
+              <Money value={f.taxMonthly} />
+            </span>
           </div>
           <div className="sum-row">
             <span className="sum-row-label">Driftkostnad</span>
-            <span className="sum-row-val">{fmt(i.driftkostnad)}</span>
+            <span className="sum-row-val">
+              <Money value={i.driftkostnad} />
+            </span>
           </div>
         </div>
       </div>
@@ -124,19 +154,27 @@ export default function SummaryColumn({ inputs: i, setField, figures: f }: Props
       {/* Ränteavdrag */}
       <div className="sum-card">
         <div className="sum-card-title">Ränteavdrag (tax relief)</div>
-        <div className="sum-big positive">{fmt(f.relief / 12)}/mo</div>
+        <div className="sum-big positive">
+          <Money value={f.relief / 12} suffix="/mo" />
+        </div>
         <div className="sum-rows">
           <div className="sum-row">
             <span className="sum-row-label">Annual interest</span>
-            <span className="sum-row-val">{fmt(f.bankA.annualInterest)}/yr</span>
+            <span className="sum-row-val">
+              <Money value={f.bankA.annualInterest} suffix="/yr" />
+            </span>
           </div>
           <div className="sum-row">
             <span className="sum-row-label">Back from Skatteverket</span>
-            <span className="sum-row-val positive">{fmt(f.relief)}/yr</span>
+            <span className="sum-row-val positive">
+              <Money value={f.relief} suffix="/yr" />
+            </span>
           </div>
           <div className="sum-row">
             <span className="sum-row-label">Effective monthly</span>
-            <span className="sum-row-val">{fmt(f.effectiveMonthly)}</span>
+            <span className="sum-row-val">
+              <Money value={f.effectiveMonthly} />
+            </span>
           </div>
         </div>
       </div>
@@ -146,7 +184,9 @@ export default function SummaryColumn({ inputs: i, setField, figures: f }: Props
       {/* Affordability */}
       <div className="sum-card">
         <div className="sum-card-title">Affordability</div>
-        <div className="sum-big">{fmt(f.reqSalaryMonthly)}/mo</div>
+        <div className="sum-big">
+          <Money value={f.reqSalaryMonthly} suffix="/mo" />
+        </div>
         <div className="sum-card-subtitle">gross monthly salary needed</div>
         <div className="sum-rows" style={{ marginTop: '0.5rem' }}>
           <div className="sum-row afford-row" style={{ borderTop: 'none', paddingTop: 6 }}>
@@ -183,15 +223,21 @@ export default function SummaryColumn({ inputs: i, setField, figures: f }: Props
       {/* Equity projection */}
       <div className="sum-card">
         <div className="sum-card-title">Equity after 10 years</div>
-        <div className="sum-big positive">{fmt(f.equity.y10)}</div>
+        <div className="sum-big positive">
+          <Money value={f.equity.y10} />
+        </div>
         <div className="sum-rows">
           <div className="sum-row">
             <span className="sum-row-label">Equity at year 5</span>
-            <span className="sum-row-val">{fmt(f.equity.y5)}</span>
+            <span className="sum-row-val">
+              <Money value={f.equity.y5} />
+            </span>
           </div>
           <div className="sum-row">
             <span className="sum-row-label">Equity at year 20</span>
-            <span className="sum-row-val">{fmt(f.equity.y20)}</span>
+            <span className="sum-row-val">
+              <Money value={f.equity.y20} />
+            </span>
           </div>
         </div>
       </div>

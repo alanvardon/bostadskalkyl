@@ -2,14 +2,13 @@ import { useEffect, useState, type CSSProperties } from 'react'
 import { stressAt, FASTIGHETSAVGIFT_CAP, type Inputs, type Figures, type BankFigures } from '../lib/calc'
 import { fmt } from '../lib/format'
 import { CurrencyInput, NumberInput, Field, DerivedRow } from './fields'
+import { Money } from './AnimatedNumber'
 
 interface Props {
   inputs: Inputs
   setField: <K extends keyof Inputs>(key: K, value: Inputs[K]) => void
   figures: Figures
 }
-
-const sign = (n: number) => (n >= 0 ? '+' : '')
 
 export default function InputsColumn({ inputs: i, setField, figures: f }: Props) {
   const [listingUrl, setListingUrl] = useState('')
@@ -60,8 +59,8 @@ export default function InputsColumn({ inputs: i, setField, figures: f }: Props)
           </Field>
         </div>
         <div className="derived-box">
-          <DerivedRow label="Total takeaway (sale − mortgage)" value={fmt(f.totalTakeaway)} cls={f.totalTakeaway >= 0 ? 'positive' : 'negative'} />
-          <DerivedRow label="Net proceeds (after agent & moving)" value={fmt(f.netProceeds)} cls={f.netProceeds >= 0 ? 'positive' : 'negative'} />
+          <DerivedRow label="Total takeaway (sale − mortgage)" value={<Money value={f.totalTakeaway} />} cls={f.totalTakeaway >= 0 ? 'positive' : 'negative'} />
+          <DerivedRow label="Net proceeds (after agent & moving)" value={<Money value={f.netProceeds} />} cls={f.netProceeds >= 0 ? 'positive' : 'negative'} />
         </div>
       </div>
 
@@ -89,14 +88,14 @@ export default function InputsColumn({ inputs: i, setField, figures: f }: Props)
           </Field>
         </div>
         <div className="derived-box">
-          <DerivedRow label="Loan amount (price − deposit)" value={fmt(f.loanAmount)} />
-          <DerivedRow label="Lagfart (1.5% of purchase price)" value={fmt(f.lagfart)} />
-          <DerivedRow label="New pantbrev needed (loan − existing)" value={fmt(f.newPantbrevNeeded)} />
-          <DerivedRow label="New pantbrev cost (2% of new amount)" value={fmt(f.pantbrevCost)} />
-          <DerivedRow rowClass="derived-total" label="Total upfront cash needed" value={fmt(f.totalUpfront)} />
+          <DerivedRow label="Loan amount (price − deposit)" value={<Money value={f.loanAmount} />} />
+          <DerivedRow label="Lagfart (1.5% of purchase price)" value={<Money value={f.lagfart} />} />
+          <DerivedRow label="New pantbrev needed (loan − existing)" value={<Money value={f.newPantbrevNeeded} />} />
+          <DerivedRow label="New pantbrev cost (2% of new amount)" value={<Money value={f.pantbrevCost} />} />
+          <DerivedRow rowClass="derived-total" label="Total upfront cash needed" value={<Money value={f.totalUpfront} />} />
           <DerivedRow
             label={<span style={{ fontWeight: 550, color: 'var(--ink)' }}>Cash surplus / shortfall</span>}
-            value={`${sign(f.cashBalance)}${fmt(f.cashBalance)}`}
+            value={<Money value={f.cashBalance} signed />}
             cls={f.cashBalance >= 0 ? 'positive' : 'negative'}
           />
         </div>
@@ -165,13 +164,13 @@ function BankCol({
         <NumberInput value={rate} onChange={onRate} suffix="%" min={0} max={20} step={0.1} ariaLabel={`Interest rate ${idSuffix}`} />
       </Field>
       <div className="bank-breakdown">
-        <DerivedRow label="Monthly interest" value={fmt(bank.interest)} />
-        <DerivedRow label="Amortisation" value={fmt(bank.amort)} />
-        <DerivedRow label="Property tax" value={fmt(bank.tax)} />
-        <DerivedRow label="Driftkostnad" value={fmt(bank.drift)} />
-        <DerivedRow rowClass="bank-total-row" label="Total monthly" value={fmt(bank.total)} />
-        <DerivedRow rowClass="derived-relief" label="Ränteavdrag relief" value={'−' + fmt(bank.relief / 12)} cls="positive" />
-        <DerivedRow rowClass="derived-effective" label="Effective monthly" value={fmt(bank.effective)} cls="positive" />
+        <DerivedRow label="Monthly interest" value={<Money value={bank.interest} />} />
+        <DerivedRow label="Amortisation" value={<Money value={bank.amort} />} />
+        <DerivedRow label="Property tax" value={<Money value={bank.tax} />} />
+        <DerivedRow label="Driftkostnad" value={<Money value={bank.drift} />} />
+        <DerivedRow rowClass="bank-total-row" label="Total monthly" value={<Money value={bank.total} />} />
+        <DerivedRow rowClass="derived-relief" label="Ränteavdrag relief" value={<Money value={bank.relief / 12} prefix="−" />} cls="positive" />
+        <DerivedRow rowClass="derived-effective" label="Effective monthly" value={<Money value={bank.effective} />} cls="positive" />
       </div>
     </div>
   )
@@ -217,15 +216,21 @@ function StressTest({ inputs }: { inputs: Inputs }) {
         <div className="stress-results">
           <div className="stress-result-row">
             <span className="stress-result-label">Monthly interest</span>
-            <span className="stress-result-value">{fmt(s.monthlyInterest)}</span>
+            <span className="stress-result-value">
+              <Money value={s.monthlyInterest} />
+            </span>
           </div>
           <div className="stress-result-row">
             <span className="stress-result-label">Total monthly</span>
-            <span className="stress-result-value" style={{ color: rate > 6 ? 'var(--warn)' : undefined }}>{fmt(s.total)}</span>
+            <span className="stress-result-value" style={{ color: rate > 6 ? 'var(--warn)' : undefined }}>
+              <Money value={s.total} />
+            </span>
           </div>
           <div className="stress-result-row">
             <span className="stress-result-label">After ränteavdrag</span>
-            <span className="stress-result-value stress-result-relief">{fmt(s.afterRelief)}</span>
+            <span className="stress-result-value stress-result-relief">
+              <Money value={s.afterRelief} />
+            </span>
           </div>
         </div>
       </div>
