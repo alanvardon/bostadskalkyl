@@ -259,14 +259,18 @@
 
   // ── Month helpers (for per-month settlement) ─────────────────────────────
   // The calendar month an item belongs to, as 'YYYY-MM'. Built for ISO dates
-  // (Swedish banks use YYYY-MM-DD); also tolerates YYYY/MM and DD.MM.YYYY.
+  // (Swedish banks use YYYY-MM-DD); also tolerates year-first YYYY/M and
+  // day-first D.M.YYYY / D/M/YYYY with 1- OR 2-digit day/month ('25/5/2026').
+  // Rejects impossible months (>12) so a misread date falls through to ''
+  // rather than silently bucketing into a garbage month.
   // Returns '' when no month can be read (item still settles under "All open").
   function monthKey(dateStr) {
     var s = String(dateStr == null ? '' : dateStr).trim();
-    var m = /(\d{4})[-/](\d{2})/.exec(s);
-    if (m) return m[1] + '-' + m[2];
-    m = /(\d{2})[./](\d{2})[./](\d{4})/.exec(s); // DD.MM.YYYY or DD/MM/YYYY
-    if (m) return m[3] + '-' + m[2];
+    function mm(x) { return x.length < 2 ? '0' + x : x; }
+    var m = /(\d{4})[-/](\d{1,2})/.exec(s); // YYYY-M / YYYY/M (year-first)
+    if (m && +m[2] >= 1 && +m[2] <= 12) return m[1] + '-' + mm(m[2]);
+    m = /(\d{1,2})[./](\d{1,2})[./](\d{4})/.exec(s); // day-first D.M.YYYY or D/M/YYYY
+    if (m && +m[2] >= 1 && +m[2] <= 12) return m[3] + '-' + mm(m[2]);
     return '';
   }
   // Human label for a month key: '2026-06' → 'Juni 2026'; '' → "No date".

@@ -211,6 +211,14 @@ test('monthKey also reads slash D/M/Y dates', () => {
   assert.equal(m.monthKey('14.06.2026'), '2026-06'); // DD.MM.YYYY
 });
 
+test('monthKey reads single-digit day/month (day-first), pads, rejects bad months', () => {
+  assert.equal(m.monthKey('25/5/2026'), '2026-05');  // D/M/YYYY, single-digit month
+  assert.equal(m.monthKey('5/5/2026'), '2026-05');   // single-digit day AND month
+  assert.equal(m.monthKey('2026/6/2'), '2026-06');   // year-first, single-digit month
+  assert.equal(m.monthKey('2026-6-2'), '2026-06');   // ISO-ish, single-digit month
+  assert.equal(m.monthKey('5/25/2026'), '');         // month 25 impossible → no date, not '2026-25'
+});
+
 test('fillMonthGaps inserts zero months between first and last, drops undated', () => {
   const rows = [
     { month: '2026-03', label: 'Mars 2026', total: 300, count: 1 },
