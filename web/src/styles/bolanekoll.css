@@ -72,7 +72,7 @@
   .dash-headline {
     font-family: var(--font-display); font-weight: 400;
     font-size: 2.8rem; line-height: 1.05; letter-spacing: -0.02em;
-    color: var(--accent); margin: 0.1rem 0;
+    color: var(--accent); margin: 0.1rem 0; white-space: nowrap;
   }
   .dash-sub { font-size: 13.5px; color: var(--ink-soft); }
   .metric-row {
@@ -90,7 +90,7 @@
     text-transform: uppercase; color: var(--ink-soft);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
-  .metric-val { font-size: 17px; font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; }
+  .metric-val { font-size: 17px; font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; white-space: nowrap; }
   .metric-chip.is-accent .metric-val { color: var(--accent); }
   .metric-warn { color: var(--warn); }
   .metric-chip.is-warn { background: var(--warn-faint); border-color: var(--warn-light); }
@@ -109,7 +109,7 @@
     text-transform: uppercase; color: var(--ink-soft);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
-  .split-val { font-family: var(--font-display); font-size: 1.6rem; line-height: 1.1; color: var(--ink); }
+  .split-val { font-family: var(--font-display); font-size: 1.6rem; line-height: 1.1; color: var(--ink); white-space: nowrap; }
   .split-card.is-accent .split-val { color: var(--accent); }
   .split-sub { font-size: 11.5px; color: var(--ink-soft); }
 
