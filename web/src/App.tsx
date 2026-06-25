@@ -4,6 +4,7 @@ import Home from './routes/Home'
 import Bostadskalkyl from './routes/Bostadskalkyl'
 import Konsultkalkyl from './routes/Konsultkalkyl'
 import Lonevaxling from './routes/Lonevaxling'
+import Bolanekoll from './routes/Bolanekoll'
 
 type Theme = 'light' | 'dark'
 const THEME_KEY = 'bostadskalkyl_theme'
@@ -38,6 +39,7 @@ export default function App() {
           <Route path="/bostadskalkyl" element={<Bostadskalkyl />} />
           <Route path="/konsultkalkyl" element={<Konsultkalkyl />} />
           <Route path="/lonevaxling" element={<Lonevaxling />} />
+          <Route path="/bolanekoll" element={<Bolanekoll />} />
         </Routes>
       </HashRouter>
     </ThemeContext.Provider>

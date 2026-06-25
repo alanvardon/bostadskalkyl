@@ -190,9 +190,9 @@ export default function Home() {
             <span className="app-cta">Open <span className="arrow">→</span></span>
           </a>
 
-          <a
+          <Link
             className="app-card reveal reveal-8"
-            href="mortgagetracker.html"
+            to="/bolanekoll"
             onPointerMove={onCardMove}
             onPointerLeave={onCardLeave}
           >
@@ -209,7 +209,7 @@ export default function Home() {
             <span className="app-name">Bolånekoll</span>
             <span className="app-desc">Track your mortgage — import the bank's payment CSV, follow each loan part down and watch your equity grow against the bank.</span>
             <span className="app-cta">Open <span className="arrow">→</span></span>
-          </a>
+          </Link>
 
           <Link
             className="app-card reveal reveal-9"
