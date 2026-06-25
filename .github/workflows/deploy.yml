@@ -1,0 +1,65 @@
+name: Deploy Hemma to GitHub Pages
+
+# Builds the React Bostadskalkyl app and publishes the whole Hemma site (the
+# hub + all the calculators) to GitHub Pages on every push to main. The hub and
+# the vanilla tools are static files served as-is; only bostadskalkyl is built
+# from web/ and dropped in as bostadskalkyl.html + bk-assets/.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: # lets you trigger a deploy by hand from the Actions tab
+
+# Permissions GitHub Pages needs to publish from an Action.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deploy at a time; let an in-progress run finish rather than cancelling it.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build the React app (bostadskalkyl)
+        run: |
+          npm --prefix web ci
+          npm --prefix web run build
+
+      - name: Assemble the Hemma site
+        run: |
+          mkdir -p _site
+          # Hub + the 5 vanilla tools — every asset reference is relative, so
+          # they work unchanged under the Pages subpath (/bostadskalkyl/).
+          cp *.html *.css *.js _site/
+          cp icon.svg manifest.webmanifest _site/
+          rm -f _site/*.test.js
+          # Overlay the built React app in place of the vanilla bostadskalkyl.html.
+          cp web/dist/index.html _site/bostadskalkyl.html
+          cp -r web/dist/bk-assets _site/bk-assets
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
