@@ -614,14 +614,19 @@ export default function Bolanekoll() {
 
   return (
     <>
-      <div className="page-header">
-        <Link to="/" className="hub-link">← Hemma</Link>
-        <span>{settings.property_name || 'Bolånekoll'}</span>
-        <div className="header-actions">
-          <button className="theme-toggle-btn" onClick={() => setSettingsDlg(true)} title="Inställningar" aria-label="Inställningar">⚙</button>
-          <button className="theme-toggle-btn" onClick={toggleTheme} title="Dark mode" aria-label="Toggle dark mode">{theme === 'dark' ? '☾' : '☀'}</button>
+      <header className="page-header">
+        <div className="header-brand">
+          <Link className="hub-link" to="/">‹ Hemma</Link>
+          <div>
+            <h1>{settings.property_name || 'Bolånekoll'}</h1>
+            <p className="tagline">Track your mortgage — how much of the home you own vs the bank</p>
+          </div>
         </div>
-      </div>
+        <div className="header-actions">
+          <button className="btn btn-ghost theme-toggle-btn" onClick={() => setSettingsDlg(true)} title="Inställningar" aria-label="Inställningar">⚙</button>
+          <button className="btn btn-ghost theme-toggle-btn" onClick={toggleTheme} title="Dark mode" aria-label="Toggle dark mode">{theme === 'dark' ? '☾' : '☀'}</button>
+        </div>
+      </header>
 
       <div className="bk-wrap">
 
@@ -635,22 +640,21 @@ export default function Bolanekoll() {
         )}
 
         {/* ── Dashboard ── */}
-        <section className="bk-card">
-          <div className="bk-card-head"><h2 className="bk-card-title">Översikt</h2></div>
+        <section className="bk-card bk-dashboard-card">
           <div className="bk-dash">
             <div className="bk-dash-main">
-              <div className="bk-dash-label">Eget kapital</div>
+              <div className="bk-dash-label">Eget kapital · Total equity</div>
               <div className="bk-dash-headline">{value ? cur(eq) : '—'}</div>
-              <div className="bk-dash-sub">{value ? `${fmtPct((eq / value) * 100, 1)} av fastighetsvärdet` : 'Lägg till en värdering'}</div>
+              <div className="bk-dash-sub">{value && balance ? `${fmtPct(ltv, 1)} belåningsgrad · ${cur(balance)} kvar till banken` : 'Lägg till en lånedel och en värdering för att komma igång.'}</div>
             </div>
             <div className="bk-split-row">
-              <div className="bk-split-card"><div className="bk-split-label">{aName}</div><div className="bk-split-val">{value ? cur(split.a) : '—'}</div><div className="bk-split-pct">{pcts.a} %</div></div>
-              <div className="bk-split-card"><div className="bk-split-label">{bName}</div><div className="bk-split-val">{value ? cur(split.b) : '—'}</div><div className="bk-split-pct">{pcts.b} %</div></div>
+              <div className={'bk-split-card' + (settings.i_am === 'a' ? ' is-accent' : '')}><div className="bk-split-label">{aName} · {pcts.a} %</div><div className="bk-split-val">{value ? cur(split.a) : '—'}</div><div className="bk-split-pct">eget kapital</div></div>
+              <div className={'bk-split-card' + (settings.i_am === 'b' ? ' is-accent' : '')}><div className="bk-split-label">{bName} · {pcts.b} %</div><div className="bk-split-val">{value ? cur(split.b) : '—'}</div><div className="bk-split-pct">eget kapital</div></div>
             </div>
           </div>
           <div className="bk-metrics">
+            <div className="bk-metric is-accent"><div className="bk-metric-label">Skuld (kvar)</div><div className="bk-metric-val">{activeParts.length ? cur(balance) : '—'}</div></div>
             <div className="bk-metric"><div className="bk-metric-label">Fastighetsvärde</div><div className="bk-metric-val">{value ? cur(value) : '—'}</div></div>
-            <div className="bk-metric"><div className="bk-metric-label">Skuld (kvar)</div><div className="bk-metric-val">{activeParts.length ? cur(balance) : '—'}</div></div>
             <div className="bk-metric"><div className="bk-metric-label">Amorterat</div><div className="bk-metric-val">{activeParts.length ? cur(amortized) : '—'}</div></div>
             <div className="bk-metric"><div className="bk-metric-label">Belåningsgrad</div><div className="bk-metric-val">{value && balance ? fmtPct(ltv, 1) : '—'}</div></div>
             {blended > 0 && <div className="bk-metric"><div className="bk-metric-label">Snittränta</div><div className="bk-metric-val">{fmtPct(blended)}</div></div>}
@@ -660,7 +664,7 @@ export default function Bolanekoll() {
 
         {/* ── Chart ── */}
         <section className="bk-card">
-          <div className="bk-card-head"><h2 className="bk-card-title">Kapitalutveckling</h2></div>
+          <div className="bk-card-head"><h2 className="bk-card-title">Ägande över tid <span className="bk-card-en">· Ownership vs bank</span></h2></div>
           {equityTimeline(parts, payments, valuations, settings).length >= 2
             ? <div className="bk-chart-wrap"><canvas ref={canvasRef} /></div>
             : <div className="bk-chart-empty">Importera transaktioner och lägg till en värdering för att se diagrammet.</div>}
@@ -670,21 +674,39 @@ export default function Bolanekoll() {
         {(bridge.total_gain !== 0 || bridge.start_equity !== 0) && (
           <section className="bk-card">
             <div className="bk-card-head">
-              <h2 className="bk-card-title">Kapitalförändring</h2>
-              <div className="bk-segmented">
-                {(['1m', '3m', '6m', '1y', 'all'] as const).map(p => (
-                  <button key={p} className={'bk-seg' + (insightPeriod === p ? ' is-active' : '')} onClick={() => setInsightPeriod(p)}>
-                    {p === '1m' ? '1 mån' : p === '3m' ? '3 mån' : p === '6m' ? '6 mån' : p === '1y' ? '1 år' : 'Allt'}
-                  </button>
-                ))}
+              <h2 className="bk-card-title">Insikter <span className="bk-card-en">· Insights</span></h2>
+              <div className="bk-card-actions">
+                <div className="bk-segmented">
+                  {(['1m', '3m', '6m', '1y', 'all'] as const).map(p => (
+                    <button key={p} className={'bk-seg' + (insightPeriod === p ? ' is-active' : '')} onClick={() => setInsightPeriod(p)}>
+                      {p === '1m' ? '1 mån' : p === '3m' ? '3 mån' : p === '6m' ? '6 mån' : p === '1y' ? '1 år' : 'Allt'}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
             <div className="bk-bridge">
-              <div className="bk-bridge-row"><span>Fastighetsvärde</span><span>{cur(bridge.start_value)} → <strong>{cur(bridge.end_value)}</strong></span></div>
-              <div className="bk-bridge-row"><span>Skuld</span><span>{cur(bridge.start_balance)} → <strong>{cur(bridge.end_balance)}</strong></span></div>
-              <div className="bk-bridge-row bk-bridge-gain"><span>+ Amortering</span><span className="bk-pos">{cur(bridge.amortization_gain)}</span></div>
-              <div className="bk-bridge-row bk-bridge-gain"><span>+ Värdeutveckling</span><span className={bridge.appreciation_gain >= 0 ? 'bk-pos' : 'bk-neg'}>{cur(bridge.appreciation_gain)}</span></div>
-              <div className="bk-bridge-total"><span>Total kapitalförändring</span><span className={bridge.total_gain >= 0 ? 'bk-pos' : 'bk-neg'}>{cur(bridge.total_gain)}</span></div>
+              {(() => {
+                const amort = Math.max(0, bridge.amortization_gain)
+                const appr = Math.max(0, bridge.appreciation_gain)
+                const neg = Math.abs(Math.min(0, bridge.amortization_gain) + Math.min(0, bridge.appreciation_gain))
+                const total = amort + appr + neg || 1
+                return <>
+                  <div className="bk-bridge-head">
+                    <span className="bk-bridge-title">Total kapitalförändring</span>
+                    <span className={'bk-bridge-total-val ' + (bridge.total_gain >= 0 ? 'bk-pos' : 'bk-neg')}>{cur(bridge.total_gain)}</span>
+                  </div>
+                  <div className="bk-bridge-bar">
+                    {amort > 0 && <div className="bk-bridge-seg is-amort" style={{ width: `${(amort / total) * 100}%` }} />}
+                    {appr > 0 && <div className="bk-bridge-seg is-appr" style={{ width: `${(appr / total) * 100}%` }} />}
+                    {neg > 0 && <div className="bk-bridge-seg is-neg" style={{ width: `${(neg / total) * 100}%` }} />}
+                  </div>
+                  <div className="bk-bridge-legend">
+                    <span className="bk-bridge-key"><span className="bk-bridge-dot is-amort" />Amortering <b>{cur(bridge.amortization_gain)}</b></span>
+                    <span className="bk-bridge-key"><span className="bk-bridge-dot is-appr" />Värdeutveckling <b className={bridge.appreciation_gain >= 0 ? 'bk-pos' : 'bk-neg'}>{cur(bridge.appreciation_gain)}</b></span>
+                  </div>
+                </>
+              })()}
             </div>
             {!amortStatus.exempt && (
               <div className={'bk-amort-status' + (amortStatus.meets ? '' : ' bk-amort-warn')}>
@@ -698,7 +720,7 @@ export default function Bolanekoll() {
         {/* ── Projection ── */}
         {activeParts.length > 0 && (
           <section className="bk-card">
-            <div className="bk-card-head"><h2 className="bk-card-title">Prognos</h2></div>
+            <div className="bk-card-head"><h2 className="bk-card-title">Prognos <span className="bk-card-en">· Projection</span></h2></div>
             <div className="bk-proj">
               <div className="bk-proj-row">
                 <label className="bk-proj-label">Månatlig extra amortering (kr)</label>
@@ -716,7 +738,7 @@ export default function Bolanekoll() {
 
         {/* ── Import ── */}
         <section className="bk-card">
-          <div className="bk-card-head"><h2 className="bk-card-title">Importera CSV</h2></div>
+          <div className="bk-card-head"><h2 className="bk-card-title">Importera CSV <span className="bk-card-en">· Import</span></h2></div>
           {!importCfg ? (
             <div
               className={'bk-dropzone' + (isDragging ? ' is-drag' : '')}
@@ -781,8 +803,11 @@ export default function Bolanekoll() {
         {/* ── Loan parts ── */}
         <section className="bk-card">
           <div className="bk-card-head">
-            <h2 className="bk-card-title">Lånedelar <span className="bk-count">{activeParts.length}</span></h2>
-            <button className="btn btn-primary bk-btn-sm" onClick={() => setPartDlg({ open: true, id: null })}>+ Lägg till</button>
+            <h2 className="bk-card-title">Lånedelar <span className="bk-card-en">· Loan parts</span></h2>
+            <span className="bk-count">{activeParts.length}</span>
+            <div className="bk-card-actions">
+              <button className="btn btn-primary bk-btn-sm" onClick={() => setPartDlg({ open: true, id: null })}>+ Lägg till</button>
+            </div>
           </div>
           {!activeParts.length ? (
             <p className="bk-empty">Inga lånedelar. Lägg till din första lånedel för att komma igång.</p>
@@ -820,8 +845,11 @@ export default function Bolanekoll() {
         {/* ── Valuations ── */}
         <section className="bk-card">
           <div className="bk-card-head">
-            <h2 className="bk-card-title">Värderingar <span className="bk-count">{valuations.length}</span></h2>
-            <button className="btn btn-primary bk-btn-sm" onClick={() => setValDlg({ open: true, id: null })}>+ Lägg till</button>
+            <h2 className="bk-card-title">Värderingar <span className="bk-card-en">· Valuations</span></h2>
+            <span className="bk-count">{valuations.length}</span>
+            <div className="bk-card-actions">
+              <button className="btn btn-primary bk-btn-sm" onClick={() => setValDlg({ open: true, id: null })}>+ Lägg till</button>
+            </div>
           </div>
           {!valuations.length ? <p className="bk-empty">Inga värderingar. Lägg till din första.</p> : (
             <div className="bk-table-wrap">
@@ -845,8 +873,9 @@ export default function Bolanekoll() {
         {/* ── Payments ── */}
         <section className="bk-card">
           <div className="bk-card-head">
-            <h2 className="bk-card-title">Transaktioner <span className="bk-count">{payments.length}</span></h2>
-            <div style={{ display: 'flex', gap: '0.5rem' }}>
+            <h2 className="bk-card-title">Transaktioner <span className="bk-card-en">· Payments</span></h2>
+            <span className="bk-count">{payments.length}</span>
+            <div className="bk-card-actions">
               <button className="btn btn-ghost bk-btn-sm" onClick={handleExportCSV}>Exportera CSV</button>
               <button className="btn btn-primary bk-btn-sm" onClick={() => setPayDlg({ open: true, id: null })}>+ Lägg till</button>
             </div>
@@ -880,8 +909,11 @@ export default function Bolanekoll() {
         {settings.track_contributions && (
           <section className="bk-card">
             <div className="bk-card-head">
-              <h2 className="bk-card-title">Insatser <span className="bk-count">{contributions.length}</span></h2>
-              <button className="btn btn-primary bk-btn-sm" onClick={() => setContDlg({ open: true, id: null })}>+ Lägg till</button>
+              <h2 className="bk-card-title">Insatser <span className="bk-card-en">· Contributions</span></h2>
+              <span className="bk-count">{contributions.length}</span>
+              <div className="bk-card-actions">
+                <button className="btn btn-primary bk-btn-sm" onClick={() => setContDlg({ open: true, id: null })}>+ Lägg till</button>
+              </div>
             </div>
             {contribSplit && (
               <div className="bk-contrib-split">
@@ -912,8 +944,8 @@ export default function Bolanekoll() {
         )}
 
         {/* ── Backup ── */}
-        <section className="bk-card bk-card-compact">
-          <div className="bk-card-head"><h2 className="bk-card-title">Backup</h2></div>
+        <section className="bk-card">
+          <div className="bk-card-head"><h2 className="bk-card-title">Backup <span className="bk-card-en">· Data</span></h2></div>
           <div className="bk-backup-row">
             <button className="btn btn-ghost bk-btn-sm" onClick={handleExportJSON}>Exportera JSON</button>
             <label className="btn btn-ghost bk-btn-sm" style={{ cursor: 'pointer' }}>
