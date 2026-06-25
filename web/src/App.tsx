@@ -107,7 +107,7 @@ export default function App() {
     <>
       <header className="page-header">
         <div className="header-brand">
-          <a className="hub-link" href="../index.html">‹ Hemma</a>
+          <a className="hub-link" href="index.html">‹ Hemma</a>
           <div>
             <h1>Bostadskalkyl</h1>
             <p className="tagline">
