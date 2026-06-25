@@ -1,9 +1,11 @@
 name: Deploy Hemma to GitHub Pages
 
-# Builds the React Bostadskalkyl app and publishes the whole Hemma site (the
-# hub + all the calculators) to GitHub Pages on every push to main. The hub and
-# the vanilla tools are static files served as-is; only bostadskalkyl is built
-# from web/ and dropped in as bostadskalkyl.html + bk-assets/.
+# Builds the React SPA (web/) and publishes the whole Hemma site to GitHub Pages
+# on every push to main. The SPA is the entry point (index.html): it hosts the
+# hub (/) and all migrated tools as hash routes (/#/bostadskalkyl, etc.).
+# Vanilla tools that haven't yet been migrated to React are served alongside as
+# static HTML files — each one is removed from the assembly step once it ships
+# as a React route.
 
 on:
   push:
@@ -41,14 +43,20 @@ jobs:
       - name: Assemble the Hemma site
         run: |
           mkdir -p _site
-          # Hub + the 5 vanilla tools — every asset reference is relative, so
-          # they work unchanged under the Pages subpath (/bostadskalkyl/).
-          cp *.html *.css *.js _site/
-          cp icon.svg manifest.webmanifest _site/
-          rm -f _site/*.test.js
-          # Overlay the built React app in place of the vanilla bostadskalkyl.html.
-          cp web/dist/index.html _site/bostadskalkyl.html
+          # SPA is the entry point — its index.html IS the hub (/ route).
+          cp web/dist/index.html _site/index.html
           cp -r web/dist/bk-assets _site/bk-assets
+          # Icons and manifest
+          cp icon.svg manifest.webmanifest _site/
+          # Vanilla tools not yet migrated to React — served as static HTML alongside
+          # the SPA. Remove each tool's files below once its React route ships.
+          cp calc.js _site/  # shared calc utils used by konsultkalkyl + lonevaxling + hushallsbudget
+          cp hushallsbudget.html budget.css budget.js salary-store.js _site/
+          cp konsultkalkyl.html konsultkalkyl.css konsultkalkyl.js _site/
+          cp manadsavslut.html manadsavslut.css manadsavslut.js manadsavslut-store.js _site/
+          cp mortgagetracker.html mortgagetracker.css mortgagetracker.js mortgagetracker-store.js _site/
+          cp lonevaxling.html lonevaxling.css lonevaxling.js _site/
+          # bostadskalkyl.html is now the SPA at /#/bostadskalkyl — no vanilla file needed
 
       - uses: actions/upload-pages-artifact@v3
         with:

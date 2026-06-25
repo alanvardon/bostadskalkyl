@@ -40,6 +40,14 @@
   --r-lg: 16px;
   --font-display: 'Instrument Serif', 'DM Serif Display', Georgia, serif;
   --font-ui: 'Inter', 'DM Sans', system-ui, sans-serif;
+  /* Hex aliases for hero-canvas: getComputedStyle returns OKLCH strings verbatim,
+     not resolved hex, so the canvas parseToken can't read the OKLCH tokens above. */
+  --canvas-accent: #4d8a62;
+  --canvas-copper: #b06b38;
+  /* Orb background blobs — hub-only but cheap to define globally */
+  --orb-a: rgba(77, 138, 98, 0.2);
+  --orb-b: rgba(176, 107, 56, 0.13);
+  --orb-c: rgba(46, 93, 62, 0.12);
 }
 
 [data-theme="dark"] {
@@ -68,6 +76,11 @@
   --shadow-md: 0 2px 6px rgba(0, 0, 0, 0.35), 0 10px 28px rgba(0, 0, 0, 0.3);
   --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.45), 0 24px 64px rgba(0, 0, 0, 0.5);
   --ring: 0 0 0 3px rgba(95, 166, 116, 0.22);
+  --canvas-accent: #7cbf8f;
+  --canvas-copper: #cf8a4e;
+  --orb-a: rgba(95, 166, 116, 0.13);
+  --orb-b: rgba(207, 138, 78, 0.08);
+  --orb-c: rgba(124, 191, 143, 0.07);
 }
 
 html { color-scheme: light; }
