@@ -23,6 +23,7 @@
     "@visx/scale": "^4.0.0",
     "@visx/shape": "^4.0.0",
     "@visx/tooltip": "^4.0.0",
+    "chart.js": "^4.5.1",
     "motion": "^12.41.0",
     "radix-ui": "^1.6.0",
     "react": "^19.2.7",
