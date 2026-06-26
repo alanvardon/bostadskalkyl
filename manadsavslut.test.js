@@ -140,6 +140,47 @@ test('buildSettlement nets only unpaid items and links their ids', () => {
   assert.equal(s.period_label, '2026-06');
 });
 
+// ──────────────────── "ask later" (pending) triage ────────────────────
+
+test('classifyToItemFields flags an "ask later" row as pending (provisional split)', () => {
+  assert.deepEqual(m.classifyToItemFields('pending', 'a'), { split: true, owed_by: 'b', pending: true });
+  assert.deepEqual(m.classifyToItemFields('pending', 'b'), { split: true, owed_by: 'a', pending: true });
+});
+
+test('makeItem defaults pending to false and carries an explicit pending flag', () => {
+  assert.equal(m.makeItem({ enter_amount: 400, fronted_by: 'a' }).pending, false);
+  const p = m.makeItem({ enter_amount: 400, split: true, fronted_by: 'a', pending: true });
+  assert.equal(p.pending, true);
+  assert.equal(p.amount, 200, 'provisional half retained while pending');
+});
+
+test('buildSettlement ignores pending items so an undecided charge never settles', () => {
+  const items = [
+    { id: 'i1', amount: 150, fronted_by: 'a', owed_by: 'b', paid: false },
+    { id: 'i2', amount: 100, fronted_by: 'a', owed_by: 'b', paid: false, pending: true }
+  ];
+  const s = m.buildSettlement(items, {});
+  assert.deepEqual(s.item_ids, ['i1'], 'the pending id is not part of the settlement');
+  assert.equal(s.amount, 150, 'the pending 100 is not summed');
+
+  const allPending = [{ id: 'p1', amount: 100, fronted_by: 'a', owed_by: 'b', paid: false, pending: true }];
+  const empty = m.buildSettlement(allPending, {});
+  assert.deepEqual(empty.item_ids, []);
+  assert.deepEqual(
+    { from: empty.from_person, to: empty.to_person, amount: empty.amount },
+    { from: null, to: null, amount: 0 }
+  );
+});
+
+test('a pending refund keeps a negative provisional amount but stays out of the math', () => {
+  const it = m.makeItem({ enter_amount: -200, split: true, fronted_by: 'a', pending: true });
+  assert.equal(it.amount, -100);
+  assert.equal(it.pending, true);
+  const s = m.buildSettlement([Object.assign({ id: 'r1' }, it)], {});
+  assert.deepEqual(s.item_ids, []);
+  assert.equal(s.amount, 0);
+});
+
 // ──────────────────── month helpers & analytics ────────────────────
 
 test('monthKey reads ISO dates (and a couple of fallbacks), else empty', () => {
@@ -323,6 +364,31 @@ test('settle saves a payment and flips its linked items to paid', async () => {
   assert.ok(items.every((it) => it.paid && it.payment_id === payment.id), 'both items closed under the payment');
   const pays = await store.listPayments();
   assert.equal(pays.length, 1);
+});
+
+test('resolving a pending item via updateItem clears the flag and recomputes the amount', async () => {
+  const { store } = freshStore();
+  const saved = await store.addItem(m.makeItem({ enter_amount: 400, fronted_by: 'a', pending: true }));
+  assert.equal(saved.pending, true);
+  assert.equal(saved.amount, 200, 'provisional split-half while pending');
+  const resolved = await store.updateItem(saved.id, {
+    split: false, amount: m.computeOwedAmount(400, false), pending: false
+  });
+  assert.equal(resolved.pending, false);
+  assert.equal(resolved.amount, 400, 'resolving to "owes all" recomputes the owed amount');
+});
+
+test('settling leaves a pending item untouched and out of the transfer', async () => {
+  const { store } = freshStore();
+  const decided = await store.addItem(m.makeItem({ enter_amount: 300, split: false, fronted_by: 'a' })); // b owes 300
+  const pending = await store.addItem(m.makeItem({ enter_amount: 100, fronted_by: 'a', pending: true }));
+  const draft = m.buildSettlement([decided, pending], { period_label: '2026-06' });
+  const payment = await store.settle(draft);
+  assert.equal(payment.amount, 300, 'pending 100 (provisional 50) excluded from the transfer');
+  const items = await store.listItems();
+  const stillPending = items.filter(function (it) { return it.id === pending.id; })[0];
+  assert.equal(stillPending.paid, false, 'pending item stays open');
+  assert.equal(stillPending.pending, true, 'and stays pending after the settlement');
 });
 
 test('removePayment deletes the settlement and reopens its items', async () => {

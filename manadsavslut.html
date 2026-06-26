@@ -100,6 +100,7 @@
           <div class="segmented" id="defaultClass" role="radiogroup" aria-label="Default treatment">
             <button type="button" class="seg is-active" data-class="split" role="radio" aria-checked="true">Split 50/50</button>
             <button type="button" class="seg" data-class="full" role="radio" aria-checked="false">Owes all</button>
+            <button type="button" class="seg" data-class="pending" role="radio" aria-checked="false">Ask later</button>
             <button type="button" class="seg" data-class="exclude" role="radio" aria-checked="false">Exclude</button>
           </div>
           <p class="config-note">Set per row below, or change them all at once.</p>
@@ -140,6 +141,7 @@
       <div class="card-actions">
         <div class="segmented" id="itemFilter" role="radiogroup" aria-label="Filter items">
           <button type="button" class="seg is-active" data-filter="open" role="radio" aria-checked="true">Open</button>
+          <button type="button" class="seg" data-filter="pending" role="radio" aria-checked="false">Ask later</button>
           <button type="button" class="seg" data-filter="all" role="radio" aria-checked="false">All</button>
           <button type="button" class="seg" data-filter="a" role="radio" aria-checked="false">Alex</button>
           <button type="button" class="seg" data-filter="b" role="radio" aria-checked="false">Sam</button>
@@ -217,6 +219,7 @@
       <label class="form-field form-wide"><span>Settle which month?</span><select id="f-settle-month" class="select"></select></label>
     </div>
     <p class="settle-line" id="settleLine">—</p>
+    <p class="settle-pending-note" id="settlePendingNote" hidden></p>
     <div class="form-grid">
       <label class="form-field form-wide"><span>Period label</span><input type="text" id="f-period" autocomplete="off" placeholder="e.g. Juni 2026"></label>
       <label class="form-field form-wide"><span>Note (optional)</span><input type="text" id="f-settle-note" autocomplete="off"></label>

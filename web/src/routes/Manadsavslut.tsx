@@ -140,10 +140,10 @@ function ItemDialog({ open, id, items, settings, defaultClass, onSave, onClose }
 // ── SettleDialog ───────────────────────────────────────────────────────────
 
 interface SettleDlgProps {
-  open: boolean; openItems: Item[]; settings: MonthEndSettings
+  open: boolean; openItems: Item[]; pendingCount: number; settings: MonthEndSettings
   onConfirm: (draft: Omit<Payment, 'id' | 'created_at'>) => void; onClose: () => void
 }
-function SettleDialog({ open, openItems, settings, onConfirm, onClose }: SettleDlgProps) {
+function SettleDialog({ open, openItems, pendingCount, settings, onConfirm, onClose }: SettleDlgProps) {
   const ref = useRef<HTMLDialogElement>(null)
   useEffect(() => { if (open) ref.current?.showModal(); else ref.current?.close() }, [open])
   const aName = settings.person_a_name || 'Alex', bName = settings.person_b_name || 'Sam'
@@ -185,6 +185,9 @@ function SettleDialog({ open, openItems, settings, onConfirm, onClose }: SettleD
             ? <>{transfer} — closing {pending.item_ids.length} item{pending.item_ids.length === 1 ? '' : 's'}.</>
             : 'No open items in this period.'}
         </p>
+        {pendingCount > 0 && (
+          <p className="settle-pending-note">{pendingCount} item{pendingCount === 1 ? '' : 's'} still “ask later” — not included. Resolve them in the list first if you want them in.</p>
+        )}
         <div className="form-grid">
           <label className="form-field form-wide"><span>Period label</span><input type="text" autoComplete="off" placeholder="e.g. Juni 2026" value={period} onChange={e => setPeriod(e.target.value)} /></label>
           <label className="form-field form-wide"><span>Note (optional)</span><input type="text" autoComplete="off" value={note} onChange={e => setNote(e.target.value)} /></label>
@@ -267,7 +270,7 @@ export default function Manadsavslut() {
   const [saved, setSaved] = useState(false)
 
   const [defaultClass, setDefaultClass] = useState<Treatment>('split')
-  const [currentFilter, setCurrentFilter] = useState<'open' | 'all' | 'a' | 'b'>('open')
+  const [currentFilter, setCurrentFilter] = useState<'open' | 'pending' | 'all' | 'a' | 'b'>('open')
   const [insightsPeriod, setInsightsPeriod] = useState<'month' | '3m' | 'all'>('all')
 
   const [isDragging, setIsDragging] = useState(false)
@@ -321,14 +324,15 @@ export default function Manadsavslut() {
 
   const triageSummary = useMemo(() => {
     if (!importCfg) return ''
-    let add = 0, excl = 0, refundIncl = 0, invalid = 0, dup = 0
+    let add = 0, excl = 0, refundIncl = 0, invalid = 0, dup = 0, pend = 0
     importCfg.triage.forEach(t => {
       if (t.kind === 'noamount') { invalid++; return }
       if (t.classification === 'exclude') { excl++; return }
-      add++; if (t.kind === 'refund') refundIncl++; if (t.duplicate) dup++
+      add++; if (t.classification === 'pending') pend++; if (t.kind === 'refund') refundIncl++; if (t.duplicate) dup++
     })
     const parts = [add + ' item' + (add === 1 ? '' : 's') + ' to add']
     if (refundIncl) parts.push(refundIncl + ' refund' + (refundIncl === 1 ? '' : 's') + ' included')
+    if (pend) parts.push(pend + ' to ask later')
     if (dup) parts.push(dup + ' possible duplicate' + (dup === 1 ? '' : 's'))
     if (excl) parts.push(excl + ' excluded')
     if (invalid) parts.push(invalid + ' without an amount')
@@ -348,7 +352,7 @@ export default function Manadsavslut() {
       drafts.push(makeItem({
         date_purchased: clean(cellAt(row, importCfg.mapping.date_purchased)),
         description: clean(cellAt(row, importCfg.mapping.description)) || '(no description)',
-        enter_amount: t.charge, split: fields.split, fronted_by: importCfg.frontedBy, owed_by: fields.owed_by, source: 'import:' + importCfg.file.name,
+        enter_amount: t.charge, split: fields.split, pending: fields.pending, fronted_by: importCfg.frontedBy, owed_by: fields.owed_by, source: 'import:' + importCfg.file.name,
       }))
     })
     if (!drafts.length) { showToast('Nothing selected to add.'); return }
@@ -358,11 +362,15 @@ export default function Manadsavslut() {
   }
 
   // ── Derived ────────────────────────────────────────────────────────────────
-  const open = useMemo(() => items.filter(it => !it.paid), [items])
+  // "Ask later" items have no agreed split yet, so they're excluded from the
+  // balance and the settle scope, and only surfaced as an "awaiting a decision" count.
+  const open = useMemo(() => items.filter(it => !it.paid && !it.pending), [items])
+  const pendingCount = useMemo(() => items.filter(it => !it.paid && it.pending).length, [items])
   const bal = useMemo(() => netBalance(open), [open])
 
   const filteredItems = useMemo(() => items.filter(it => {
     if (currentFilter === 'open') return !it.paid
+    if (currentFilter === 'pending') return !it.paid && it.pending
     if (currentFilter === 'a') return it.fronted_by === 'a'
     if (currentFilter === 'b') return it.fronted_by === 'b'
     return true
@@ -395,11 +403,17 @@ export default function Manadsavslut() {
     await refresh(); flashSaved(); setItemDlg({ open: false, id: null }); showToast(itemDlg.id ? 'Item updated.' : 'Item added.')
   }
   async function deleteItem(id: string) { if (!confirm('Delete this item?')) return; await Store.removeItem(id); await refresh(); flashSaved(); showToast('Item deleted.') }
-  async function toggleType(it: Item, split: boolean) { await Store.updateItem(it.id, { split, amount: computeOwedAmount(it.enter_amount, split) }); await refresh(); flashSaved() }
+  // Picking a side both sets the type AND resolves any pending flag in one write.
+  async function toggleType(it: Item, split: boolean) { await Store.updateItem(it.id, { split, amount: computeOwedAmount(it.enter_amount, split), pending: false }); await refresh(); flashSaved() }
+  // Park a decided item as "ask later" (the existing-item flag path).
+  async function flagPending(it: Item) { await Store.updateItem(it.id, { pending: true }); await refresh(); flashSaved() }
   async function clearOpen() {
-    const openIds = items.filter(it => !it.paid).map(it => it.id)
+    const openItems = items.filter(it => !it.paid)
+    const openIds = openItems.map(it => it.id)
     if (!openIds.length) { showToast('No open items to delete.'); return }
-    if (!confirm('Delete all ' + openIds.length + ' open item' + (openIds.length === 1 ? '' : 's') + '? Settled items are kept. This can’t be undone.')) return
+    const pend = openItems.filter(it => it.pending).length
+    const pendNote = pend ? ' (including ' + pend + ' “ask later” item' + (pend === 1 ? '' : 's') + ')' : ''
+    if (!confirm('Delete all ' + openIds.length + ' open item' + (openIds.length === 1 ? '' : 's') + pendNote + '? Settled items are kept. This can’t be undone.')) return
     const n = await Store.removeItems(openIds); await refresh(); flashSaved(); showToast('Deleted ' + n + ' open item' + (n === 1 ? '' : 's') + '.')
   }
   async function confirmSettle(draft: Omit<Payment, 'id' | 'created_at'>) {
@@ -423,10 +437,12 @@ export default function Manadsavslut() {
   }
 
   // ── Balance display ──────────────────────────────────────────────────────
+  const pendingNote = pendingCount ? ' · ' + pendingCount + ' awaiting a decision' : ''
   let balLabel: string, balAmount: string, balSub: string
-  if (!open.length) { balLabel = 'All settled'; balAmount = '—'; balSub = 'Nothing outstanding.' }
-  else if (!bal.from || bal.amount <= 0) { balLabel = 'Even'; balAmount = fmtMoney(0); balSub = open.length + ' open item' + (open.length === 1 ? '' : 's') + ' · they cancel out' }
-  else { balLabel = nameOf(bal.from) + ' owes ' + nameOf(bal.to); balAmount = fmtMoney(bal.amount); balSub = 'across ' + open.length + ' open item' + (open.length === 1 ? '' : 's') }
+  if (!open.length && pendingCount) { balLabel = 'Nothing to settle yet'; balAmount = '—'; balSub = pendingCount + ' awaiting a decision' }
+  else if (!open.length) { balLabel = 'All settled'; balAmount = '—'; balSub = 'Nothing outstanding.' }
+  else if (!bal.from || bal.amount <= 0) { balLabel = 'Even'; balAmount = fmtMoney(0); balSub = open.length + ' open item' + (open.length === 1 ? '' : 's') + ' · they cancel out' + pendingNote }
+  else { balLabel = nameOf(bal.from) + ' owes ' + nameOf(bal.to); balAmount = fmtMoney(bal.amount); balSub = 'across ' + open.length + ' open item' + (open.length === 1 ? '' : 's') + pendingNote }
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
@@ -499,7 +515,7 @@ export default function Manadsavslut() {
                 </div>
                 <div className="config-field">
                   <label>Default treatment per row</label>
-                  <Segmented value={defaultClass} onChange={v => { setDefaultClass(v); setAllClass(v) }} options={[{ v: 'split' as Treatment, label: 'Split 50/50' }, { v: 'full' as Treatment, label: 'Owes all' }, { v: 'exclude' as Treatment, label: 'Exclude' }]} />
+                  <Segmented value={defaultClass} onChange={v => { setDefaultClass(v); setAllClass(v) }} options={[{ v: 'split' as Treatment, label: 'Split 50/50' }, { v: 'full' as Treatment, label: 'Owes all' }, { v: 'pending' as Treatment, label: 'Ask later' }, { v: 'exclude' as Treatment, label: 'Exclude' }]} />
                   <p className="config-note">Set per row below, or change them all at once.</p>
                 </div>
               </div>
@@ -514,19 +530,20 @@ export default function Manadsavslut() {
                     {importCfg.triage.map((t, i) => {
                       const row = importCfg.parsed.rows[i]
                       const isAmt = t.kind === 'charge' || t.kind === 'refund'
-                      const rowClass = !isAmt ? 'is-excluded' : t.duplicate ? 'is-dup' : t.classification === 'exclude' ? 'is-excluded' : ''
+                      const rowClass = !isAmt ? 'is-excluded' : t.duplicate ? 'is-dup' : t.classification === 'exclude' ? 'is-excluded' : t.classification === 'pending' ? 'is-pending' : ''
                       return (
                         <tr key={i} className={rowClass}>
                           <td className="col-treat">
                             {isAmt ? (
                               <Segmented small value={t.classification} onChange={v => setImportCfg(cfg => cfg ? { ...cfg, triage: cfg.triage.map((r, j) => j === i ? { ...r, classification: v } : r) } : cfg)}
-                                options={[{ v: 'split' as Treatment, label: 'Split' }, { v: 'full' as Treatment, label: 'All' }, { v: 'exclude' as Treatment, label: 'Skip' }]} />
+                                options={[{ v: 'split' as Treatment, label: 'Split' }, { v: 'full' as Treatment, label: 'All' }, { v: 'pending' as Treatment, label: 'Ask later' }, { v: 'exclude' as Treatment, label: 'Skip' }]} />
                             ) : <span className="treat-na">no amount</span>}
                           </td>
                           <td className="col-date">{cellAt(row, importCfg.mapping.date_purchased)}</td>
                           <td>
                             {cellAt(row, importCfg.mapping.description)}
                             {t.kind === 'refund' && <span className="row-flag row-flag-refund">refund</span>}
+                            {isAmt && t.classification === 'pending' && <span className="row-flag row-flag-pending">ask later</span>}
                             {isAmt && t.duplicate && <span className="row-flag">possible duplicate</span>}
                           </td>
                           <td className={'num' + (t.kind === 'refund' ? ' is-neg' : '')}>{isAmt ? fmtMoney(t.charge) : '—'}</td>
@@ -551,7 +568,7 @@ export default function Manadsavslut() {
             <span className="count-pill">{filteredItems.length}</span>
             <div className="card-actions">
               <div className="segmented" role="radiogroup" aria-label="Filter items">
-                {([['open', 'Open'], ['all', 'All'], ['a', aName], ['b', bName]] as const).map(([f, lbl]) => (
+                {([['open', 'Open'], ['pending', 'Ask later'], ['all', 'All'], ['a', aName], ['b', bName]] as const).map(([f, lbl]) => (
                   <button key={f} type="button" role="radio" aria-checked={currentFilter === f} className={'seg' + (currentFilter === f ? ' is-active' : '')} onClick={() => setCurrentFilter(f)}>{lbl}</button>
                 ))}
               </div>
@@ -567,19 +584,24 @@ export default function Manadsavslut() {
                 <thead><tr><th className="col-date">Date</th><th>Item</th><th>Paid by</th><th>Owes</th><th>Type</th><th className="num">Charge</th><th className="num">Owed</th><th>Status</th><th className="col-act"></th></tr></thead>
                 <tbody>
                   {filteredItems.map(it => (
-                    <tr key={it.id} className={it.paid ? 'is-settled' : ''}>
+                    <tr key={it.id} className={it.paid ? 'is-settled' : it.pending ? 'is-pending' : ''}>
                       <td className="col-date">{it.date_purchased}</td>
                       <td>{it.description}{it.note && <span className="row-note"> {it.note}</span>}</td>
                       <td>{nameOf(it.fronted_by)}</td>
                       <td>{nameOf(it.owed_by)}</td>
                       <td className="col-type">
                         {it.paid ? (it.split ? 'Split' : 'All') : (
-                          <Segmented small value={it.split ? 'split' : 'full'} onChange={v => toggleType(it, v === 'split')} options={[{ v: 'split' as const, label: 'Split' }, { v: 'full' as const, label: 'All' }]} />
+                          // Pending → toggle shows NEITHER side active (a choice is owed); picking
+                          // either resolves it. A decided open row also gets an ⏰ to re-park it.
+                          <>
+                            <Segmented small value={it.pending ? '' : (it.split ? 'split' : 'full')} onChange={v => toggleType(it, v === 'split')} options={[{ v: 'split' as const, label: 'Split' }, { v: 'full' as const, label: 'All' }]} />
+                            {!it.pending && <button type="button" className="icon-btn ask-btn" title="Ask later" aria-label="Ask later" onClick={() => flagPending(it)}>⏰</button>}
+                          </>
                         )}
                       </td>
                       <td className="num">{fmtMoney(it.enter_amount)}</td>
                       <td className="num">{fmtMoney(it.amount)}</td>
-                      <td>{it.paid ? <span className="tag tag-settled">Settled</span> : <span className="tag tag-open">Open</span>}</td>
+                      <td>{it.paid ? <span className="tag tag-settled">Settled</span> : it.pending ? <span className="tag tag-pending">Ask later</span> : <span className="tag tag-open">Open</span>}</td>
                       <td className="col-act">
                         {it.paid
                           ? <span className="row-lock" title="Settled — reopen its settlement to edit">🔒</span>
@@ -692,7 +714,7 @@ export default function Manadsavslut() {
       </main>
 
       <ItemDialog open={itemDlg.open} id={itemDlg.id} items={items} settings={settings} defaultClass={defaultClass} onSave={handleSaveItem} onClose={() => setItemDlg({ open: false, id: null })} />
-      <SettleDialog open={settleDlg} openItems={open} settings={settings} onConfirm={confirmSettle} onClose={() => setSettleDlg(false)} />
+      <SettleDialog open={settleDlg} openItems={open} pendingCount={pendingCount} settings={settings} onConfirm={confirmSettle} onClose={() => setSettleDlg(false)} />
       <SettingsDialog open={settingsDlg} settings={settings} onSave={handleSaveSettings} onClose={() => setSettingsDlg(false)} onExport={handleExport} onImport={handleImport} />
 
       <div className={'ma-toast' + (toast.show ? ' show' : '')} role="status" aria-live="polite">{toast.msg}</div>
