@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import Chart from 'chart.js/auto'
 import { useTheme } from '../App'
 import {
   defaultState, computeBudget, buildSubmission, formatWithSpaces, parseFormatted,
@@ -8,6 +7,8 @@ import {
 import type { BudgetState, BudgetResult, Owner, Row, SalarySubmission, IncomeItem } from '../lib/hushallsbudget'
 import { loadBudget, saveBudget } from '../lib/hushallsbudget-store'
 import * as salaryStore from '../lib/salary-store'
+import { Money, Percent } from '../components/AnimatedNumber'
+import BudgetDonutChart, { type DonutSegment } from '../components/charts/BudgetDonutChart'
 
 // ── Module helpers (faithful to budget.js) ───────────────────────────────────
 
@@ -15,9 +16,33 @@ const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', '
 const CAT_TOKENS = ['--cat-1', '--cat-2', '--cat-3', '--cat-4', '--cat-5', '--cat-6', '--cat-7', '--cat-8']
 
 function fmt(n: number): string { return formatWithSpaces(Math.round(n)) + ' kr' }
-function fmtSigned(n: number): string {
-  const r = Math.round(n)
-  return (r > 0 ? '+' : r < 0 ? '−' : '±') + formatWithSpaces(Math.abs(r)) + ' kr'
+
+// Animated summary figures (NumberFlow). These roll the digits as you edit the
+// budget; the plain fmt()/fmtSigned() strings above stay for prose, modal data
+// and the input-column subtotals — only the summary surface animates, matching
+// the Bostadskalkyl pilot. `M` is the kronor figure (visual twin of fmt());
+// pass { signed } for the signed payoff figures and { prefix: '−' } for the
+// "less …" deduction rows.
+function M(value: number, opts?: { signed?: boolean; prefix?: string }) {
+  return <Money value={value} signed={opts?.signed} prefix={opts?.prefix} />
+}
+function Pct1(value: number) {
+  return <Percent value={value} decimals={1} />
+}
+
+// Slices for the "where the pot goes" donut, in the same order/colours as the
+// legacy Chart.js doughnut (joint categories first, then each person's costs,
+// savings and the leftover). Zero-value slices are dropped.
+function buildDonutSegments(result: BudgetResult, nameA: string, nameB: string): DonutSegment[] {
+  const segs: DonutSegment[] = []
+  ;(result.jointCategories || []).forEach((c, i) => {
+    segs.push({ label: c.name || 'Category', value: c.amount, token: CAT_TOKENS[i % CAT_TOKENS.length] })
+  })
+  segs.push({ label: nameA + ' costs', value: result.costsA, token: '--accent-light' })
+  segs.push({ label: nameB + ' costs', value: result.costsB, token: '--copper' })
+  segs.push({ label: 'Savings', value: result.totalSavings, token: '--warn-light' })
+  segs.push({ label: 'Left over', value: Math.max(0, result.surplus), token: '--ink-faint' })
+  return segs.filter((s) => s.value > 0)
 }
 
 function currentMonth(): string { return new Date().toISOString().slice(0, 7) } // YYYY-MM
@@ -110,51 +135,6 @@ function EditableRow({ row, draggable, dragging, autoFocusLabel, onLabel, onAmou
       <button type="button" className="b-row-remove" aria-label="Remove row" onClick={onRemove}>×</button>
     </div>
   )
-}
-
-// ── Doughnut chart — where the pot goes ──────────────────────────────────────
-function DoughnutChart({ result, nameA, nameB }: { result: BudgetResult; nameA: string; nameB: string }) {
-  const canvasRef = useRef<HTMLCanvasElement>(null)
-  const chartRef = useRef<Chart | null>(null)
-  const { theme } = useTheme()
-  useEffect(() => {
-    if (!canvasRef.current) return
-    // Defer one frame so the theme's data-theme attribute (set by App's effect)
-    // is applied before we read the CSS tokens.
-    const raf = requestAnimationFrame(() => {
-      const canvas = canvasRef.current
-      if (!canvas) return
-      const root = document.querySelector('.hb-root') || document.documentElement
-      const cs = getComputedStyle(root)
-      const segs: { label: string; val: number; token: string }[] = []
-      ;(result.jointCategories || []).forEach((c, i) => {
-        segs.push({ label: c.name || 'Category', val: c.amount, token: CAT_TOKENS[i % CAT_TOKENS.length] })
-      })
-      segs.push({ label: nameA + ' costs', val: result.costsA, token: '--accent-light' })
-      segs.push({ label: nameB + ' costs', val: result.costsB, token: '--copper' })
-      segs.push({ label: 'Savings', val: result.totalSavings, token: '--warn-light' })
-      segs.push({ label: 'Left over', val: Math.max(0, result.surplus), token: '--ink-faint' })
-      const labels: string[] = [], data: number[] = [], colors: string[] = []
-      segs.forEach((s) => {
-        if (s.val > 0) { labels.push(s.label); data.push(s.val); colors.push(cs.getPropertyValue(s.token).trim()) }
-      })
-      const paperCard = cs.getPropertyValue('--paper-card').trim()
-      const inkMid = cs.getPropertyValue('--ink-mid').trim()
-      chartRef.current = new Chart(canvas, {
-        type: 'doughnut',
-        data: { labels, datasets: [{ data, backgroundColor: colors, borderColor: paperCard, borderWidth: 2, hoverOffset: 6 }] },
-        options: {
-          responsive: true, maintainAspectRatio: false, cutout: '62%',
-          plugins: {
-            legend: { position: 'bottom', labels: { color: inkMid, boxWidth: 9, boxHeight: 9, padding: 10, font: { family: 'Inter', size: 11 } } },
-            tooltip: { callbacks: { label: (ctx) => ' ' + fmt(Number(ctx.parsed)) } },
-          },
-        },
-      })
-    })
-    return () => { cancelAnimationFrame(raf); chartRef.current?.destroy(); chartRef.current = null }
-  }, [result, theme, nameA, nameB])
-  return <canvas ref={canvasRef} />
 }
 
 // ── Modal shell — overlay, ESC, focus trap, scroll lock, close animation ─────
@@ -484,8 +464,8 @@ function detailRowKeyed(key: number, label: string, value: string) {
 }
 
 // ── Fullscreen chart overlay ─────────────────────────────────────────────────
-function ChartOverlay({ open, onClose, result, nameA, nameB }: {
-  open: boolean; onClose: () => void; result: BudgetResult; nameA: string; nameB: string
+function ChartOverlay({ open, onClose, segments, totalIncome }: {
+  open: boolean; onClose: () => void; segments: DonutSegment[]; totalIncome: number
 }) {
   useEffect(() => {
     if (!open) return
@@ -503,7 +483,7 @@ function ChartOverlay({ open, onClose, result, nameA, nameB }: {
           <button type="button" className="chart-expand-btn chart-overlay-close" title="Close" aria-label="Close full screen" onClick={onClose}>×</button>
         </div>
         <div className="chart-overlay-stage">
-          <DoughnutChart result={result} nameA={nameA} nameB={nameB} />
+          <BudgetDonutChart segments={segments} formatMoney={fmt} centerLabel="In the pot" centerValue={totalIncome} />
         </div>
       </div>
     </div>
@@ -662,6 +642,7 @@ export default function Hushallsbudget() {
   const ownRows = (rows: Row[], owner: 'a' | 'b') => rows.filter((rw) => rw.owner === owner)
   const incomeRows = (owner: 'a' | 'b') => state.incomes.filter((rw) => (owner === 'b' ? rw.owner === 'b' : rw.owner !== 'b'))
   const catAmount = (catId: string) => (r.jointCategories.find((c) => c.id === catId)?.amount) ?? 0
+  const donutSegments = buildDonutSegments(r, nameA, nameB)
 
   return (
     <div className="hb-root">
@@ -736,21 +717,21 @@ export default function Hushallsbudget() {
               <div className="pot-flow">
                 <div className="pot-flow-item">
                   <span className="pot-flow-label">{personName('a')} pays in</span>
-                  <span className="pot-flow-val">{fmt(r.incomeA)}</span>
+                  <span className="pot-flow-val">{M(r.incomeA)}</span>
                 </div>
                 <span className="pot-plus">+</span>
                 <div className="pot-flow-item">
                   <span className="pot-flow-label">{personName('b')} pays in</span>
-                  <span className="pot-flow-val">{fmt(r.incomeB)}</span>
+                  <span className="pot-flow-val">{M(r.incomeB)}</span>
                 </div>
               </div>
               <div className="pot-total-row">
                 <span className="pot-total-label">In the pot</span>
-                <span className="pot-total-val">{fmt(r.totalIncome)}</span>
+                <span className="pot-total-val">{M(r.totalIncome)}</span>
               </div>
               <div className="pot-split-row">
                 <span className="pot-split-label">Split evenly, you each take home</span>
-                <span className="pot-split-val">{fmt(r.equalShare)}</span>
+                <span className="pot-split-val">{M(r.equalShare)}</span>
               </div>
               <div className={'pot-transfer' + (r.transfer.amount < 0.5 ? ' even' : '')}>
                 <span className="pot-transfer-icon" aria-hidden="true">⇄</span>
@@ -759,7 +740,7 @@ export default function Hushallsbudget() {
                     ? 'Incomes are already even — nothing to transfer'
                     : <>
                         <strong>{personName(r.transfer.from)}</strong> pays <strong>{personName(r.transfer.to)}</strong>{' '}
-                        <strong className="pot-transfer-amount">{fmt(r.transfer.amount)}</strong>
+                        <strong className="pot-transfer-amount">{M(r.transfer.amount)}</strong>
                       </>}
                 </span>
               </div>
@@ -877,7 +858,7 @@ export default function Hushallsbudget() {
 
           <div className="sum-card sum-card-hero">
             <div className="sum-card-title">Left over after everything</div>
-            <div className={'sum-big' + posNeg(r.surplus)}>{fmtSigned(r.surplus)}</div>
+            <div className={'sum-big' + posNeg(r.surplus)}>{M(r.surplus, { signed: true })}</div>
             <div className="sum-card-subtitle">across the whole household, each month</div>
             <div className="flow-bar" role="img" aria-label="How the pot is spent">
               <span className="flow-seg flow-joint" style={{ width: pctW(flowPcts.joint) }} />
@@ -886,15 +867,15 @@ export default function Hushallsbudget() {
               <span className="flow-seg flow-left" style={{ width: pctW(flowPcts.left) }} />
             </div>
             <div className="flow-legend">
-              <span className="flow-key"><span className="flow-dot flow-joint" />Joint <em>{fmt(r.costsJoint)}</em></span>
-              <span className="flow-key"><span className="flow-dot flow-own" />Own <em>{fmt(r.costsA + r.costsB)}</em></span>
-              <span className="flow-key"><span className="flow-dot flow-sav" />Savings <em>{fmt(r.totalSavings)}</em></span>
-              <span className="flow-key"><span className="flow-dot flow-left" />Left <em>{fmt(Math.max(0, r.surplus))}</em></span>
+              <span className="flow-key"><span className="flow-dot flow-joint" />Joint <em>{M(r.costsJoint)}</em></span>
+              <span className="flow-key"><span className="flow-dot flow-own" />Own <em>{M(r.costsA + r.costsB)}</em></span>
+              <span className="flow-key"><span className="flow-dot flow-sav" />Savings <em>{M(r.totalSavings)}</em></span>
+              <span className="flow-key"><span className="flow-dot flow-left" />Left <em>{M(Math.max(0, r.surplus))}</em></span>
             </div>
             <div className="sum-rows">
-              <div className="sum-row"><span className="sum-row-label">Total income</span><span className="sum-row-val">{fmt(r.totalIncome)}</span></div>
-              <div className="sum-row"><span className="sum-row-label">Total costs</span><span className="sum-row-val">{fmt(r.totalCosts)}</span></div>
-              <div className="sum-row"><span className="sum-row-label">Total savings</span><span className="sum-row-val">{fmt(r.totalSavings)}</span></div>
+              <div className="sum-row"><span className="sum-row-label">Total income</span><span className="sum-row-val">{M(r.totalIncome)}</span></div>
+              <div className="sum-row"><span className="sum-row-label">Total costs</span><span className="sum-row-val">{M(r.totalCosts)}</span></div>
+              <div className="sum-row"><span className="sum-row-label">Total savings</span><span className="sum-row-val">{M(r.totalSavings)}</span></div>
             </div>
           </div>
 
@@ -906,28 +887,28 @@ export default function Hushallsbudget() {
               <span className="compare-head">{nameB}</span>
 
               <span className="compare-label">Take-home</span>
-              <span className="compare-val">{fmt(r.personA.ownIncome + r.personA.potNet)}</span>
-              <span className="compare-val">{fmt(r.personB.ownIncome + r.personB.potNet)}</span>
+              <span className="compare-val">{M(r.personA.ownIncome + r.personA.potNet)}</span>
+              <span className="compare-val">{M(r.personB.ownIncome + r.personB.potNet)}</span>
 
               <span className="compare-label">Joint costs ½</span>
-              <span className="compare-val">−{fmt(r.personA.jointCostShare)}</span>
-              <span className="compare-val">−{fmt(r.personB.jointCostShare)}</span>
+              <span className="compare-val">{M(r.personA.jointCostShare, { prefix: '−' })}</span>
+              <span className="compare-val">{M(r.personB.jointCostShare, { prefix: '−' })}</span>
 
               <span className="compare-label">Own costs</span>
-              <span className="compare-val">−{fmt(r.personA.ownCosts)}</span>
-              <span className="compare-val">−{fmt(r.personB.ownCosts)}</span>
+              <span className="compare-val">{M(r.personA.ownCosts, { prefix: '−' })}</span>
+              <span className="compare-val">{M(r.personB.ownCosts, { prefix: '−' })}</span>
 
               <span className="compare-label">Savings</span>
-              <span className="compare-val">−{fmt(r.personA.jointSavingsShare + r.personA.ownSavings)}</span>
-              <span className="compare-val">−{fmt(r.personB.jointSavingsShare + r.personB.ownSavings)}</span>
+              <span className="compare-val">{M(r.personA.jointSavingsShare + r.personA.ownSavings, { prefix: '−' })}</span>
+              <span className="compare-val">{M(r.personB.jointSavingsShare + r.personB.ownSavings, { prefix: '−' })}</span>
 
               <span className="compare-label compare-foot-label">Left to spend</span>
-              <span className={'compare-val compare-foot' + posNeg(r.personA.leftover)}>{fmtSigned(r.personA.leftover)}</span>
-              <span className={'compare-val compare-foot' + posNeg(r.personB.leftover)}>{fmtSigned(r.personB.leftover)}</span>
+              <span className={'compare-val compare-foot' + posNeg(r.personA.leftover)}>{M(r.personA.leftover, { signed: true })}</span>
+              <span className={'compare-val compare-foot' + posNeg(r.personB.leftover)}>{M(r.personB.leftover, { signed: true })}</span>
             </div>
             <div className="compare-household">
               <span className="compare-household-label">Household cashflow</span>
-              <span className={'compare-household-val' + posNeg(householdLeft)}>{fmtSigned(householdLeft)}</span>
+              <span className={'compare-household-val' + posNeg(householdLeft)}>{M(householdLeft, { signed: true })}</span>
             </div>
           </div>
 
@@ -935,11 +916,11 @@ export default function Hushallsbudget() {
 
           <div className="sum-card">
             <div className="sum-card-title">The pot</div>
-            <div className="sum-big">{fmt(r.equalShare)}</div>
+            <div className="sum-big">{M(r.equalShare)}</div>
             <div className="sum-card-subtitle">take-home each, after the split</div>
             <div className="sum-rows">
-              <div className="sum-row"><span className="sum-row-label">{nameA}</span><span className="sum-row-val">{fmt(r.incomeA)}</span></div>
-              <div className="sum-row"><span className="sum-row-label">{nameB}</span><span className="sum-row-val">{fmt(r.incomeB)}</span></div>
+              <div className="sum-row"><span className="sum-row-label">{nameA}</span><span className="sum-row-val">{M(r.incomeA)}</span></div>
+              <div className="sum-row"><span className="sum-row-label">{nameB}</span><span className="sum-row-val">{M(r.incomeB)}</span></div>
             </div>
           </div>
 
@@ -949,17 +930,17 @@ export default function Hushallsbudget() {
               <button type="button" className="chart-expand-btn" title="View full screen" aria-label="View chart full screen" onClick={() => setChartOpen(true)}>⤢</button>
             </div>
             <div className="chart-wrap">
-              <DoughnutChart result={r} nameA={nameA} nameB={nameB} />
+              <BudgetDonutChart segments={donutSegments} formatMoney={fmt} centerLabel="In the pot" centerValue={r.totalIncome} />
             </div>
           </div>
 
           <div className="sum-card">
             <div className="sum-card-title">Savings rate</div>
-            <div className="sum-big positive">{(r.savingsRate * 100).toFixed(1)}%</div>
+            <div className="sum-big positive">{Pct1(r.savingsRate * 100)}</div>
             <div className="sum-card-subtitle">of total household income</div>
             <div className="sum-rows">
-              <div className="sum-row"><span className="sum-row-label">{nameA}</span><span className="sum-row-val">{fmt(r.savingsA)}</span></div>
-              <div className="sum-row"><span className="sum-row-label">{nameB}</span><span className="sum-row-val">{fmt(r.savingsB)}</span></div>
+              <div className="sum-row"><span className="sum-row-label">{nameA}</span><span className="sum-row-val">{M(r.savingsA)}</span></div>
+              <div className="sum-row"><span className="sum-row-label">{nameB}</span><span className="sum-row-val">{M(r.savingsB)}</span></div>
             </div>
           </div>
 
@@ -971,11 +952,11 @@ export default function Hushallsbudget() {
         <div className="mobile-bar-inner">
           <div className="mobile-stat">
             <span className="mobile-stat-label">Take-home each</span>
-            <span className="mobile-stat-val">{fmt(r.equalShare)}</span>
+            <span className="mobile-stat-val">{M(r.equalShare)}</span>
           </div>
           <div className="mobile-stat">
             <span className="mobile-stat-label">Left over</span>
-            <span className={'mobile-stat-val' + posNeg(r.surplus)}>{fmtSigned(r.surplus)}</span>
+            <span className={'mobile-stat-val' + posNeg(r.surplus)}>{M(r.surplus, { signed: true })}</span>
           </div>
         </div>
       </div>
@@ -983,7 +964,7 @@ export default function Hushallsbudget() {
       <SalaryModal open={salaryOpen} onClose={() => setSalaryOpen(false)} people={state.people} incomes={state.incomes}
         flashSaved={flashSaved} onHistoryChanged={() => { if (historyOpen) reloadHistory() }} />
       <HistoryModal open={historyOpen} onClose={() => setHistoryOpen(false)} rows={historyRows} onReload={reloadHistory} flashSaved={flashSaved} />
-      <ChartOverlay open={chartOpen} onClose={() => setChartOpen(false)} result={r} nameA={nameA} nameB={nameB} />
+      <ChartOverlay open={chartOpen} onClose={() => setChartOpen(false)} segments={donutSegments} totalIncome={r.totalIncome} />
     </div>
   )
 }

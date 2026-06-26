@@ -633,6 +633,38 @@
 
   .chart-wrap { position: relative; height: 240px; margin-top: 0.5rem; }
 
+  /* visx donut — fills its container (the 240px card slot or the fullscreen
+     stage); the ring takes the space, the legend sits below it. */
+  .hb-donut { display: flex; flex-direction: column; height: 100%; gap: 0.5rem; }
+  .hb-donut-canvas { position: relative; flex: 1; min-height: 0; }
+  .hb-donut-center-label { fill: var(--ink-soft); font-weight: 600; }
+  .hb-donut-center-value {
+    fill: var(--ink);
+    font-family: var(--font-display);
+    font-variant-numeric: tabular-nums;
+  }
+  .hb-donut-center-sub { fill: var(--accent); font-weight: 600; }
+
+  .hb-donut-legend { display: flex; flex-wrap: wrap; gap: 0.2rem 0.3rem; justify-content: center; }
+  .hb-donut-key {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 7px;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    cursor: default;
+    font-family: inherit;
+    font-size: 11px;
+    line-height: 1.2;
+    transition: background 0.15s, border-color 0.15s;
+  }
+  .hb-donut-key.active { background: var(--paper-warm); border-color: var(--rule); }
+  .hb-donut-swatch { width: 9px; height: 9px; border-radius: 2px; flex-shrink: 0; }
+  .hb-donut-key-label { color: var(--ink-mid); }
+  .hb-donut-key-val { font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; }
+
   /* ── Fullscreen chart overlay ───────────────────────────────── */
   .chart-overlay {
     position: fixed;
