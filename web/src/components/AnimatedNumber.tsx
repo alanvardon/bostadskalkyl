@@ -39,17 +39,59 @@ export function Money({ value, signed, prefix, suffix, className }: MoneyProps) 
   )
 }
 
+interface PercentProps {
+  value: number
+  /** Decimal places (default 1, matching the legacy `pct()`). */
+  decimals?: number
+  /** Insert a space before the % sign ("62 %" vs "62%"). */
+  space?: boolean
+  /** Locale — default en-US keeps a dot decimal separator like `toFixed`. */
+  locale?: string
+  className?: string
+}
+
 /**
- * One-decimal percentage matching the legacy `pct()` output ("21.1%").
- * Uses en-US so the decimal separator stays a dot, as `toFixed(1)` did.
+ * Percentage figure. Defaults to the legacy `pct()` output ("21.1%", one
+ * decimal, en-US dot, no space) so existing call sites are unchanged; pass
+ * `decimals`/`space`/`locale` for tools that format differently (e.g. Konsult's
+ * integer "62 %", Bolånekoll's sv-SE two-decimal "3,54 %").
  */
-export function Percent({ value, className }: { value: number; className?: string }) {
+export function Percent({ value, decimals = 1, space, locale = 'en-US', className }: PercentProps) {
   return (
     <NumberFlow
       value={value}
-      locales="en-US"
-      format={{ minimumFractionDigits: 1, maximumFractionDigits: 1 }}
-      suffix="%"
+      locales={locale}
+      format={{ minimumFractionDigits: decimals, maximumFractionDigits: decimals }}
+      suffix={(space ? ' ' : '') + '%'}
+      className={className}
+    />
+  )
+}
+
+interface NumProps {
+  value: number
+  /** Decimal places (default 0). */
+  decimals?: number
+  /** Trailing unit, e.g. " h" (use a non-breaking space to keep it attached). */
+  suffix?: string
+  prefix?: string
+  /** Locale — default sv-SE gives space-grouped thousands like `formatWithSpaces`. */
+  locale?: string
+  className?: string
+}
+
+/**
+ * Plain grouped number (no currency), e.g. billable hours "1 800 h".
+ * sv-SE grouping matches the legacy `formatWithSpaces`.
+ */
+export function Num({ value, decimals = 0, suffix, prefix, locale = 'sv-SE', className }: NumProps) {
+  return (
+    <NumberFlow
+      value={value}
+      locales={locale}
+      format={{ minimumFractionDigits: decimals, maximumFractionDigits: decimals }}
+      prefix={prefix}
+      suffix={suffix}
       className={className}
     />
   )
