@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { computeContracting, defaultInputs, type KonsultInputs } from '../lib/konsult'
+import { Money, Percent, Num } from '../components/AnimatedNumber'
 import { useTheme } from '../App'
 
 const STORAGE_KEY = 'bostadskalkyl_konsult_v1'
@@ -17,11 +18,13 @@ function curStr(n: number): string {
 function numStr(n: number): string {
   return (Math.round(n * 100) / 100).toString().replace('.', ',')
 }
-function money(n: number): string {
-  return formatWithSpaces(Math.round(n)) + ' kr'
+// Output figures roll their digits via NumberFlow; these helpers return the
+// animated element so every {money(x)} / {pct0(x)} call site is unchanged.
+function money(n: number) {
+  return <Money value={n} />
 }
-function pct0(x: number): string {
-  return Math.round(x) + ' %'
+function pct0(x: number) {
+  return <Percent value={x} decimals={0} space />
 }
 
 function loadInputs(): KonsultInputs {
@@ -168,7 +171,7 @@ export default function Konsultkalkyl() {
             <div className="mini-readout">
               <div className="mini-stat">
                 <span className="mini-stat-label">Debiterbara timmar</span>
-                <span className="mini-stat-val">{formatWithSpaces(result.billableHours)}&nbsp;h</span>
+                <span className="mini-stat-val"><Num value={result.billableHours} suffix={' h'} /></span>
               </div>
               <div className="mini-stat">
                 <span className="mini-stat-label">Omsättning / år</span>
