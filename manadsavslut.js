@@ -144,6 +144,9 @@
   function classifyToItemFields(classification, frontedBy) {
     if (classification === 'split') return { split: true, owed_by: otherPerson(frontedBy) };
     if (classification === 'full') return { split: false, owed_by: otherPerson(frontedBy) };
+    // 'pending' = decision deferred ("ask later"): an item is still created so it's
+    // not lost, with a provisional 50/50 split, but pending keeps it out of the math.
+    if (classification === 'pending') return { split: true, owed_by: otherPerson(frontedBy), pending: true };
     return null; // 'exclude' or anything unrecognised
   }
 
@@ -163,6 +166,8 @@
       fronted_by: fronted,
       owed_by: partial.owed_by || otherPerson(fronted),
       paid: !!partial.paid,
+      // "ask later": split-vs-full is undecided; excluded from settlement until resolved.
+      pending: !!partial.pending,
       payment_id: partial.payment_id || null,
       note: partial.note || '',
       source: partial.source || 'manual'
@@ -245,7 +250,7 @@
   // saved payment and flips those items to paid.
   function buildSettlement(items, opts) {
     opts = opts || {};
-    var unpaid = (items || []).filter(function (it) { return it && !it.paid; });
+    var unpaid = (items || []).filter(function (it) { return it && !it.paid && !it.pending; });
     var bal = netBalance(unpaid);
     return {
       from_person: bal.from,
@@ -571,9 +576,10 @@
       var treat, rowClass = '', neg = false, amtCell;
       if (t.kind === 'charge' || t.kind === 'refund') {
         var cls = t.classification;
-        treat = '<div class="segmented segmented-sm" data-index="' + i + '">' + seg('split', 'Split', cls) + seg('full', 'All', cls) + seg('exclude', 'Skip', cls) + '</div>';
+        treat = '<div class="segmented segmented-sm" data-index="' + i + '">' + seg('split', 'Split', cls) + seg('full', 'All', cls) + seg('pending', 'Ask later', cls) + seg('exclude', 'Skip', cls) + '</div>';
         if (t.duplicate) rowClass = ' is-dup';
         else if (cls === 'exclude') rowClass = ' is-excluded';
+        else if (cls === 'pending') rowClass = ' is-pending';
         neg = t.kind === 'refund';
         amtCell = formatMoney(t.charge);
       } else {
@@ -583,6 +589,7 @@
       }
       var badges = '';
       if (t.kind === 'refund') badges += ' <span class="row-flag row-flag-refund">refund</span>';
+      if ((t.kind === 'charge' || t.kind === 'refund') && t.classification === 'pending') badges += ' <span class="row-flag row-flag-pending">ask later</span>';
       if ((t.kind === 'charge' || t.kind === 'refund') && t.duplicate) badges += ' <span class="row-flag">possible duplicate</span>';
       html += '<tr' + (rowClass ? ' class="' + rowClass.trim() + '"' : '') + '>'
         + '<td class="col-treat">' + treat + '</td>'
@@ -596,16 +603,18 @@
   }
   function updateSummary() {
     var map = selectedMapping();
-    var add = 0, excl = 0, refundIncl = 0, invalid = 0, dup = 0;
+    var add = 0, excl = 0, refundIncl = 0, invalid = 0, dup = 0, pend = 0;
     triage.forEach(function (t) {
       if (t.kind === 'noamount') { invalid++; return; }
       if (t.classification === 'exclude') { excl++; return; }
       add++;
+      if (t.classification === 'pending') pend++;
       if (t.kind === 'refund') refundIncl++;
       if (t.duplicate) dup++;
     });
     var parts = [add + ' item' + (add === 1 ? '' : 's') + ' to add'];
     if (refundIncl) parts.push(refundIncl + ' refund' + (refundIncl === 1 ? '' : 's') + ' included');
+    if (pend) parts.push(pend + ' to ask later');
     if (dup) parts.push(dup + ' possible duplicate' + (dup === 1 ? '' : 's'));
     if (excl) parts.push(excl + ' excluded');
     if (invalid) parts.push(invalid + ' without an amount');
@@ -654,6 +663,7 @@
         description: clean(cellAt(row, map.description)) || '(no description)',
         enter_amount: t.charge,
         split: fields.split,
+        pending: fields.pending,
         fronted_by: frontedBy,
         owed_by: fields.owed_by,
         source: 'import:' + fileName
@@ -687,7 +697,7 @@
   var fFronted = $('f-fronted'), fSplit = $('f-split');
   var settleDialog = $('settleDialog'), settleForm = $('settleForm'), settleLine = $('settleLine');
   var fPeriod = $('f-period'), fSettleNote = $('f-settle-note');
-  var fSettleMonth = $('f-settle-month'), settleConfirm = $('settleConfirm');
+  var fSettleMonth = $('f-settle-month'), settleConfirm = $('settleConfirm'), settlePendingNote = $('settlePendingNote');
   var insightsHost = $('insightsHost'), insightsPeriodEl = $('insightsPeriod');
   var settingsDialog = $('settingsDialog'), settingsForm = $('settingsForm');
   var sNameA = $('s-nameA'), sNameB = $('s-nameB'), sDefault = $('s-default'), sCurrency = $('s-currency');
@@ -716,22 +726,30 @@
 
   function renderBalance() {
     return store.listItems().then(function (items) {
-      var open = items.filter(function (it) { return !it.paid; });
+      // "Ask later" items have no agreed split yet, so they're excluded from the
+      // balance and only surfaced as a provisional "awaiting a decision" count.
+      var open = items.filter(function (it) { return !it.paid && !it.pending; });
+      var pendingCount = items.filter(function (it) { return !it.paid && it.pending; }).length;
+      var pendingNote = pendingCount ? ' · ' + pendingCount + ' awaiting a decision' : '';
       var bal = netBalance(open);
       settleBtn.disabled = open.length === 0;
-      clearOpenBtn.disabled = open.length === 0;
-      if (!open.length) {
+      clearOpenBtn.disabled = open.length === 0 && pendingCount === 0;
+      if (!open.length && pendingCount) {
+        balanceLabel.textContent = 'Nothing to settle yet';
+        balanceAmount.textContent = '—';
+        balanceSub.textContent = pendingCount + ' awaiting a decision';
+      } else if (!open.length) {
         balanceLabel.textContent = 'All settled';
         balanceAmount.textContent = '—';
         balanceSub.textContent = 'Nothing outstanding.';
       } else if (!bal.from || bal.amount <= 0) {
         balanceLabel.textContent = 'Even';
         balanceAmount.textContent = formatMoney(0);
-        balanceSub.textContent = open.length + ' open item' + (open.length === 1 ? '' : 's') + ' · they cancel out';
+        balanceSub.textContent = open.length + ' open item' + (open.length === 1 ? '' : 's') + ' · they cancel out' + pendingNote;
       } else {
         balanceLabel.textContent = nameOf(bal.from) + ' owes ' + nameOf(bal.to);
         balanceAmount.textContent = formatMoney(bal.amount);
-        balanceSub.textContent = 'across ' + open.length + ' open item' + (open.length === 1 ? '' : 's');
+        balanceSub.textContent = 'across ' + open.length + ' open item' + (open.length === 1 ? '' : 's') + pendingNote;
       }
     });
   }
@@ -740,6 +758,7 @@
     return store.listItems().then(function (items) {
       var filtered = items.filter(function (it) {
         if (currentFilter === 'open') return !it.paid;
+        if (currentFilter === 'pending') return !it.paid && it.pending;
         if (currentFilter === 'a') return it.fronted_by === 'a';
         if (currentFilter === 'b') return it.fronted_by === 'b';
         return true;
@@ -756,20 +775,31 @@
           ? '<span class="row-lock" title="Settled — reopen its settlement to edit">🔒</span>'
           : '<button type="button" class="icon-btn" data-edit="' + it.id + '" title="Edit" aria-label="Edit">✎</button>'
             + '<button type="button" class="icon-btn" data-del="' + it.id + '" title="Delete" aria-label="Delete">✕</button>';
-        return '<tr' + (it.paid ? ' class="is-settled"' : '') + '>'
+        // Type cell: settled rows show static text; open rows get the split/all toggle.
+        // A pending row shows the toggle with NEITHER side active (a choice is owed) —
+        // picking either resolves it. A decided open row also gets an ⏰ to re-park it.
+        var typeCell;
+        if (it.paid) {
+          typeCell = it.split ? 'Split' : 'All';
+        } else {
+          typeCell = '<div class="segmented segmented-sm type-toggle" data-id="' + it.id + '" data-enter="' + it.enter_amount + '">'
+            + '<button type="button" class="seg' + (!it.pending && it.split ? ' is-active' : '') + '" data-class="split">Split</button>'
+            + '<button type="button" class="seg' + (!it.pending && !it.split ? ' is-active' : '') + '" data-class="full">All</button>'
+            + '</div>';
+          if (!it.pending) typeCell += '<button type="button" class="icon-btn ask-btn" data-ask="' + it.id + '" title="Ask later" aria-label="Ask later">⏰</button>';
+        }
+        var statusCell = it.paid ? '<span class="tag tag-settled">Settled</span>'
+          : it.pending ? '<span class="tag tag-pending">Ask later</span>'
+          : '<span class="tag tag-open">Open</span>';
+        return '<tr' + (it.paid ? ' class="is-settled"' : it.pending ? ' class="is-pending"' : '') + '>'
           + '<td class="col-date">' + escapeHtml(it.date_purchased) + '</td>'
           + '<td>' + escapeHtml(it.description) + (it.note ? ' <span class="row-note">' + escapeHtml(it.note) + '</span>' : '') + '</td>'
           + '<td>' + escapeHtml(nameOf(it.fronted_by)) + '</td>'
           + '<td>' + escapeHtml(nameOf(it.owed_by)) + '</td>'
-          + '<td class="col-type">' + (it.paid
-            ? (it.split ? 'Split' : 'All')
-            : '<div class="segmented segmented-sm type-toggle" data-id="' + it.id + '" data-enter="' + it.enter_amount + '">'
-              + '<button type="button" class="seg' + (it.split ? ' is-active' : '') + '" data-class="split">Split</button>'
-              + '<button type="button" class="seg' + (!it.split ? ' is-active' : '') + '" data-class="full">All</button>'
-              + '</div>') + '</td>'
+          + '<td class="col-type">' + typeCell + '</td>'
           + '<td class="num">' + formatMoney(it.enter_amount) + '</td>'
           + '<td class="num">' + formatMoney(it.amount) + '</td>'
-          + '<td>' + (it.paid ? '<span class="tag tag-settled">Settled</span>' : '<span class="tag tag-open">Open</span>') + '</td>'
+          + '<td>' + statusCell + '</td>'
           + '<td class="col-act">' + actions + '</td>'
           + '</tr>';
       }).join('');
@@ -935,8 +965,19 @@
   // ── settle dialog (scoped to a chosen month for a true month-end) ─────────
   function openSettle() {
     store.listItems().then(function (items) {
-      settleOpenItems = items.filter(function (it) { return !it.paid; });
-      if (!settleOpenItems.length) { toast('No open items to settle.'); return; }
+      // "Ask later" items are deliberately left out of the settlement scope — they
+      // carry no agreed split yet, so they neither count nor close. We only flag them.
+      settleOpenItems = items.filter(function (it) { return !it.paid && !it.pending; });
+      var pendingLeft = items.filter(function (it) { return !it.paid && it.pending; }).length;
+      if (settlePendingNote) {
+        settlePendingNote.hidden = pendingLeft === 0;
+        if (pendingLeft) settlePendingNote.textContent = pendingLeft + ' item' + (pendingLeft === 1 ? '' : 's')
+          + ' still “ask later” — not included. Resolve them in the list first if you want them in.';
+      }
+      if (!settleOpenItems.length) {
+        toast(pendingLeft ? 'Only “ask later” items left — resolve them before settling.' : 'No open items to settle.');
+        return;
+      }
       var months = monthsWithOpenItems(settleOpenItems);
       fSettleMonth.innerHTML = months.map(function (mk) {
         return '<option value="' + escapeHtml(mk) + '">' + escapeHtml(monthLabel(mk))
@@ -1090,9 +1131,12 @@
   addItemBtn.addEventListener('click', function () { openItemDialog(null); });
   clearOpenBtn.addEventListener('click', function () {
     store.listItems().then(function (items) {
-      var openIds = items.filter(function (it) { return !it.paid; }).map(function (it) { return it.id; });
+      var openItems = items.filter(function (it) { return !it.paid; });
+      var openIds = openItems.map(function (it) { return it.id; });
       if (!openIds.length) { toast('No open items to delete.'); return; }
-      if (!window.confirm('Delete all ' + openIds.length + ' open item' + (openIds.length === 1 ? '' : 's')
+      var pendingCount = openItems.filter(function (it) { return it.pending; }).length;
+      var pendNote = pendingCount ? ' (including ' + pendingCount + ' “ask later” item' + (pendingCount === 1 ? '' : 's') + ')' : '';
+      if (!window.confirm('Delete all ' + openIds.length + ' open item' + (openIds.length === 1 ? '' : 's') + pendNote
         + '? Settled items are kept. This can’t be undone.')) return;
       store.removeItems(openIds).then(function (n) {
         refresh(); flashSaved();
@@ -1106,8 +1150,14 @@
       var wrap = tg.closest('.type-toggle');
       var split = tg.getAttribute('data-class') === 'split';
       var enter = parseFloat(wrap.getAttribute('data-enter')) || 0;
-      store.updateItem(wrap.getAttribute('data-id'), { split: split, amount: computeOwedAmount(enter, split) })
+      // Picking a side both sets the type AND resolves any pending flag in one write.
+      store.updateItem(wrap.getAttribute('data-id'), { split: split, amount: computeOwedAmount(enter, split), pending: false })
         .then(function () { refresh(); flashSaved(); });
+      return;
+    }
+    var ask = e.target.closest('[data-ask]');
+    if (ask) {
+      store.updateItem(ask.getAttribute('data-ask'), { pending: true }).then(function () { refresh(); flashSaved(); });
       return;
     }
     var ed = e.target.closest('[data-edit]'); if (ed) { openItemDialog(ed.getAttribute('data-edit')); return; }

@@ -5,7 +5,7 @@
 // directed debt: debtor (owed_by) owes creditor (fronted_by) the amount.
 
 export type Person = 'a' | 'b'
-export type Treatment = 'split' | 'full' | 'exclude'
+export type Treatment = 'split' | 'full' | 'pending' | 'exclude'
 
 export interface MonthEndSettings {
   person_a_name: string
@@ -25,6 +25,8 @@ export interface Item {
   fronted_by: Person
   owed_by: Person
   paid: boolean
+  // "ask later": split-vs-full is undecided; excluded from settlement until resolved.
+  pending: boolean
   payment_id: string | null
   note: string
   source: string
@@ -141,9 +143,12 @@ export function computeOwedAmount(enterAmount: number, split: boolean): number {
   return Math.round((split ? n / 2 : n) * 100) / 100
 }
 
-export function classifyToItemFields(classification: Treatment | string, frontedBy: Person): { split: boolean; owed_by: Person } | null {
+export function classifyToItemFields(classification: Treatment | string, frontedBy: Person): { split: boolean; owed_by: Person; pending?: boolean } | null {
   if (classification === 'split') return { split: true, owed_by: otherPerson(frontedBy) }
   if (classification === 'full') return { split: false, owed_by: otherPerson(frontedBy) }
+  // 'pending' = decision deferred ("ask later"): an item is still created so it's not
+  // lost, with a provisional 50/50 split, but pending keeps it out of the math.
+  if (classification === 'pending') return { split: true, owed_by: otherPerson(frontedBy), pending: true }
   return null
 }
 
@@ -163,6 +168,7 @@ export function makeItem(partial: ItemDraft): Omit<Item, 'id' | 'created_at'> {
     fronted_by: fronted,
     owed_by: partial.owed_by || otherPerson(fronted),
     paid: !!partial.paid,
+    pending: !!partial.pending,
     payment_id: partial.payment_id || null,
     note: partial.note || '',
     source: partial.source || 'manual',
@@ -228,7 +234,7 @@ export function netBalance(items: Partial<Item>[]): Transfer {
 
 export function buildSettlement(items: Item[], opts?: { period_label?: string; note?: string }): Omit<Payment, 'id' | 'created_at'> {
   opts = opts || {}
-  const unpaid = (items || []).filter(it => it && !it.paid)
+  const unpaid = (items || []).filter(it => it && !it.paid && !it.pending)
   const bal = netBalance(unpaid)
   return {
     from_person: bal.from,
