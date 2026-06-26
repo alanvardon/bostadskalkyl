@@ -209,6 +209,9 @@
   .bar-fill { display: block; height: 100%; border-radius: 999px; background: var(--ink-faint); transition: width 0.4s cubic-bezier(0.22, 1, 0.36, 1); }
   .bar-row.is-groceries .bar-fill { background: var(--accent); }
   .bar-val { font-size: 13px; font-variant-numeric: tabular-nums; color: var(--ink-mid); white-space: nowrap; }
+
+  /* visx area chart (groceries by month) — sized box for ParentSize to fill. */
+  .ma-chart { position: relative; height: 220px; margin-top: 0.2rem; }
 }
 
 /* ── Dialogs (top layer; the <dialog> is a DOM descendant of .ma-root) ─────── */
@@ -219,6 +222,24 @@ dialog.ma-dialog {
   width: min(540px, calc(100vw - 2rem)); max-width: 100%;
 }
 .ma-dialog::backdrop { background: var(--modal-backdrop); -webkit-backdrop-filter: blur(2px); backdrop-filter: blur(2px); }
+
+/* Entrance/exit animation for the native <dialog> — rise + fade on open, reverse
+   on close (display/overlay kept via allow-discrete). Progressive enhancement;
+   reduced-motion users get the instant open/close. */
+@media (prefers-reduced-motion: no-preference) {
+  dialog.ma-dialog {
+    transition: opacity 0.22s ease, transform 0.22s cubic-bezier(0.22, 1, 0.36, 1),
+      overlay 0.22s ease allow-discrete, display 0.22s ease allow-discrete;
+  }
+  dialog.ma-dialog:not([open]) { opacity: 0; transform: translateY(8px) scale(0.985); }
+  @starting-style { dialog.ma-dialog[open] { opacity: 0; transform: translateY(8px) scale(0.985); } }
+
+  .ma-dialog::backdrop {
+    transition: opacity 0.22s ease, overlay 0.22s ease allow-discrete, display 0.22s ease allow-discrete;
+  }
+  .ma-dialog:not([open])::backdrop { opacity: 0; }
+  @starting-style { .ma-dialog[open]::backdrop { opacity: 0; } }
+}
 .ma-dialog .dialog-body { padding: 1.5rem 1.6rem 1.4rem; }
 .ma-dialog .dialog-title { font-family: var(--font-display); font-weight: 400; font-size: 1.5rem; letter-spacing: -0.01em; margin-bottom: 1.1rem; color: var(--ink); }
 .ma-dialog .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.9rem 1rem; }

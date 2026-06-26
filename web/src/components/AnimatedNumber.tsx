@@ -19,6 +19,11 @@ interface MoneyProps {
    * own `fmtMoney`. When omitted, the default SEK currency formatting is used.
    */
   currencySuffix?: string
+  /**
+   * Max decimal places in `currencySuffix` mode (min stays 0, so trailing zeros
+   * drop). Default 0 (whole kronor); pass 2 for öre-aware tools (Månadsavslut).
+   */
+  maxDecimals?: number
   className?: string
 }
 
@@ -28,14 +33,14 @@ interface MoneyProps {
  * visual replacement for the old `fmt(n)` strings. Pass `currencySuffix` to
  * render an explicit unit (other currencies) instead of the Intl SEK style.
  */
-export function Money({ value, signed, prefix, suffix, currencySuffix, className }: MoneyProps) {
+export function Money({ value, signed, prefix, suffix, currencySuffix, maxDecimals = 0, className }: MoneyProps) {
   const signFmt = signed ? { signDisplay: 'exceptZero' as const } : {}
   if (currencySuffix != null) {
     return (
       <NumberFlow
         value={value}
         locales="sv-SE"
-        format={{ maximumFractionDigits: 0, ...signFmt }}
+        format={{ minimumFractionDigits: 0, maximumFractionDigits: maxDecimals, ...signFmt }}
         prefix={prefix}
         suffix={(suffix ?? '') + ' ' + currencySuffix}
         className={className}
