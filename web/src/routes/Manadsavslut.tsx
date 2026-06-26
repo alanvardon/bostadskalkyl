@@ -9,6 +9,8 @@ import {
 } from '../lib/manadsavslut'
 import type { Item, Payment, MonthEndSettings, Person, Treatment, CsvResult, ColMapping } from '../lib/manadsavslut'
 import * as Store from '../lib/manadsavslut-store'
+import { Money } from '../components/AnimatedNumber'
+import GroceryTrendChart from '../components/charts/GroceryTrendChart'
 
 // ── Formatters (faithful to manadsavslut.js) ─────────────────────────────────
 
@@ -19,6 +21,11 @@ function fmtMoney(n: number): string {
   const hasOre = Math.abs(num - Math.round(num)) > 0.005
   const suffix = CURRENCY_SUFFIX[CURRENT_CURRENCY] || 'kr'
   return num.toLocaleString('sv-SE', { minimumFractionDigits: hasOre ? 2 : 0, maximumFractionDigits: 2 }) + ' ' + suffix
+}
+// Animated equivalent for the SUMMARY figures (balance headline, insight amount,
+// category bar values). Data tables, the triage and prose keep fmtMoney above.
+function M(value: number) {
+  return <Money value={value} currencySuffix={CURRENCY_SUFFIX[CURRENT_CURRENCY] || 'kr'} maxDecimals={2} />
 }
 const clean = (v: unknown) => String(v == null ? '' : v).trim()
 const round2 = (n: number) => Math.round((Number(n) || 0) * 100) / 100
@@ -438,11 +445,12 @@ export default function Manadsavslut() {
 
   // ── Balance display ──────────────────────────────────────────────────────
   const pendingNote = pendingCount ? ' · ' + pendingCount + ' awaiting a decision' : ''
-  let balLabel: string, balAmount: string, balSub: string
-  if (!open.length && pendingCount) { balLabel = 'Nothing to settle yet'; balAmount = '—'; balSub = pendingCount + ' awaiting a decision' }
-  else if (!open.length) { balLabel = 'All settled'; balAmount = '—'; balSub = 'Nothing outstanding.' }
-  else if (!bal.from || bal.amount <= 0) { balLabel = 'Even'; balAmount = fmtMoney(0); balSub = open.length + ' open item' + (open.length === 1 ? '' : 's') + ' · they cancel out' + pendingNote }
-  else { balLabel = nameOf(bal.from) + ' owes ' + nameOf(bal.to); balAmount = fmtMoney(bal.amount); balSub = 'across ' + open.length + ' open item' + (open.length === 1 ? '' : 's') + pendingNote }
+  // balValue null → render an em-dash; a number → an animated figure.
+  let balLabel: string, balValue: number | null, balSub: string
+  if (!open.length && pendingCount) { balLabel = 'Nothing to settle yet'; balValue = null; balSub = pendingCount + ' awaiting a decision' }
+  else if (!open.length) { balLabel = 'All settled'; balValue = null; balSub = 'Nothing outstanding.' }
+  else if (!bal.from || bal.amount <= 0) { balLabel = 'Even'; balValue = 0; balSub = open.length + ' open item' + (open.length === 1 ? '' : 's') + ' · they cancel out' + pendingNote }
+  else { balLabel = nameOf(bal.from) + ' owes ' + nameOf(bal.to); balValue = bal.amount; balSub = 'across ' + open.length + ' open item' + (open.length === 1 ? '' : 's') + pendingNote }
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
@@ -468,7 +476,7 @@ export default function Manadsavslut() {
         <section className="card balance-card">
           <div className="balance-main">
             <p className="balance-label">{balLabel}</p>
-            <p className="balance-amount">{balAmount}</p>
+            <p className="balance-amount">{balValue == null ? '—' : M(balValue)}</p>
             <p className="balance-sub">{balSub}</p>
           </div>
           <button type="button" className="btn btn-primary balance-settle" disabled={!open.length} onClick={() => setSettleDlg(true)}>Settle up</button>
@@ -636,7 +644,7 @@ export default function Manadsavslut() {
                   <span className="ih-icon" aria-hidden="true">🛒</span>
                   <div className="ih-main">
                     <span className="ih-label">Groceries</span>
-                    <span className="ih-amount">{fmtMoney(groc.total)}</span>
+                    <span className="ih-amount">{M(groc.total)}</span>
                     <span className="ih-sub">{grocPct}% of shared spending · {groc.count} purchase{groc.count === 1 ? '' : 's'}</span>
                   </div>
                 </div>
@@ -650,31 +658,17 @@ export default function Manadsavslut() {
                     <div key={c.key} className={'bar-row' + (c.key === 'groceries' ? ' is-groceries' : '')}>
                       <span className="bar-label">{c.label}</span>
                       <span className="bar-track"><span className="bar-fill" style={{ width: pct + '%' }} /></span>
-                      <span className="bar-val num">{fmtMoney(c.total)}</span>
+                      <span className="bar-val num">{M(c.total)}</span>
                     </div>
                   )
                 })}
               </div>
-              {byMonth.length > 1 && (() => {
-                const maxM = byMonth.reduce((m, x) => Math.max(m, x.total), 0)
-                return (
-                  <>
-                    <h3 className="insight-h">Groceries by month</h3>
-                    <div className="bars">
-                      {byMonth.map(r => {
-                        const pct = maxM > 0 ? Math.max(2, Math.round(r.total / maxM * 100)) : 0
-                        return (
-                          <div key={r.month} className="bar-row is-groceries">
-                            <span className="bar-label">{r.label}</span>
-                            <span className="bar-track"><span className="bar-fill" style={{ width: pct + '%' }} /></span>
-                            <span className="bar-val num">{fmtMoney(r.total)}</span>
-                          </div>
-                        )
-                      })}
-                    </div>
-                  </>
-                )
-              })()}
+              {byMonth.length > 1 && (
+                <>
+                  <h3 className="insight-h">Groceries by month</h3>
+                  <GroceryTrendChart data={byMonth} formatMoney={fmtMoney} />
+                </>
+              )}
             </>
           )}
         </section>
