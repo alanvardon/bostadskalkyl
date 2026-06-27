@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import Chart from 'chart.js/auto'
 import { Money, Percent } from '../components/AnimatedNumber'
+import EquityStackChart, { type EquityPoint } from '../components/charts/EquityStackChart'
 import { useTheme } from '../App'
 import {
   defaultSettings, parseCsv, parseAmount, autoMapColumns, classifyKind,
@@ -444,9 +444,6 @@ export default function Bolanekoll() {
   const [contDlg, setContDlg] = useState<{ open: boolean; id: string | null }>({ open: false, id: null })
   const [settingsDlg, setSettingsDlg] = useState(false)
 
-  const canvasRef = useRef<HTMLCanvasElement>(null)
-  const chartRef = useRef<Chart | null>(null)
-
   CURRENT_CURRENCY = settings.currency || 'SEK'
 
   function showToast(msg: string) {
@@ -521,59 +518,20 @@ export default function Bolanekoll() {
 
   const insightsReady = parts.length > 0 && valuations.length > 0 && payments.length > 0
 
-  // ── Chart (stacked area: my equity → partner → bank) ─────────────────────────
-  useEffect(() => {
-    if (!canvasRef.current) return
-    if (chartRef.current) { chartRef.current.destroy(); chartRef.current = null }
-    const renderable = timeline.length >= 2 && valuations.length > 0
-    if (!renderable) return
-    const style = getComputedStyle(document.documentElement.querySelector('.bk-root') || document.documentElement)
-    const get = (v: string) => style.getPropertyValue(v).trim()
-    const cc = { grid: get('--rule'), tick: get('--ink-soft'), tooltipBg: get('--paper-card'), tooltipBorder: get('--rule'), tooltipTitle: get('--ink'), tooltipBody: get('--ink-mid'), legend: get('--ink-mid'), a: get('--chart-mine') || '#357a4c', b: get('--chart-partner') || '#3d7e94', bank: get('--chart-bank') || '#c08a44' }
-    const hexToRgba = (hex: string, alpha: number) => {
-      let h = String(hex || '').replace('#', '')
-      if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2]
-      const n = parseInt(h, 16)
-      if (isNaN(n)) return `rgba(0,0,0,${alpha})`
-      return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${alpha})`
-    }
-    const me: Owner = settings.i_am === 'b' ? 'b' : 'a', other: Owner = me === 'a' ? 'b' : 'a'
-    const mk = (label: string, key: 'a_equity' | 'b_equity' | 'bank', color: string) => ({
-      label, data: timeline.map(r => Math.max(0, r[key])), borderColor: color, backgroundColor: hexToRgba(color, 0.28),
-      borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4, pointHitRadius: 10, tension: 0.25, fill: true,
-    })
-    chartRef.current = new Chart(canvasRef.current, {
-      type: 'line',
-      data: {
-        labels: timeline.map(r => r.label),
-        datasets: [
-          mk(nameOf(me) + '’s equity', (me + '_equity') as 'a_equity' | 'b_equity', cc.a),
-          mk(nameOf(other) + '’s equity', (other + '_equity') as 'a_equity' | 'b_equity', cc.b),
-          mk('Banken · Bank', 'bank', cc.bank),
-        ],
-      },
-      options: {
-        responsive: true, maintainAspectRatio: false,
-        interaction: { mode: 'index', intersect: false },
-        animation: { duration: 600, easing: 'easeOutQuart' },
-        plugins: {
-          legend: { position: 'top', labels: { font: { family: 'Inter', size: 12 }, color: cc.legend, boxWidth: 14, padding: 14, usePointStyle: true, pointStyle: 'rectRounded' } },
-          tooltip: {
-            backgroundColor: cc.tooltipBg, borderColor: cc.tooltipBorder, borderWidth: 1,
-            titleColor: cc.tooltipTitle, bodyColor: cc.tooltipBody,
-            titleFont: { family: 'Inter', size: 12, weight: 500 }, bodyFont: { family: 'Inter', size: 12 },
-            padding: 10, cornerRadius: 10, boxPadding: 4,
-            callbacks: { label: (item) => ' ' + item.dataset.label + ': ' + Math.round(Number(item.raw) || 0).toLocaleString('sv-SE') + ' kr' },
-          },
-        },
-        scales: {
-          x: { grid: { color: cc.grid, lineWidth: 0.5 }, ticks: { font: { family: 'Inter', size: 11 }, color: cc.tick, maxTicksLimit: 12 } },
-          y: { stacked: true, grid: { color: cc.grid, lineWidth: 0.5 }, ticks: { font: { family: 'Inter', size: 11 }, color: cc.tick, callback: (v: number | string) => Math.round(Number(v) / 1000) + 'k' } },
-        },
-      },
-    })
-    return () => { chartRef.current?.destroy(); chartRef.current = null }
-  }, [timeline, valuations, settings, theme, nameOf])
+  // ── Chart data (stacked area: my equity → partner → bank) ────────────────────
+  // Resolve the timeline into display-ordered bands; negatives clip to 0 so the
+  // stack never inverts (matches the old Chart.js Math.max(0, …)).
+  const me: Owner = settings.i_am === 'b' ? 'b' : 'a'
+  const other: Owner = me === 'a' ? 'b' : 'a'
+  const chartData = useMemo<EquityPoint[]>(
+    () => timeline.map(r => ({
+      label: r.label,
+      mine: Math.max(0, me === 'a' ? r.a_equity : r.b_equity),
+      partner: Math.max(0, me === 'a' ? r.b_equity : r.a_equity),
+      bank: Math.max(0, r.bank),
+    })),
+    [timeline, me],
+  )
 
   // ── Import ───────────────────────────────────────────────────────────────
   function buildTriage(parsed: CsvResult, mapping: ColMapping, importPart: string): TriageRow[] {
@@ -787,7 +745,9 @@ export default function Bolanekoll() {
           <div className="card-head"><h2>Ägande över tid <span className="card-en">· Ownership vs bank</span></h2></div>
           <div className="chart-wrap">
             {timeline.length >= 2 && valuations.length > 0
-              ? <canvas ref={canvasRef} />
+              ? <EquityStackChart data={chartData}
+                  mineLabel={nameOf(me) + '’s equity'} partnerLabel={nameOf(other) + '’s equity'}
+                  bankLabel="Banken · Bank" formatMoney={fmtMoney} />
               : <p className="chart-empty">{valuations.length === 0 ? 'Add a property value to chart your equity vs the bank.' : 'Import a few months of payments to see the trend.'}</p>}
           </div>
         </section>
