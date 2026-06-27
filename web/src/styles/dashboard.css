@@ -1,0 +1,242 @@
+/* ════════════════════════════════════════════════════════════════
+   Scenarios dashboard (Bostadskalkyl landing) — a purpose-built launcher.
+   Each scenario is a full-width labelled ROW so figures line up column-wise
+   down the list and scenarios can be compared at a glance. Card styles moved
+   here from modals.css when the ScenariosModal was retired (#04). The calc-
+   header rename reuses .scenario-title-input (still in components.css).
+   ════════════════════════════════════════════════════════════════ */
+
+.dashboard {
+  max-width: min(1200px, 94vw);
+  margin: 0 auto;
+  padding: 1.5rem 1.5rem 4rem;
+}
+
+/* ── Toolbar: search · sort · count ─────────────────────────────── */
+.dashboard-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 1.1rem;
+  flex-wrap: wrap;
+}
+.dashboard-search {
+  flex: 1 1 220px;
+  max-width: 360px;
+  height: 38px;
+  padding: 0 0.85rem;
+  font: inherit;
+  font-size: 14px;
+  color: var(--ink);
+  background: var(--input-bg);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-sm);
+}
+.dashboard-search:focus { outline: none; border-color: var(--accent-light); background: var(--input-focus-bg); box-shadow: var(--ring); }
+.dashboard-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 13px;
+  color: var(--ink-soft);
+}
+.dashboard-sort select {
+  height: 38px;
+  padding: 0 1.8rem 0 0.7rem;
+  font: inherit;
+  font-size: 14px;
+  color: var(--ink);
+  background: var(--input-bg);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='2.5' stroke-linecap='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.6rem center;
+}
+.dashboard-sort select:focus { outline: none; border-color: var(--accent-light); box-shadow: var(--ring); }
+.dashboard-count {
+  margin-left: auto;
+  font-size: 13px;
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── List + add row ─────────────────────────────────────────────── */
+.dashboard-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+.dashboard-hint {
+  margin-top: 1.25rem;
+  color: var(--ink-soft);
+  font-size: 14px;
+}
+.dashboard-add-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  min-height: 58px;
+  padding: 0.9rem;
+  font: inherit;
+  font-size: 14px;
+  color: var(--ink-soft);
+  background: transparent;
+  border: 1.5px dashed var(--rule);
+  border-radius: var(--r-md);
+  cursor: pointer;
+  transition: border-color 0.18s, color 0.18s, background 0.18s;
+}
+.dashboard-add-row:hover { border-color: var(--accent-light); color: var(--accent); background: var(--accent-faint); }
+.dashboard-add-row:focus-visible { outline: none; border-color: var(--accent-light); box-shadow: var(--ring); }
+.add-plus { font-size: 1.4rem; line-height: 1; font-weight: 300; }
+
+/* ── Scenario row ───────────────────────────────────────────────── */
+.scenario-row {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  background: var(--paper-card);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-md);
+  padding: 0.95rem 1.15rem;
+  cursor: pointer;
+  position: relative;
+  transition: border-color 0.18s, box-shadow 0.18s, transform 0.18s;
+}
+.scenario-row:hover { border-color: var(--accent-light); box-shadow: var(--shadow-md); transform: translateY(-1px); }
+.scenario-row:focus-visible { outline: none; border-color: var(--accent-light); box-shadow: var(--ring); }
+.draft-row { border-style: dashed; border-color: var(--accent-light); background: var(--accent-faint); }
+
+/* Identity (name + date) — takes the slack so the stat columns stay aligned. */
+.row-id { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.row-name {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 1.25rem;
+  font-weight: 400;
+  line-height: 1.2;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.row-date { font-size: 11px; color: var(--ink-soft); opacity: 0.85; }
+.scenario-row-rename { font-size: 1.25rem; line-height: 1.2; max-width: 100%; margin: 0; }
+
+/* Stat columns — fixed min-widths so they line up down the list. */
+.row-stats { display: flex; align-items: flex-start; gap: 1.4rem; flex-shrink: 0; }
+.row-stat { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
+.row-stat-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+.row-stat-val {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  font-size: 1rem;
+  font-weight: 500;
+  color: var(--ink-mid);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+/* The two co-anchors: price + monthly, large and serif. */
+.row-stat-lead .row-stat-val {
+  font-family: var(--font-display);
+  font-size: 1.5rem;
+  font-weight: 400;
+  color: var(--ink);
+}
+.row-stat-sub { font-family: var(--font-ui); font-size: 11px; font-weight: 400; color: var(--ink-soft); margin-top: 1px; }
+.row-stat-price { min-width: 92px; }
+.row-stat-monthly { min-width: 150px; }
+.row-stat-cash { min-width: 78px; }
+.row-stat-ltv { min-width: 52px; }
+.row-stat-salary { min-width: 104px; }
+
+/* Muted health cues — desaturated text tones, not loud traffic lights. */
+.tone-good { color: var(--accent); }
+.tone-warn { color: var(--copper); }
+.tone-bad { color: var(--warn); }
+
+/* ── Kebab ──────────────────────────────────────────────────────── */
+.scenario-kebab {
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.15rem;
+  line-height: 1;
+  color: var(--ink-soft);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.16s, background 0.16s, border-color 0.16s;
+}
+.scenario-row:hover .scenario-kebab,
+.scenario-row:focus-within .scenario-kebab { opacity: 1; }
+.scenario-kebab:hover { background: var(--paper-warm); border-color: var(--rule); }
+.scenario-kebab:focus-visible { opacity: 1; outline: none; box-shadow: var(--ring); }
+@media (hover: none) { .scenario-kebab { opacity: 1; } }
+
+.kebab-menu {
+  min-width: 150px;
+  padding: 5px;
+  background: var(--paper-card);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-lg);
+  z-index: 60;
+}
+.kebab-item {
+  display: flex;
+  align-items: center;
+  padding: 7px 10px;
+  font-size: 13px;
+  color: var(--ink);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  user-select: none;
+  outline: none;
+}
+.kebab-item[data-highlighted] { background: var(--accent-faint); }
+.kebab-danger { color: var(--warn); }
+.kebab-danger[data-highlighted] { background: var(--warn-faint); }
+@media (prefers-reduced-motion: no-preference) {
+  .kebab-menu[data-state="open"] { animation: kebab-in 0.14s cubic-bezier(0.22, 1, 0.36, 1); transform-origin: var(--radix-dropdown-menu-content-transform-origin); }
+}
+@keyframes kebab-in {
+  from { opacity: 0; transform: scale(0.96) translateY(-2px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* ── Draft footer (Continue / Discard) ──────────────────────────── */
+.row-footer { display: flex; gap: 6px; flex-shrink: 0; }
+.row-footer .btn { padding: 7px 14px; font-size: 13px; }
+
+/* ── Responsive: stack the row on narrow screens ────────────────── */
+@media (max-width: 720px) {
+  .scenario-row { flex-direction: column; align-items: stretch; gap: 0.85rem; padding: 1rem 1.1rem; }
+  .row-stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+    gap: 0.85rem 1rem;
+    align-items: end;
+  }
+  .row-stat { align-items: flex-start; }
+  .row-stat-val { align-items: flex-start; }
+  .row-stat-price, .row-stat-monthly, .row-stat-cash, .row-stat-ltv, .row-stat-salary { min-width: 0; }
+  .scenario-kebab { position: absolute; top: 0.7rem; right: 0.7rem; opacity: 1; }
+  .row-footer .btn { flex: 1; }
+}

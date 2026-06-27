@@ -9,6 +9,7 @@ import './styles/lonevaxling.css'
 import './styles/bolanekoll.css'
 import './styles/manadsavslut.css'
 import './styles/modals.css'
+import './styles/dashboard.css'
 import './styles/charts.css'
 import './styles/transitions.css'
 // Imported last: scoped under .hb-root, it overrides the shared generic-name
