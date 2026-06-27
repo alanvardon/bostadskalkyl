@@ -1,25 +1,49 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { useEffect, useLayoutEffect, useMemo, useState } from 'react'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import { derive } from '../lib/calc'
-import { useStore, type DeletedInfo } from '../store/useStore'
+import { useStore } from '../store/useStore'
 import { useTheme } from '../App'
 import InputsColumn from '../components/InputsColumn'
 import SummaryColumn from '../components/SummaryColumn'
-import ScenariosModal from '../components/ScenariosModal'
 import SavePrompt from '../components/SavePrompt'
-import UndoToast from '../components/UndoToast'
 import DriftModal from '../components/DriftModal'
 import SavingsModal from '../components/SavingsModal'
 import { Money } from '../components/AnimatedNumber'
 
 export default function Bostadskalkyl() {
   const { theme, toggleTheme } = useTheme()
+  const navigate = useNavigate()
+  const { id } = useParams() // present on /bostadskalkyl/:id; absent on /new
+  const isNew = !id
 
   // Lock viewport scroll for the two-column calculator layout
   useLayoutEffect(() => {
     document.documentElement.classList.add('calc-layout')
     return () => document.documentElement.classList.remove('calc-layout')
   }, [])
+
+  // Store
+  const inputs = useStore((s) => s.inputs)
+  const setField = useStore((s) => s.setField)
+  const mode = useStore((s) => s.mode)
+  const scenarios = useStore((s) => s.scenarios)
+  const activeScenarioId = useStore((s) => s.activeScenarioId)
+  const hydrate = useStore((s) => s.hydrate)
+  const openScenario = useStore((s) => s.openScenario)
+  const openDraft = useStore((s) => s.openDraft)
+  const saveDraftAsScenario = useStore((s) => s.saveDraftAsScenario)
+  const renameScenario = useStore((s) => s.renameScenario)
+  const duplicateScenario = useStore((s) => s.duplicateScenario)
+  const savingsItems = useStore((s) => s.savingsItems)
+
+  // Bind the calculator to the route: the scratch draft (/new) or a saved
+  // scenario (/:id). Hydrate is idempotent, so this is safe on every mount.
+  useEffect(() => {
+    void hydrate().then(() => {
+      if (isNew) openDraft()
+      else if (id && !openScenario(id)) navigate('/bostadskalkyl', { replace: true })
+    })
+  }, [id, isNew, hydrate, openScenario, openDraft, navigate])
 
   // Sync theme-color meta + page title on this route
   useEffect(() => {
@@ -31,93 +55,45 @@ export default function Bostadskalkyl() {
     document.title = 'Bostadskalkyl — Hemma'
   }, [theme])
 
-  // Store
-  const inputs = useStore((s) => s.inputs)
-  const setField = useStore((s) => s.setField)
-  const scenarios = useStore((s) => s.scenarios)
-  const activeScenarioId = useStore((s) => s.activeScenarioId)
-  const isDirty = useStore((s) => s.isDirty)
-  const hydrate = useStore((s) => s.hydrate)
-  const saveNewScenario = useStore((s) => s.saveNewScenario)
-  const updateActiveScenario = useStore((s) => s.updateActiveScenario)
-  const loadScenario = useStore((s) => s.loadScenario)
-  const duplicateScenario = useStore((s) => s.duplicateScenario)
-  const deleteScenario = useStore((s) => s.deleteScenario)
-  const restoreScenario = useStore((s) => s.restoreScenario)
-  const savingsItems = useStore((s) => s.savingsItems)
-
   const figures = useMemo(() => derive(inputs), [inputs])
   // Savings augment the cash surplus / shortfall (P&L + mobile bar), Phase 7.
   const savingsTotal = useMemo(() => savingsItems.reduce((s, i) => s + (i.amount || 0), 0), [savingsItems])
   const totalBalance = figures.cashBalance + savingsTotal
 
-  // Restore the saved session + scenarios on first mount.
-  useEffect(() => {
-    hydrate()
-  }, [hydrate])
-
-  // ── Scenarios / save UI state ──────────────────────────────────
-  const [scenariosOpen, setScenariosOpen] = useState(false)
   const [driftOpen, setDriftOpen] = useState(false)
   const [savingsOpen, setSavingsOpen] = useState(false)
-  const [savePrompt, setSavePrompt] = useState<{ open: boolean; mode: 'new' | 'update'; activeName: string }>({
-    open: false,
-    mode: 'new',
-    activeName: '',
-  })
-  const [undo, setUndo] = useState<{ open: boolean; message: string; info: DeletedInfo | null }>({
-    open: false,
-    message: '',
-    info: null,
-  })
-  const undoTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [savePromptOpen, setSavePromptOpen] = useState(false)
 
   const active = scenarios.find((s) => s.id === activeScenarioId)
-  const saveLabel = active ? (isDirty ? 'Update' : 'Save as new') : 'Save'
-
-  const handleSave = () => {
-    if (active && isDirty) setSavePrompt({ open: true, mode: 'update', activeName: active.name })
-    else setSavePrompt({ open: true, mode: 'new', activeName: '' })
-  }
-
-  const handleDelete = (id: string) => {
-    const info = deleteScenario(id)
-    if (!info) return
-    if (undoTimer.current) clearTimeout(undoTimer.current)
-    setUndo({ open: true, message: `Deleted “${info.deleted.name}”`, info })
-    undoTimer.current = setTimeout(() => setUndo((u) => ({ ...u, open: false })), 6000)
-  }
-
-  const handleUndo = () => {
-    if (undo.info) restoreScenario(undo.info)
-    if (undoTimer.current) clearTimeout(undoTimer.current)
-    setUndo((u) => ({ ...u, open: false }))
-  }
+  const isBound = mode === 'bound' && !!active
 
   return (
     <>
       <header className="page-header">
         <div className="header-brand">
-          <Link className="hub-link" to="/">‹ Hemma</Link>
+          <Link className="hub-link" to="/bostadskalkyl">‹ Scenarios</Link>
           <div>
-            <h1>Bostadskalkyl</h1>
+            {isBound ? (
+              <input
+                className="scenario-title-input"
+                value={active.name}
+                aria-label="Scenario name"
+                placeholder="Untitled scenario"
+                onChange={(e) => renameScenario(active.id, e.target.value)}
+              />
+            ) : (
+              <h1>New scenario</h1>
+            )}
             <p className="tagline">
-              Swedish house purchase calculator — upfront costs &amp; monthly payments
+              {isBound ? (
+                <span className="save-indicator">✓ All changes saved</span>
+              ) : (
+                'Unsaved draft — save it to keep it'
+              )}
             </p>
           </div>
         </div>
         <div className="header-actions">
-          {active ? (
-            <span className="active-scenario-label">
-              <span className="active-scenario-name">{active.name}</span>
-              {isDirty && <span className="unsaved-dot" title="Unsaved changes" />}
-            </span>
-          ) : isDirty ? (
-            <span className="active-scenario-label">
-              <span className="active-scenario-name">Unsaved</span>
-              <span className="unsaved-dot" />
-            </span>
-          ) : null}
           <button
             className="btn btn-ghost theme-toggle-btn"
             title="Toggle dark mode"
@@ -126,12 +102,21 @@ export default function Bostadskalkyl() {
           >
             {theme === 'dark' ? '☾' : '☀'}
           </button>
-          <button className="btn btn-ghost" onClick={() => setScenariosOpen(true)}>
-            Scenarios
-          </button>
-          <button className="btn btn-primary" onClick={handleSave}>
-            {saveLabel}
-          </button>
+          {isBound ? (
+            <button
+              className="btn btn-ghost"
+              onClick={() => {
+                const copyId = duplicateScenario(active.id)
+                if (copyId) navigate(`/bostadskalkyl/${copyId}`)
+              }}
+            >
+              Duplicate
+            </button>
+          ) : (
+            <button className="btn btn-primary" onClick={() => setSavePromptOpen(true)}>
+              Save scenario
+            </button>
+          )}
         </div>
       </header>
 
@@ -164,29 +149,17 @@ export default function Bostadskalkyl() {
         </div>
       </div>
 
-      <ScenariosModal
-        open={scenariosOpen}
-        onOpenChange={setScenariosOpen}
-        scenarios={scenarios}
-        activeScenarioId={activeScenarioId}
-        onLoad={(id) => {
-          loadScenario(id)
-          setScenariosOpen(false)
-        }}
-        onDuplicate={duplicateScenario}
-        onDelete={handleDelete}
-      />
-
       <SavePrompt
-        open={savePrompt.open}
-        mode={savePrompt.mode}
-        activeName={savePrompt.activeName}
-        onOpenChange={(o) => setSavePrompt((p) => ({ ...p, open: o }))}
-        onSaveNew={saveNewScenario}
-        onUpdate={updateActiveScenario}
+        open={savePromptOpen}
+        mode="new"
+        activeName=""
+        onOpenChange={setSavePromptOpen}
+        onSaveNew={(name) => {
+          const newScenarioId = saveDraftAsScenario(name)
+          navigate(`/bostadskalkyl/${newScenarioId}`)
+        }}
+        onUpdate={() => {}}
       />
-
-      <UndoToast open={undo.open} message={undo.message} onUndo={handleUndo} />
 
       <DriftModal open={driftOpen} onOpenChange={setDriftOpen} />
       <SavingsModal open={savingsOpen} onOpenChange={setSavingsOpen} />

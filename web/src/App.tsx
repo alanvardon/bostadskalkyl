@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useState } from 'react'
 import { HashRouter, Routes, Route } from 'react-router-dom'
 import Home from './routes/Home'
+import ScenariosDashboard from './routes/ScenariosDashboard'
 import Bostadskalkyl from './routes/Bostadskalkyl'
 import Konsultkalkyl from './routes/Konsultkalkyl'
 import Lonevaxling from './routes/Lonevaxling'
@@ -38,7 +39,9 @@ export default function App() {
       <HashRouter>
         <Routes>
           <Route path="/" element={<Home />} />
-          <Route path="/bostadskalkyl" element={<Bostadskalkyl />} />
+          <Route path="/bostadskalkyl" element={<ScenariosDashboard />} />
+          <Route path="/bostadskalkyl/new" element={<Bostadskalkyl />} />
+          <Route path="/bostadskalkyl/:id" element={<Bostadskalkyl />} />
           <Route path="/konsultkalkyl" element={<Konsultkalkyl />} />
           <Route path="/lonevaxling" element={<Lonevaxling />} />
           <Route path="/bolanekoll" element={<Bolanekoll />} />

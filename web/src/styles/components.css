@@ -398,6 +398,55 @@ input::placeholder { color: var(--ink-faint); }
 .toggle input:checked + .toggle-slider::before { transform: translateX(17px); }
 .toggle input:focus-visible + .toggle-slider { box-shadow: var(--ring); }
 
+/* ── Scenarios dashboard (Bostadskalkyl landing) ────────────── */
+.dashboard {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 1.75rem 1.5rem 4rem;
+}
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 1rem;
+}
+.dashboard-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1.1rem;
+  padding: 4.5rem 1rem;
+  color: var(--ink-soft);
+  font-size: 15px;
+}
+/* The unsaved scratch draft card stands apart from saved scenarios. */
+.draft-card {
+  border-style: dashed;
+  border-color: var(--accent-light);
+}
+
+/* Inline-editable scenario title in the calculator header — looks like the h1
+   it replaces, reveals an edit affordance on hover/focus. */
+.scenario-title-input {
+  font-family: var(--font-display);
+  font-size: clamp(1.4rem, 1.15rem + 1.1vw, 1.85rem);
+  font-weight: 400;
+  color: var(--ink);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 2px 7px;
+  margin: -2px -7px;
+  max-width: min(60vw, 460px);
+  width: 100%;
+}
+.scenario-title-input:hover { border-color: var(--rule); }
+.scenario-title-input:focus {
+  border-color: var(--accent-light);
+  background: var(--input-focus-bg);
+  outline: none;
+}
+.save-indicator { color: var(--accent); font-weight: 550; }
+
 /* ── Mobile key-figures bar ─────────────────────────────────── */
 .mobile-bar {
   display: none;

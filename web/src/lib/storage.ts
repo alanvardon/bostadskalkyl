@@ -7,6 +7,7 @@ import type { Inputs } from './calc'
 const KEYS = {
   scenarios: 'bostadskalkyl_scenarios_v1',
   session: 'bostadskalkyl_session_v1',
+  draft: 'bostadskalkyl_draft_v1',
   driftItems: 'bostadskalkyl_drift_items_v1',
   savingsItems: 'bostadskalkyl_savings_items_v1',
 } as const
@@ -90,6 +91,46 @@ export function saveSession(
 ): Promise<void> {
   try {
     localStorage.setItem(KEYS.session, JSON.stringify({ inputs, activeScenarioId, isDirty }))
+  } catch {
+    /* ignore */
+  }
+  return Promise.resolve()
+}
+
+// The scratch draft (the unsaved "New scenario" buffer). Separate from saved
+// scenarios so it survives reloads and shows on the dashboard until saved.
+// Retire the legacy single-session key once its inputs have been carried over to
+// the draft — otherwise a discarded draft would regenerate from it on reload.
+export function clearSession(): Promise<void> {
+  try {
+    localStorage.removeItem(KEYS.session)
+  } catch {
+    /* ignore */
+  }
+  return Promise.resolve()
+}
+
+export function loadDraft(): Promise<Inputs | null> {
+  try {
+    const raw = localStorage.getItem(KEYS.draft)
+    return Promise.resolve(raw ? (JSON.parse(raw) as Inputs) : null)
+  } catch {
+    return Promise.resolve(null)
+  }
+}
+
+export function saveDraft(inputs: Inputs): Promise<void> {
+  try {
+    localStorage.setItem(KEYS.draft, JSON.stringify(inputs))
+  } catch {
+    /* ignore */
+  }
+  return Promise.resolve()
+}
+
+export function clearDraft(): Promise<void> {
+  try {
+    localStorage.removeItem(KEYS.draft)
   } catch {
     /* ignore */
   }
