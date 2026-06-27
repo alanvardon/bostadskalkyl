@@ -1,25 +1,86 @@
-/* View Transitions (plan 6) — the Bostadskalkyl tool card morphs into its page.
-   The shared `bk-card` name is applied to the card (on the hub) and the page
-   root (on the dashboard) ONLY while navigating between them, via
-   useViewTransitionState — so at any captured snapshot exactly one element
-   claims the name (the uniqueness rule). React Router wraps the navigation in
-   document.startViewTransition(); browsers without the API just navigate. */
+/* View Transitions (plan 8) — "dolly zoom": the camera dives INTO the clicked
+   Bostadskalkyl card instead of cross-fading. Forward, only the hub card claims
+   `bk-card` (exit-only) so it over-scales past the viewport and dissolves only at
+   the very end, while the dashboard rides in behind it as the `root` layer
+   (parallax zoom, no fade). Back, the dashboard reclaims `bk-card` so the shared
+   group collapses it down into the card's slot and the card re-forms. A
+   `data-vt-dir` flag on <html> (set on click, see lib/viewTransition.ts) scopes
+   the two directions. React Router wraps the nav in document.startViewTransition;
+   browsers without the API just navigate. Supersedes the #06 morph. */
+
+:root {
+  --vt-dur: 560ms;
+  --vt-ease: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
 .bk-vt {
   view-transition-name: bk-card;
 }
 
-/* Tune the shared-element morph (card box → page box). The rest of the page
-   cross-fades via the default ::view-transition root group. */
-::view-transition-group(bk-card) {
-  animation-duration: 360ms;
-  animation-timing-function: cubic-bezier(0.2, 0.7, 0.2, 1);
+/* ── FORWARD: dive into the card; dashboard parallax-zooms in behind ──────── */
+html[data-vt-dir='forward']::view-transition-old(bk-card) {
+  animation: vt-dive var(--vt-dur) var(--vt-ease) both;
+  transform-origin: center center;
+  will-change: transform, opacity;
+  z-index: 2; /* the diving card stays above the incoming dashboard */
 }
-::view-transition-old(root),
-::view-transition-new(root) {
-  animation-duration: 280ms;
+html[data-vt-dir='forward']::view-transition-new(root) {
+  animation: vt-bg-in var(--vt-dur) var(--vt-ease) both;
+  will-change: transform;
+}
+html[data-vt-dir='forward']::view-transition-old(root) {
+  animation: none; /* hub sits still and is covered by the opaque dashboard */
 }
 
-/* Motion-sensitive users: skip the animation entirely (still navigates). */
+/* Solid scale-up, dissolve only across the final 15% as we punch through. */
+@keyframes vt-dive {
+  0% { transform: scale(1); opacity: 1; }
+  85% { transform: scale(3.4); opacity: 1; }
+  100% { transform: scale(4); opacity: 0; }
+}
+@keyframes vt-bg-in {
+  from { transform: scale(1.18); }
+  to { transform: scale(1); }
+}
+
+/* ── BACK: the dashboard collapses down into the card's slot (shared morph) ── */
+html[data-vt-dir='back']::view-transition-group(bk-card) {
+  animation-duration: var(--vt-dur);
+  animation-timing-function: var(--vt-ease);
+}
+html[data-vt-dir='back']::view-transition-old(bk-card) {
+  animation: vt-collapse var(--vt-dur) var(--vt-ease) both;
+}
+html[data-vt-dir='back']::view-transition-new(bk-card) {
+  animation: vt-reform var(--vt-dur) var(--vt-ease) both;
+}
+html[data-vt-dir='back']::view-transition-new(root) {
+  animation: vt-bg-out var(--vt-dur) var(--vt-ease) both;
+}
+
+/* Dashboard stays solid as it shrinks, dissolving only in the last stretch; the
+   card re-forms over the tail; the hub settles up from slightly small. */
+@keyframes vt-collapse {
+  0%, 85% { opacity: 1; }
+  100% { opacity: 0; }
+}
+@keyframes vt-reform {
+  0%, 65% { opacity: 0; }
+  100% { opacity: 1; }
+}
+@keyframes vt-bg-out {
+  from { transform: scale(0.92); }
+  to { transform: scale(1); }
+}
+
+/* Default pacing for any nav we didn't tag (e.g. browser back / POP) — a plain
+   quick cross-fade, no dolly. */
+::view-transition-group(bk-card) {
+  animation-duration: var(--vt-dur);
+  animation-timing-function: var(--vt-ease);
+}
+
+/* Motion-sensitive users: skip every animation (still navigates instantly). */
 @media (prefers-reduced-motion: reduce) {
   ::view-transition-group(*),
   ::view-transition-old(*),

@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Link, useViewTransitionState } from 'react-router-dom'
 import HeroCanvas from '../components/HeroCanvas'
 import { useTheme } from '../App'
+import { markVtDirection } from '../lib/viewTransition'
 
 const fineHover =
   typeof window !== 'undefined' &&
@@ -10,9 +11,14 @@ const fineHover =
 
 export default function Home() {
   const { theme, toggleTheme } = useTheme()
-  // True while navigating to/from the Bostadskalkyl page — drives the card→page
-  // morph (plan 6). Scoped to this one card as a proof-of-concept.
-  const bkTransitioning = useViewTransitionState('/bostadskalkyl')
+  // The Bostadskalkyl card claims `bk-card` while a transition to/from its page
+  // is active (plan 8 dolly). Forward → it's the diving element; back → it's the
+  // collapse target the dashboard shrinks into. Reactive so the name clears once
+  // the transition ends (no stuck view-transition-name). `arriving` covers the
+  // dive in; `returning` covers the re-form on the way back to the hub.
+  const arriving = useViewTransitionState('/bostadskalkyl')
+  const returning = useViewTransitionState('/')
+  const bkTransitioning = arriving || returning
   const [clock, setClock] = useState('')
   const [greeting, setGreeting] = useState('')
   const [dateLine, setDateLine] = useState('')
@@ -111,6 +117,7 @@ export default function Home() {
             className={'app-card reveal reveal-4' + (bkTransitioning ? ' bk-vt' : '')}
             to="/bostadskalkyl"
             viewTransition
+            onClick={() => markVtDirection('forward')}
             onPointerMove={onCardMove}
             onPointerLeave={onCardLeave}
           >

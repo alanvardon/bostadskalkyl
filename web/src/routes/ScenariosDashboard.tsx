@@ -8,6 +8,7 @@ import { filterScenarios, sortScenarios, SORT_OPTIONS, type SortKey } from '../l
 import ScenarioCard from '../components/ScenarioCard'
 import UndoToast from '../components/UndoToast'
 import ConstantsModal from '../components/ConstantsModal'
+import { markVtDirection } from '../lib/viewTransition'
 
 // Per-card entrance (fade+rise), orchestrated by the grid's staggerChildren.
 // Reduced motion collapses it to a no-op so cards appear instantly.
@@ -88,8 +89,11 @@ export default function ScenariosDashboard() {
   const noMatches = scenarios.length > 0 && visible.length === 0
   const isEmpty = scenarios.length === 0 && !draftFigures
 
-  // True while navigating to/from this page — the hub card morphs into this root.
-  const bkTransitioning = useViewTransitionState('/bostadskalkyl')
+  // The dashboard claims `bk-card` ONLY while leaving to the hub — that makes the
+  // back trip a shared collapse morph (the page shrinks into the card's slot). On
+  // the way IN it stays unnamed so the hub card dives past it as the foreground
+  // and the dashboard rides in as the background layer (plan 8 dolly).
+  const leaving = useViewTransitionState('/')
 
   const variants = cardVariants(reduce)
   const container = {
@@ -99,10 +103,10 @@ export default function ScenariosDashboard() {
 
   return (
     <>
-      <div className={'bk-page-root' + (bkTransitioning ? ' bk-vt' : '')}>
+      <div className={'bk-page-root' + (leaving ? ' bk-vt' : '')}>
         <header className="page-header">
           <div className="header-brand">
-            <Link className="hub-link" to="/" viewTransition>‹ Hemma</Link>
+            <Link className="hub-link" to="/" viewTransition onClick={() => markVtDirection('back')}>‹ Hemma</Link>
             <div>
               <h1>Bostadskalkyl</h1>
               <p className="tagline">Your saved scenarios — open one to edit, or start a new calculation</p>
