@@ -124,8 +124,18 @@
 
   /* ── Chart ──────────────────────────────────────────────────── */
   .chart-wrap { position: relative; height: 320px; }
-  .chart-wrap canvas { width: 100% !important; }
   .chart-empty { color: var(--ink-soft); font-size: 14px; padding: 2.4rem 0.5rem; text-align: center; }
+
+  /* visx stacked-area equity chart — legend on top, ring/area fills below */
+  .bk-chart { display: flex; flex-direction: column; height: 100%; gap: 0.4rem; }
+  .bk-chart-legend { display: flex; flex-wrap: wrap; gap: 0.4rem 1rem; justify-content: center; }
+  .bk-chart-key { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-mid); }
+  .bk-chart-swatch { width: 11px; height: 11px; border-radius: 3px; flex-shrink: 0; }
+  .bk-chart-canvas { position: relative; flex: 1; min-height: 0; }
+
+  /* Total row in the chart tooltip (separated from the three bands) */
+  .chart-tooltip-total { margin-top: 3px; padding-top: 5px; border-top: 1px solid var(--rule); }
+  .chart-tooltip-total .chart-tooltip-label { color: var(--ink-mid); font-weight: 600; }
 
   /* ── Dropzone & import guard ────────────────────────────────── */
   .dropzone {
