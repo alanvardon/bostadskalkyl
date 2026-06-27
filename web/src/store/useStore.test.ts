@@ -1,14 +1,17 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { useStore } from './useStore'
-import { DEFAULT_INPUTS } from '../lib/calc'
+import { DEFAULT_INPUTS, DEFAULT_CONSTANTS } from '../lib/calc'
 
 beforeEach(() => {
   useStore.setState({
     inputs: { ...DEFAULT_INPUTS },
+    constants: DEFAULT_CONSTANTS,
     mode: 'draft',
     activeScenarioId: null,
     scenarios: [],
     draftInputs: null,
+    draftConstants: null,
+    globalConstants: DEFAULT_CONSTANTS,
     driftItems: [],
     driftYearly: false,
     savingsItems: [],
@@ -96,6 +99,37 @@ describe('scenarios — hybrid save model', () => {
     useStore.setState({ draftInputs: { ...DEFAULT_INPUTS } })
     useStore.getState().discardDraft()
     expect(useStore.getState().draftInputs).toBeNull()
+  })
+})
+
+describe('per-scenario + global constants', () => {
+  it('setConstants on a bound scenario writes through to it', () => {
+    const id = useStore.getState().saveDraftAsScenario('A')
+    useStore.getState().setConstants({ ...DEFAULT_CONSTANTS, lagfartPct: 3 })
+    expect(useStore.getState().constants.lagfartPct).toBe(3)
+    expect(useStore.getState().scenarios.find((s) => s.id === id)!.constants!.lagfartPct).toBe(3)
+  })
+
+  it('a saved scenario freezes its own constants — editing global later does not leak in', () => {
+    useStore.setState({ constants: { ...DEFAULT_CONSTANTS, lagfartPct: 2.5 }, mode: 'draft' })
+    const id = useStore.getState().saveDraftAsScenario('B')
+    useStore.getState().setGlobalConstants({ ...DEFAULT_CONSTANTS, lagfartPct: 9 })
+    expect(useStore.getState().scenarios.find((s) => s.id === id)!.constants!.lagfartPct).toBe(2.5)
+  })
+
+  it('openScenario falls back to global constants when the scenario has none', () => {
+    useStore.setState({
+      scenarios: [{ id: 'old', name: 'Old', savedAt: '2025-01-01', inputs: { ...DEFAULT_INPUTS } }],
+      globalConstants: { ...DEFAULT_CONSTANTS, lagfartPct: 4 },
+    })
+    expect(useStore.getState().openScenario('old')).toBe(true)
+    expect(useStore.getState().constants.lagfartPct).toBe(4)
+  })
+
+  it('setConstants in draft mode writes to the draft, not any scenario', () => {
+    useStore.getState().setConstants({ ...DEFAULT_CONSTANTS, pantbrevPct: 5 })
+    expect(useStore.getState().draftConstants?.pantbrevPct).toBe(5)
+    expect(useStore.getState().scenarios).toHaveLength(0)
   })
 })
 

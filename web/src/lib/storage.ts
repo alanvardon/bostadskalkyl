@@ -2,12 +2,14 @@
 // keys + the same async Promise API, so (a) a returning user's saved data
 // carries over untouched and (b) the planned Supabase migration stays a
 // one-file swap (replace these bodies; signatures unchanged).
-import type { Inputs } from './calc'
+import type { Inputs, Constants } from './calc'
 
 const KEYS = {
   scenarios: 'bostadskalkyl_scenarios_v1',
   session: 'bostadskalkyl_session_v1',
   draft: 'bostadskalkyl_draft_v1',
+  draftConstants: 'bostadskalkyl_draft_constants_v1',
+  globalConstants: 'bostadskalkyl_constants_v1',
   driftItems: 'bostadskalkyl_drift_items_v1',
   savingsItems: 'bostadskalkyl_savings_items_v1',
 } as const
@@ -19,6 +21,9 @@ export interface Scenario {
   name: string
   savedAt: string
   inputs: Inputs
+  // Per-scenario statutory constants. Absent on scenarios saved before this
+  // feature — those fall back to the global defaults at read time.
+  constants?: Constants
 }
 
 // A line item in the driftkostnad breakdown or the savings list. `amount` is
@@ -131,6 +136,54 @@ export function saveDraft(inputs: Inputs): Promise<void> {
 export function clearDraft(): Promise<void> {
   try {
     localStorage.removeItem(KEYS.draft)
+  } catch {
+    /* ignore */
+  }
+  return Promise.resolve()
+}
+
+// Global default constants — seed new scenarios + back saved scenarios that
+// predate the per-scenario constants feature.
+export function loadGlobalConstants(): Promise<Constants | null> {
+  try {
+    const raw = localStorage.getItem(KEYS.globalConstants)
+    return Promise.resolve(raw ? (JSON.parse(raw) as Constants) : null)
+  } catch {
+    return Promise.resolve(null)
+  }
+}
+
+export function saveGlobalConstants(c: Constants): Promise<void> {
+  try {
+    localStorage.setItem(KEYS.globalConstants, JSON.stringify(c))
+  } catch {
+    /* ignore */
+  }
+  return Promise.resolve()
+}
+
+// The scratch draft's constants (parallel to the draft inputs).
+export function loadDraftConstants(): Promise<Constants | null> {
+  try {
+    const raw = localStorage.getItem(KEYS.draftConstants)
+    return Promise.resolve(raw ? (JSON.parse(raw) as Constants) : null)
+  } catch {
+    return Promise.resolve(null)
+  }
+}
+
+export function saveDraftConstants(c: Constants): Promise<void> {
+  try {
+    localStorage.setItem(KEYS.draftConstants, JSON.stringify(c))
+  } catch {
+    /* ignore */
+  }
+  return Promise.resolve()
+}
+
+export function clearDraftConstants(): Promise<void> {
+  try {
+    localStorage.removeItem(KEYS.draftConstants)
   } catch {
     /* ignore */
   }

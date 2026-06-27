@@ -1,10 +1,18 @@
 import { create } from 'zustand'
-import { DEFAULT_INPUTS, type Inputs } from '../lib/calc'
+import { DEFAULT_INPUTS, DEFAULT_CONSTANTS, type Inputs, type Constants } from '../lib/calc'
 import * as storage from '../lib/storage'
 import type { Scenario, LineItem } from '../lib/storage'
 
 const sumAmounts = (items: LineItem[]): number => items.reduce((s, i) => s + (i.amount || 0), 0)
 const nowISO = () => new Date().toISOString()
+
+// Deep copy so a scenario / global / draft never share a constants reference
+// (editing one would otherwise leak into the others).
+const cloneConstants = (c: Constants): Constants => ({
+  ...c,
+  ranteavdrag: { ...c.ranteavdrag },
+  amort: { ...c.amort },
+})
 
 // Session-unique id — Date.now() alone collides when you save then immediately
 // duplicate within the same millisecond, so append a monotonic counter.
@@ -23,10 +31,13 @@ export interface DeletedInfo {
 
 interface AppState {
   inputs: Inputs // the working buffer the calculator edits
+  constants: Constants // working statutory constants (the active scenario's / draft's)
   mode: 'draft' | 'bound' // editing the scratch draft, or a saved scenario (auto-saved)
   activeScenarioId: string | null
   scenarios: Scenario[]
   draftInputs: Inputs | null // the persisted scratch draft (null = none in progress)
+  draftConstants: Constants | null // the scratch draft's constants override
+  globalConstants: Constants // defaults that seed new scenarios + back old ones
   hydrated: boolean
   // Phase 7 — driftkostnad breakdown + savings line items (session-level, not
   // per-scenario). Drift amounts are monthly; the yearly flag is a view toggle.
@@ -35,6 +46,8 @@ interface AppState {
   savingsItems: LineItem[]
 
   setField: <K extends keyof Inputs>(key: K, value: Inputs[K]) => void
+  setConstants: (c: Constants) => void // edit the active scenario's / draft's constants
+  setGlobalConstants: (c: Constants) => void // edit the global defaults
   hydrate: () => Promise<void>
   openScenario: (id: string) => boolean
   openDraft: () => void
@@ -52,10 +65,13 @@ interface AppState {
 
 export const useStore = create<AppState>((set, get) => ({
   inputs: DEFAULT_INPUTS,
+  constants: DEFAULT_CONSTANTS,
   mode: 'draft',
   activeScenarioId: null,
   scenarios: [],
   draftInputs: null,
+  draftConstants: null,
+  globalConstants: DEFAULT_CONSTANTS,
   hydrated: false,
   driftItems: [],
   driftYearly: false,
@@ -77,16 +93,39 @@ export const useStore = create<AppState>((set, get) => ({
     }
   },
 
+  // Constants auto-save like inputs: into the active scenario (bound) or the
+  // scratch draft's override (draft).
+  setConstants: (c) => {
+    const s = get()
+    if (s.mode === 'bound' && s.activeScenarioId) {
+      const scenarios = s.scenarios.map((sc) =>
+        sc.id === s.activeScenarioId ? { ...sc, constants: cloneConstants(c), savedAt: nowISO() } : sc,
+      )
+      set({ constants: c, scenarios })
+      storage.saveScenarios(scenarios)
+    } else {
+      set({ constants: c, draftConstants: c })
+      storage.saveDraftConstants(c)
+    }
+  },
+
+  setGlobalConstants: (c) => {
+    set({ globalConstants: cloneConstants(c) })
+    storage.saveGlobalConstants(c)
+  },
+
   hydrate: async () => {
     if (get().hydrated) return
     storage.runMigrations()
-    const [scenarios, draft, driftItems, savingsItems, driftYearly, session] = await Promise.all([
+    const [scenarios, draft, driftItems, savingsItems, driftYearly, session, globalC, draftC] = await Promise.all([
       storage.loadScenarios(),
       storage.loadDraft(),
       storage.loadDriftItems(),
       storage.loadSavingsItems(),
       storage.loadDriftYearly(),
       storage.loadSession(),
+      storage.loadGlobalConstants(),
+      storage.loadDraftConstants(),
     ])
     // One-time carry-over: a returning user's unsaved (non-default) session
     // becomes the scratch draft so their in-progress calc isn't lost. The legacy
@@ -100,13 +139,27 @@ export const useStore = create<AppState>((set, get) => ({
       }
     }
     if (session) storage.clearSession()
-    set({ scenarios, draftInputs: draftInputs ?? null, driftItems, savingsItems, driftYearly, hydrated: true })
+    set({
+      scenarios,
+      draftInputs: draftInputs ?? null,
+      draftConstants: draftC ?? null,
+      globalConstants: globalC ?? DEFAULT_CONSTANTS,
+      driftItems,
+      savingsItems,
+      driftYearly,
+      hydrated: true,
+    })
   },
 
   openScenario: (id) => {
     const sc = get().scenarios.find((x) => x.id === id)
     if (!sc) return false
-    set({ inputs: { ...DEFAULT_INPUTS, ...sc.inputs }, mode: 'bound', activeScenarioId: id })
+    set({
+      inputs: { ...DEFAULT_INPUTS, ...sc.inputs },
+      constants: cloneConstants(sc.constants ?? get().globalConstants),
+      mode: 'bound',
+      activeScenarioId: id,
+    })
     return true
   },
 
@@ -114,23 +167,26 @@ export const useStore = create<AppState>((set, get) => ({
     const d = get().draftInputs
     set({
       inputs: d ? { ...DEFAULT_INPUTS, ...d } : { ...DEFAULT_INPUTS },
+      constants: cloneConstants(get().draftConstants ?? get().globalConstants),
       mode: 'draft',
       activeScenarioId: null,
     })
   },
 
   saveDraftAsScenario: (name) => {
-    const inputs = get().inputs
+    const { inputs, constants } = get()
     const scenario: Scenario = {
       id: newId(),
       name: name.trim() || 'Unnamed scenario',
       savedAt: nowISO(),
       inputs,
+      constants: cloneConstants(constants),
     }
     const scenarios = [...get().scenarios, scenario]
-    set({ scenarios, mode: 'bound', activeScenarioId: scenario.id, draftInputs: null })
+    set({ scenarios, mode: 'bound', activeScenarioId: scenario.id, draftInputs: null, draftConstants: null })
     storage.saveScenarios(scenarios)
     storage.clearDraft()
+    storage.clearDraftConstants()
     return scenario.id
   },
 
@@ -171,8 +227,9 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   discardDraft: () => {
-    set({ draftInputs: null })
+    set({ draftInputs: null, draftConstants: null })
     storage.clearDraft()
+    storage.clearDraftConstants()
   },
 
   // Persist only — label edits + adding a (zero) item must NOT touch

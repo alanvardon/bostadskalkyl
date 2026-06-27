@@ -8,6 +8,7 @@ import SummaryColumn from '../components/SummaryColumn'
 import SavePrompt from '../components/SavePrompt'
 import DriftModal from '../components/DriftModal'
 import SavingsModal from '../components/SavingsModal'
+import ConstantsModal from '../components/ConstantsModal'
 import { Money } from '../components/AnimatedNumber'
 
 export default function Bostadskalkyl() {
@@ -25,6 +26,8 @@ export default function Bostadskalkyl() {
   // Store
   const inputs = useStore((s) => s.inputs)
   const setField = useStore((s) => s.setField)
+  const constants = useStore((s) => s.constants)
+  const setConstants = useStore((s) => s.setConstants)
   const mode = useStore((s) => s.mode)
   const scenarios = useStore((s) => s.scenarios)
   const activeScenarioId = useStore((s) => s.activeScenarioId)
@@ -55,7 +58,7 @@ export default function Bostadskalkyl() {
     document.title = 'Bostadskalkyl — Hemma'
   }, [theme])
 
-  const figures = useMemo(() => derive(inputs), [inputs])
+  const figures = useMemo(() => derive(inputs, constants), [inputs, constants])
   // Savings augment the cash surplus / shortfall (P&L + mobile bar), Phase 7.
   const savingsTotal = useMemo(() => savingsItems.reduce((s, i) => s + (i.amount || 0), 0), [savingsItems])
   const totalBalance = figures.cashBalance + savingsTotal
@@ -63,6 +66,7 @@ export default function Bostadskalkyl() {
   const [driftOpen, setDriftOpen] = useState(false)
   const [savingsOpen, setSavingsOpen] = useState(false)
   const [savePromptOpen, setSavePromptOpen] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
 
   const active = scenarios.find((s) => s.id === activeScenarioId)
   const isBound = mode === 'bound' && !!active
@@ -95,6 +99,14 @@ export default function Bostadskalkyl() {
         </div>
         <div className="header-actions">
           <button
+            className="btn btn-ghost"
+            title="Calculation settings"
+            aria-label="Calculation settings"
+            onClick={() => setSettingsOpen(true)}
+          >
+            ⚙
+          </button>
+          <button
             className="btn btn-ghost theme-toggle-btn"
             title="Toggle dark mode"
             aria-label="Toggle dark mode"
@@ -121,11 +133,12 @@ export default function Bostadskalkyl() {
       </header>
 
       <main className="layout">
-        <InputsColumn inputs={inputs} setField={setField} figures={figures} onOpenDrift={() => setDriftOpen(true)} />
+        <InputsColumn inputs={inputs} setField={setField} figures={figures} constants={constants} onOpenDrift={() => setDriftOpen(true)} />
         <SummaryColumn
           inputs={inputs}
           setField={setField}
           figures={figures}
+          constants={constants}
           savingsTotal={savingsTotal}
           onOpenSavings={() => setSavingsOpen(true)}
         />
@@ -163,6 +176,15 @@ export default function Bostadskalkyl() {
 
       <DriftModal open={driftOpen} onOpenChange={setDriftOpen} />
       <SavingsModal open={savingsOpen} onOpenChange={setSavingsOpen} />
+
+      <ConstantsModal
+        open={settingsOpen}
+        onOpenChange={setSettingsOpen}
+        value={constants}
+        onChange={setConstants}
+        title="Calculation settings"
+        subtitle={isBound ? 'Applies to this scenario' : 'Applies to this draft'}
+      />
     </>
   )
 }

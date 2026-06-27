@@ -1,5 +1,5 @@
 import { useEffect, useState, type CSSProperties } from 'react'
-import { stressAt, FASTIGHETSAVGIFT_CAP, type Inputs, type Figures, type BankFigures } from '../lib/calc'
+import { stressAt, type Inputs, type Figures, type BankFigures, type Constants } from '../lib/calc'
 import { fmt } from '../lib/format'
 import { CurrencyInput, NumberInput, Field, DerivedRow } from './fields'
 import { Money } from './AnimatedNumber'
@@ -11,10 +11,11 @@ interface Props {
   inputs: Inputs
   setField: <K extends keyof Inputs>(key: K, value: Inputs[K]) => void
   figures: Figures
+  constants: Constants
   onOpenDrift: () => void
 }
 
-export default function InputsColumn({ inputs: i, setField, figures: f, onOpenDrift }: Props) {
+export default function InputsColumn({ inputs: i, setField, figures: f, constants: c, onOpenDrift }: Props) {
   const [listingUrl, setListingUrl] = useState('')
 
   const bankAName = i.bankAName.trim() || 'Bank A'
@@ -32,7 +33,8 @@ export default function InputsColumn({ inputs: i, setField, figures: f, onOpenDr
     if (u) window.open(u.startsWith('http') ? u : 'https://' + u, '_blank', 'noopener')
   }
 
-  const overCap = i.propertyTax > FASTIGHETSAVGIFT_CAP
+  const overCap = i.propertyTax > c.fastighetsavgiftCap
+  const belowMinAmort = i.amortRate < f.requiredAmortRate
 
   return (
     <div className="inputs-col">
@@ -93,9 +95,9 @@ export default function InputsColumn({ inputs: i, setField, figures: f, onOpenDr
         </div>
         <div className="derived-box">
           <DerivedRow label="Loan amount (price − deposit)" value={<Money value={f.loanAmount} />} />
-          <DerivedRow label="Lagfart (1.5% of purchase price)" value={<Money value={f.lagfart} />} />
+          <DerivedRow label={`Lagfart (${c.lagfartPct}% of purchase price)`} value={<Money value={f.lagfart} />} />
           <DerivedRow label="New pantbrev needed (loan − existing)" value={<Money value={f.newPantbrevNeeded} />} />
-          <DerivedRow label="New pantbrev cost (2% of new amount)" value={<Money value={f.pantbrevCost} />} />
+          <DerivedRow label={`New pantbrev cost (${c.pantbrevPct}% of new amount)`} value={<Money value={f.pantbrevCost} />} />
           <DerivedRow rowClass="derived-total" label="Total upfront cash needed" value={<Money value={f.totalUpfront} />} />
           <DerivedRow
             label={<span style={{ fontWeight: 550, color: 'var(--ink)' }}>Cash surplus / shortfall</span>}
@@ -112,12 +114,24 @@ export default function InputsColumn({ inputs: i, setField, figures: f, onOpenDr
           <span className="section-title">Monthly costs</span>
         </div>
         <div className="field-grid" style={{ marginBottom: '1.25rem' }}>
-          <Field label="Amortisation rate" hint="Annual % of loan repaid each year">
+          <Field
+            label="Amortisation rate"
+            hint={belowMinAmort ? `Below the statutory minimum of ${f.requiredAmortRate}%` : `Statutory minimum: ${f.requiredAmortRate}%`}
+            hintWarn={belowMinAmort}
+          >
             <NumberInput value={i.amortRate} onChange={(v) => setField('amortRate', v)} suffix="%" min={0} max={10} step={0.1} id="amortRate" ariaLabel="Amortisation rate" />
+            {i.amortRate !== f.requiredAmortRate && (
+              <button type="button" className="field-breakdown-btn" onClick={() => setField('amortRate', f.requiredAmortRate)}>
+                Use statutory minimum ({f.requiredAmortRate}%) ›
+              </button>
+            )}
+          </Field>
+          <Field label="Household gross income" hint="Per year — drives the 4.5× amort surcharge">
+            <CurrencyInput value={i.grossAnnualIncome} onChange={(v) => setField('grossAnnualIncome', v)} suffix="kr/yr" id="grossAnnualIncome" ariaLabel="Household gross income" />
           </Field>
           <Field
             label="Property tax (fastighetsavgift)"
-            hint={overCap ? `Above the 2025 cap — houses pay max ${fmt(FASTIGHETSAVGIFT_CAP)}/yr` : `Capped at ${fmt(FASTIGHETSAVGIFT_CAP)}/yr (2025)`}
+            hint={overCap ? `Above the cap — houses pay max ${fmt(c.fastighetsavgiftCap)}/yr` : `Capped at ${fmt(c.fastighetsavgiftCap)}/yr`}
             hintWarn={overCap}
           >
             <CurrencyInput value={i.propertyTax} onChange={(v) => setField('propertyTax', v)} suffix="kr/yr" id="propertyTax" ariaLabel="Property tax" />
@@ -142,7 +156,7 @@ export default function InputsColumn({ inputs: i, setField, figures: f, onOpenDr
       </div>
 
       {/* Section 4 — stress test */}
-      <StressTest inputs={i} />
+      <StressTest inputs={i} constants={c} />
     </div>
   )
 }
@@ -183,7 +197,7 @@ function BankCol({
   )
 }
 
-function StressTest({ inputs }: { inputs: Inputs }) {
+function StressTest({ inputs, constants }: { inputs: Inputs; constants: Constants }) {
   const [rate, setRate] = useState(inputs.interestRateA)
   // Re-sync the slider to Bank A's rate whenever it changes (mirrors the
   // vanilla dataset.syncedRate behaviour in app.js).
@@ -191,7 +205,7 @@ function StressTest({ inputs }: { inputs: Inputs }) {
     setRate(inputs.interestRateA)
   }, [inputs.interestRateA])
 
-  const s = stressAt(inputs, rate)
+  const s = stressAt(inputs, rate, constants)
   const fill = (((rate - 0.5) / 11.5) * 100).toFixed(1) + '%'
 
   return (
@@ -246,10 +260,10 @@ function StressTest({ inputs }: { inputs: Inputs }) {
       <ExpandableChartCard
         title="Stress curve"
         subtitle="Total monthly cost across interest rates · marker = slider"
-        preview={<StressChart inputs={inputs} rate={rate} compact />}
+        preview={<StressChart inputs={inputs} rate={rate} constants={constants} compact />}
       >
         <div className="chart-overlay-chart">
-          <StressChart inputs={inputs} rate={rate} />
+          <StressChart inputs={inputs} rate={rate} constants={constants} />
         </div>
         <ChartLegend
           items={[

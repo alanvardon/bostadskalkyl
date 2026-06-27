@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import { ParentSize } from '@visx/responsive'
-import type { Inputs } from '../../lib/calc'
+import type { Inputs, Constants } from '../../lib/calc'
 import { stressSeries } from './chartData'
 import { useChartTheme } from './useChartTheme'
 import LineAreaChart, { type SeriesDef } from './LineAreaChart'
@@ -9,14 +9,16 @@ import LineAreaChart, { type SeriesDef } from './LineAreaChart'
 export default function StressChart({
   inputs,
   rate,
+  constants,
   compact,
 }: {
   inputs: Inputs
   rate?: number
+  constants?: Constants
   compact?: boolean
 }) {
   const theme = useChartTheme()
-  const data = useMemo(() => stressSeries(inputs), [inputs])
+  const data = useMemo(() => stressSeries(inputs, constants), [inputs, constants])
 
   const series: SeriesDef[] = [
     { key: 'total', label: 'Total monthly', color: theme.accent, values: data.map((p) => p.total), area: true, strokeWidth: 2.5 },
