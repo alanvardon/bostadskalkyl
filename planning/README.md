@@ -16,6 +16,8 @@ original request number, e.g. "#3", which the cross-references rely on).
 | [04-scenarios-dashboard.md](04-scenarios-dashboard.md) | 3 | Bostadskalkyl scenarios become a full-page dashboard you land on; calculator moves to `/bostadskalkyl/:id`. Hybrid save (named cards auto-save; "New" = scratch draft). | M–L | — (foundation) |
 | [05-bostadskalkyl-editable-constants.md](05-bostadskalkyl-editable-constants.md) | 2 | Settings panel for the statutory constants (fastighetsavgift cap, 15% min, lagfart, pantbrev, ränteavdrag, amort rules). Per-scenario override; amort rate auto-derives. | M | Req 3 |
 | [06-tool-card-expand-animation.md](06-tool-card-expand-animation.md) | 1 | Hub tool card "expands into the page" via the native View Transitions API (RR v7 `viewTransition`). Bostadskalkyl card first. | S–M | Req 3 |
+| [07-scenarios-dashboard-ui-polish.md](07-scenarios-dashboard-ui-polish.md) | — | UI/UX rebuild of the shipped scenarios dashboard: wider canvas, hero+chips cards (6 figures), whole-card-open + kebab, sort+search, add-tile, muted health colors, Motion/NumberFlow. | M | Req 3 (shipped) |
+| [08-tool-card-dolly-zoom.md](08-tool-card-dolly-zoom.md) | — | **Reworks #06's animation:** replace the card→page cross-fade morph with a no-fade parallax "dolly into the card" (solid scale-up + late micro-dissolve, dashboard parallax behind, symmetric collapse on back). Bostadskalkyl only. | M | Supersedes #06 |
 
 ## Dependency graph
 
@@ -39,6 +41,9 @@ Req 6 CI pin     (file 01) ── independent
    `calc.ts` refactor.
 5. **06 — card expand animation** (Req 1) — its morph lands on the 04 dashboard,
    so do it with/after 04.
+6. **07 — dashboard UI polish** — follow-up to the now-shipped 04. Touches the
+   same card markup as 06, so build **07 before 06** if both are done, or 06's
+   View Transition will land on the old card design and need rework.
 
 Each remains its own branch + PR (`ui/<slug>`), base `main`, landed one at a time.
 

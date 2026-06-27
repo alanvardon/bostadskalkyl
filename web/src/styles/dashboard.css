@@ -1,0 +1,261 @@
+/* ════════════════════════════════════════════════════════════════
+   Scenarios dashboard (Bostadskalkyl landing) — a purpose-built launcher.
+   Card styles moved here from modals.css when the ScenariosModal was retired;
+   redesigned as hero + chips. The calc-header rename reuses .scenario-title-input
+   (still in components.css).
+   ════════════════════════════════════════════════════════════════ */
+
+.dashboard {
+  max-width: min(1600px, 94vw);
+  margin: 0 auto;
+  padding: 1.5rem 1.5rem 4rem;
+}
+
+/* ── Toolbar: search · sort · count ─────────────────────────────── */
+.dashboard-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 1.25rem;
+  flex-wrap: wrap;
+}
+.dashboard-search {
+  flex: 1 1 220px;
+  max-width: 360px;
+  height: 38px;
+  padding: 0 0.85rem;
+  font: inherit;
+  font-size: 14px;
+  color: var(--ink);
+  background: var(--input-bg);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-sm);
+}
+.dashboard-search:focus { outline: none; border-color: var(--accent-light); background: var(--input-focus-bg); box-shadow: var(--ring); }
+.dashboard-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 13px;
+  color: var(--ink-soft);
+}
+.dashboard-sort select {
+  height: 38px;
+  padding: 0 1.8rem 0 0.7rem;
+  font: inherit;
+  font-size: 14px;
+  color: var(--ink);
+  background: var(--input-bg);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='2.5' stroke-linecap='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.6rem center;
+}
+.dashboard-sort select:focus { outline: none; border-color: var(--accent-light); box-shadow: var(--ring); }
+.dashboard-count {
+  margin-left: auto;
+  font-size: 13px;
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Grid ───────────────────────────────────────────────────────── */
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 1.1rem;
+  align-items: stretch;
+}
+.dashboard-hint {
+  margin-top: 1.5rem;
+  color: var(--ink-soft);
+  font-size: 14px;
+}
+
+/* ── Add tile (always the first cell) ───────────────────────────── */
+.dashboard-add-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  min-height: 190px;
+  padding: 1.1rem;
+  font: inherit;
+  font-size: 14px;
+  color: var(--ink-soft);
+  background: transparent;
+  border: 1.5px dashed var(--rule);
+  border-radius: var(--r-md);
+  cursor: pointer;
+  transition: border-color 0.18s, color 0.18s, background 0.18s, transform 0.18s;
+}
+.dashboard-add-tile:hover {
+  border-color: var(--accent-light);
+  color: var(--accent);
+  background: var(--accent-faint);
+  transform: translateY(-2px);
+}
+.dashboard-add-tile:focus-visible { outline: none; border-color: var(--accent-light); box-shadow: var(--ring); }
+.add-plus { font-size: 1.9rem; line-height: 1; font-weight: 300; }
+
+/* ── Scenario card ──────────────────────────────────────────────── */
+.scenario-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  background: var(--paper-card);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-md);
+  padding: 1.1rem 1.15rem;
+  cursor: pointer;
+  position: relative;
+  transition: border-color 0.18s, box-shadow 0.18s, transform 0.18s;
+}
+.scenario-card:hover { border-color: var(--accent-light); box-shadow: var(--shadow-md); transform: translateY(-2px); }
+.scenario-card:focus-visible { outline: none; border-color: var(--accent-light); box-shadow: var(--ring); }
+.draft-card { border-style: dashed; border-color: var(--accent-light); background: var(--accent-faint); }
+
+.scenario-card-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.5rem;
+  min-height: 1.6rem;
+}
+.scenario-card-name {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 1.2rem;
+  font-weight: 400;
+  line-height: 1.25;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.scenario-card-rename {
+  font-family: var(--font-display);
+  font-size: 1.2rem;
+  font-weight: 400;
+  line-height: 1.25;
+  max-width: 100%;
+  margin: 0;
+}
+.scenario-card-date {
+  font-size: 11px;
+  color: var(--ink-soft);
+  opacity: 0.85;
+}
+
+/* Kebab — hidden until hover/focus on pointer devices; always shown otherwise. */
+.scenario-kebab {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.1rem;
+  line-height: 1;
+  color: var(--ink-soft);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.16s, background 0.16s, border-color 0.16s;
+}
+.scenario-card:hover .scenario-kebab,
+.scenario-card:focus-within .scenario-kebab { opacity: 1; }
+.scenario-kebab:hover { background: var(--paper-warm); border-color: var(--rule); }
+.scenario-kebab:focus-visible { opacity: 1; outline: none; box-shadow: var(--ring); }
+@media (hover: none) { .scenario-kebab { opacity: 1; } }
+
+.kebab-menu {
+  min-width: 150px;
+  padding: 5px;
+  background: var(--paper-card);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-lg);
+  z-index: 60;
+}
+.kebab-item {
+  display: flex;
+  align-items: center;
+  padding: 7px 10px;
+  font-size: 13px;
+  color: var(--ink);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  user-select: none;
+  outline: none;
+}
+.kebab-item[data-highlighted] { background: var(--accent-faint); }
+.kebab-danger { color: var(--warn); }
+.kebab-danger[data-highlighted] { background: var(--warn-faint); }
+@media (prefers-reduced-motion: no-preference) {
+  .kebab-menu[data-state="open"] { animation: kebab-in 0.14s cubic-bezier(0.22, 1, 0.36, 1); transform-origin: var(--radix-dropdown-menu-content-transform-origin); }
+}
+@keyframes kebab-in {
+  from { opacity: 0; transform: scale(0.96) translateY(-2px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* ── Hero figure (monthly cost) ─────────────────────────────────── */
+.scenario-hero { display: flex; flex-direction: column; margin-top: 0.35rem; }
+.scenario-hero-num {
+  font-family: var(--font-display);
+  font-size: 1.85rem;
+  font-weight: 400;
+  line-height: 1.05;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.scenario-hero-sub { font-size: 11.5px; color: var(--ink-soft); margin-top: 2px; }
+
+/* ── Chips (the other five figures) ─────────────────────────────── */
+.scenario-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 0.7rem;
+  padding-top: 0.7rem;
+  border-top: 1px solid var(--rule);
+}
+.chip {
+  font-size: 11.5px;
+  font-weight: 500;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--paper-warm);
+  color: var(--ink-mid);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+/* Muted health cues — desaturated tints, not loud traffic lights. */
+.chip-good { color: var(--accent); background: color-mix(in oklab, var(--accent) 12%, var(--paper-card)); }
+.chip-warn { color: var(--copper); background: color-mix(in oklab, var(--copper) 13%, var(--paper-card)); }
+.chip-bad { color: var(--warn); background: color-mix(in oklab, var(--warn) 12%, var(--paper-card)); }
+
+/* ── Draft footer (Continue / Discard) ──────────────────────────── */
+.scenario-card-footer {
+  display: flex;
+  gap: 6px;
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--rule);
+}
+.scenario-card-footer .btn { flex: 1; padding: 6px 10px; font-size: 12px; text-align: center; }
+
+/* Single column on phones. */
+@media (max-width: 560px) {
+  .dashboard-grid { grid-template-columns: 1fr; }
+  .dashboard-count { margin-left: 0; }
+}
