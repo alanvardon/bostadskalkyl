@@ -1,4 +1,4 @@
-import type { Inputs, Figures } from '../lib/calc'
+import type { Inputs, Figures, Constants } from '../lib/calc'
 import { Money, Percent } from './AnimatedNumber'
 import ExpandableChartCard from './charts/ExpandableChartCard'
 import ChartLegend from './charts/ChartLegend'
@@ -9,11 +9,12 @@ interface Props {
   inputs: Inputs
   setField: <K extends keyof Inputs>(key: K, value: Inputs[K]) => void
   figures: Figures
+  constants: Constants
   savingsTotal: number
   onOpenSavings: () => void
 }
 
-export default function SummaryColumn({ inputs: i, setField, figures: f, savingsTotal, onOpenSavings }: Props) {
+export default function SummaryColumn({ inputs: i, setField, figures: f, constants: c, savingsTotal, onOpenSavings }: Props) {
   // Phase 7: savings entries augment the cash surplus / shortfall.
   const totalBalance = f.cashBalance + savingsTotal
   const pnlClass =
@@ -24,7 +25,11 @@ export default function SummaryColumn({ inputs: i, setField, figures: f, savings
         : 'sum-card sum-card-clickable'
   const equity = Math.min(Math.max(f.equityShare, 0), 100)
   const ltvColor =
-    f.equityShare < 15 ? 'var(--warn)' : f.equityShare < 30 ? 'var(--warn-light)' : 'var(--accent)'
+    f.equityShare < c.minDownPaymentPct
+      ? 'var(--warn)'
+      : f.equityShare < c.minDownPaymentPct * 2
+        ? 'var(--warn-light)'
+        : 'var(--accent)'
 
   return (
     <div className="summary-col">
@@ -142,7 +147,7 @@ export default function SummaryColumn({ inputs: i, setField, figures: f, savings
                 <Percent value={f.equityShare} />
               </strong>
             </span>
-            <span>15% min</span>
+            <span>{c.minDownPaymentPct}% min</span>
           </div>
         </div>
       </div>

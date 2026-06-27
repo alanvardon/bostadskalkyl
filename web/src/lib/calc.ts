@@ -2,25 +2,79 @@
 // body in app.js, now typed. `derive(inputs)` is the single source of truth:
 // it returns every figure the UI renders, so React components stay dumb.
 
-export const FASTIGHETSAVGIFT_CAP = 9725 // småhus cap, income year 2025
-const RANTEAVDRAG_THRESHOLD = 100_000
+// ── Tunable statutory constants ─────────────────────────────────────
+// These change with Swedish law (yearly indexing, reforms), so they're editable
+// per scenario (with a global default) rather than hardcoded. Rates are stored
+// as percentages so the settings UI is a direct number input.
+export interface Constants {
+  fastighetsavgiftCap: number // kr/yr — småhus cap (indexed to inkomstbasbeloppet)
+  minDownPaymentPct: number // % — minimum kontantinsats (→ max LTV 100 − this)
+  lagfartPct: number // % of purchase price — stamp duty
+  pantbrevPct: number // % of the new mortgage-deed amount
+  ranteavdrag: { thresholdKr: number; lowPct: number; highPct: number }
+  amort: {
+    highLtvPct: number // LTV above this → highLtvRatePct
+    midLtvPct: number // LTV above this → midLtvRatePct
+    highLtvRatePct: number
+    midLtvRatePct: number
+    incomeMultiple: number // loan above this × gross income → +incomeSurchargePct
+    incomeSurchargePct: number
+  }
+}
+
+// 2026 values, verified 2026-06-27. Fastighetsavgift småhus cap = 10 425 kr for
+// income year 2026 (10 074 kr for 2025); lagfart 1.5%, pantbrev 2%; ränteavdrag
+// 30% up to 100 000 kr then 21%; amorteringskrav 2% >70% LTV, 1% 50–70%, +1% if
+// the loan exceeds 4.5× gross household income.
+export const DEFAULT_CONSTANTS: Constants = {
+  fastighetsavgiftCap: 10_425,
+  minDownPaymentPct: 15,
+  lagfartPct: 1.5,
+  pantbrevPct: 2,
+  ranteavdrag: { thresholdKr: 100_000, lowPct: 30, highPct: 21 },
+  amort: { highLtvPct: 70, midLtvPct: 50, highLtvRatePct: 2, midLtvRatePct: 1, incomeMultiple: 4.5, incomeSurchargePct: 1 },
+}
 
 // ── Standalone pure functions (also used by charts / previews) ──────
-export function lagfart(price: number): number {
-  return price * 0.015
+export function lagfart(price: number, pct: number = DEFAULT_CONSTANTS.lagfartPct): number {
+  return price * (pct / 100)
 }
 
-export function pantbrevCost(loan: number, existingPantbrev: number): number {
-  return Math.max(0, loan - existingPantbrev) * 0.02
+export function pantbrevCost(
+  loan: number,
+  existingPantbrev: number,
+  pct: number = DEFAULT_CONSTANTS.pantbrevPct,
+): number {
+  return Math.max(0, loan - existingPantbrev) * (pct / 100)
 }
 
-export function ranteavdrag(annualInterest: number): number {
-  if (annualInterest <= RANTEAVDRAG_THRESHOLD) return annualInterest * 0.3
-  return RANTEAVDRAG_THRESHOLD * 0.3 + (annualInterest - RANTEAVDRAG_THRESHOLD) * 0.21
+export function ranteavdrag(
+  annualInterest: number,
+  cfg: Constants['ranteavdrag'] = DEFAULT_CONSTANTS.ranteavdrag,
+): number {
+  if (annualInterest <= cfg.thresholdKr) return annualInterest * (cfg.lowPct / 100)
+  return cfg.thresholdKr * (cfg.lowPct / 100) + (annualInterest - cfg.thresholdKr) * (cfg.highPct / 100)
 }
 
-export function fastighetsavgiftCap(propertyTax: number): number {
-  return Math.min(propertyTax, FASTIGHETSAVGIFT_CAP)
+export function fastighetsavgiftCap(
+  propertyTax: number,
+  cap: number = DEFAULT_CONSTANTS.fastighetsavgiftCap,
+): number {
+  return Math.min(propertyTax, cap)
+}
+
+/** Statutory minimum amortisation rate (%) from LTV + the 4.5×-income surcharge. */
+export function requiredAmortRate(
+  ltvPct: number,
+  loanAmount: number,
+  grossAnnualIncome: number,
+  c: Constants = DEFAULT_CONSTANTS,
+): number {
+  let rate = ltvPct > c.amort.highLtvPct ? c.amort.highLtvRatePct : ltvPct > c.amort.midLtvPct ? c.amort.midLtvRatePct : 0
+  if (grossAnnualIncome > 0 && loanAmount > c.amort.incomeMultiple * grossAnnualIncome) {
+    rate += c.amort.incomeSurchargePct
+  }
+  return rate
 }
 
 export function equityPct(loanAmount: number, price: number): number {
@@ -83,6 +137,7 @@ export interface Inputs {
   // Toggles
   ranteavdrag: boolean // include tax relief in the affordability figure
   affordThreshold: number // monthly cost as % of gross salary
+  grossAnnualIncome: number // household gross income — drives the amort 4.5× rule
 }
 
 export interface BankFigures {
@@ -121,6 +176,7 @@ export interface Figures {
   effectiveMonthly: number // = bankA.effective
   // Affordability
   reqSalaryMonthly: number
+  requiredAmortRate: number // statutory minimum amortisation rate (%)
   // Equity projection
   equity: { y5: number; y10: number; y20: number }
 }
@@ -131,11 +187,12 @@ function bankFigures(
   monthlyAmort: number,
   taxMonthly: number,
   drift: number,
+  ravCfg: Constants['ranteavdrag'] = DEFAULT_CONSTANTS.ranteavdrag,
 ): BankFigures {
   const interest = (loanAmount * (ratePct / 100)) / 12
   const total = interest + monthlyAmort + taxMonthly + drift
   const annualInterest = interest * 12
-  const relief = ranteavdrag(annualInterest)
+  const relief = ranteavdrag(annualInterest, ravCfg)
   return {
     interest,
     amort: monthlyAmort,
@@ -149,14 +206,14 @@ function bankFigures(
 }
 
 /** Consolidates the legacy recalc() into one pure function. */
-export function derive(i: Inputs): Figures {
+export function derive(i: Inputs, c: Constants = DEFAULT_CONSTANTS): Figures {
   const totalTakeaway = i.salePrice - i.currentMortgage
   const netProceeds = totalTakeaway - i.agentCost - i.movingCost
 
   const loanAmount = i.newPrice - i.deposit
-  const lagfartAmt = lagfart(i.newPrice)
+  const lagfartAmt = lagfart(i.newPrice, c.lagfartPct)
   const newPantbrevNeeded = Math.max(0, loanAmount - i.existingPantbrev)
-  const pantbrevCostAmt = pantbrevCost(loanAmount, i.existingPantbrev)
+  const pantbrevCostAmt = pantbrevCost(loanAmount, i.existingPantbrev, c.pantbrevPct)
   const totalUpfront = i.deposit + lagfartAmt + pantbrevCostAmt
   const cashBalance = netProceeds - totalUpfront
 
@@ -167,8 +224,8 @@ export function derive(i: Inputs): Figures {
   const monthlyAmort = (loanAmount * (i.amortRate / 100)) / 12
   const taxMonthly = i.propertyTax / 12
 
-  const bankA = bankFigures(loanAmount, i.interestRateA, monthlyAmort, taxMonthly, i.driftkostnad)
-  const bankB = bankFigures(loanAmount, i.interestRateB, monthlyAmort, taxMonthly, i.driftkostnad)
+  const bankA = bankFigures(loanAmount, i.interestRateA, monthlyAmort, taxMonthly, i.driftkostnad, c.ranteavdrag)
+  const bankB = bankFigures(loanAmount, i.interestRateB, monthlyAmort, taxMonthly, i.driftkostnad, c.ranteavdrag)
   const totalMonthly = bankA.total
   const relief = bankA.relief
   const effectiveMonthly = bankA.effective
@@ -200,6 +257,7 @@ export function derive(i: Inputs): Figures {
     relief,
     effectiveMonthly,
     reqSalaryMonthly,
+    requiredAmortRate: requiredAmortRate(ltv, loanAmount, i.grossAnnualIncome, c),
     equity: { y5: equityAt(5), y10: equityAt(10), y20: equityAt(20) },
   }
 }
@@ -211,14 +269,14 @@ export interface StressFigures {
 }
 
 /** Interest-rate stress test at an arbitrary rate (the slider, Phase 2/5). */
-export function stressAt(i: Inputs, ratePct: number): StressFigures {
+export function stressAt(i: Inputs, ratePct: number, c: Constants = DEFAULT_CONSTANTS): StressFigures {
   const loanAmount = i.newPrice - i.deposit
   const monthlyAmort = (loanAmount * (i.amortRate / 100)) / 12
   const taxMonthly = i.propertyTax / 12
   const monthlyInterest = (loanAmount * (ratePct / 100)) / 12
   const total = monthlyInterest + monthlyAmort + taxMonthly + i.driftkostnad
   const annual = loanAmount * (ratePct / 100)
-  return { monthlyInterest, total, afterRelief: total - ranteavdrag(annual) / 12 }
+  return { monthlyInterest, total, afterRelief: total - ranteavdrag(annual, c.ranteavdrag) / 12 }
 }
 
 // Default scenario — mirrors the value="" attributes in bostadskalkyl.html,
@@ -242,4 +300,5 @@ export const DEFAULT_INPUTS: Inputs = {
   bankBName: 'Bank B',
   ranteavdrag: false,
   affordThreshold: 30,
+  grossAnnualIncome: 0,
 }

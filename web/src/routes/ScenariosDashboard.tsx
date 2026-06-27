@@ -5,6 +5,7 @@ import { useTheme } from '../App'
 import { derive, type Inputs } from '../lib/calc'
 import { fmt } from '../lib/format'
 import UndoToast from '../components/UndoToast'
+import ConstantsModal from '../components/ConstantsModal'
 
 // Landing page for Bostadskalkyl (Phase: scenarios dashboard). You land on a
 // grid of saved scenarios and open one to edit it at /bostadskalkyl/:id. An
@@ -39,6 +40,9 @@ export default function ScenariosDashboard() {
 
   const scenarios = useStore((s) => s.scenarios)
   const draftInputs = useStore((s) => s.draftInputs)
+  const draftConstants = useStore((s) => s.draftConstants)
+  const globalConstants = useStore((s) => s.globalConstants)
+  const setGlobalConstants = useStore((s) => s.setGlobalConstants)
   const hydrate = useStore((s) => s.hydrate)
   const duplicateScenario = useStore((s) => s.duplicateScenario)
   const deleteScenario = useStore((s) => s.deleteScenario)
@@ -68,6 +72,7 @@ export default function ScenariosDashboard() {
     info: null,
   })
   const undoTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [settingsOpen, setSettingsOpen] = useState(false)
 
   const handleDelete = (id: string) => {
     const info = deleteScenario(id)
@@ -83,7 +88,7 @@ export default function ScenariosDashboard() {
   }
 
   const sorted = [...scenarios].sort((a, b) => +new Date(b.savedAt) - +new Date(a.savedAt))
-  const draftFigures = draftInputs ? derive(draftInputs) : null
+  const draftFigures = draftInputs ? derive(draftInputs, draftConstants ?? globalConstants) : null
 
   return (
     <>
@@ -96,6 +101,14 @@ export default function ScenariosDashboard() {
           </div>
         </div>
         <div className="header-actions">
+          <button
+            className="btn btn-ghost"
+            title="Default calculation settings"
+            aria-label="Default calculation settings"
+            onClick={() => setSettingsOpen(true)}
+          >
+            ⚙
+          </button>
           <button
             className="btn btn-ghost theme-toggle-btn"
             title="Toggle dark mode"
@@ -145,7 +158,7 @@ export default function ScenariosDashboard() {
                 <div key={s.id} className="scenario-card">
                   <div className="scenario-card-name">{s.name || 'Untitled'}</div>
                   <div className="scenario-card-date">Saved {dateStr}</div>
-                  <CardStats inputs={s.inputs} figures={derive(s.inputs)} />
+                  <CardStats inputs={s.inputs} figures={derive(s.inputs, s.constants ?? globalConstants)} />
                   <div className="scenario-card-actions">
                     <button className="btn btn-primary" onClick={() => navigate(`/bostadskalkyl/${s.id}`)}>
                       Open
@@ -165,6 +178,15 @@ export default function ScenariosDashboard() {
       </main>
 
       <UndoToast open={undo.open} message={undo.message} onUndo={handleUndo} />
+
+      <ConstantsModal
+        open={settingsOpen}
+        onOpenChange={setSettingsOpen}
+        value={globalConstants}
+        onChange={setGlobalConstants}
+        title="Default calculation settings"
+        subtitle="Seeds new scenarios — existing ones keep their own values"
+      />
     </>
   )
 }

@@ -2,7 +2,7 @@
 // Kept separate from the chart components (which stay dumb) and from calc.ts
 // (which returns scalar figures), and unit-tested alongside the golden figures.
 
-import { buildAmortSchedule, stressAt, type AmortPoint, type Inputs, type LumpPayment } from '../../lib/calc'
+import { buildAmortSchedule, stressAt, DEFAULT_CONSTANTS, type AmortPoint, type Inputs, type LumpPayment, type Constants } from '../../lib/calc'
 
 export interface AmortSeries {
   years: number[]
@@ -73,13 +73,13 @@ export interface StressPoint {
 }
 
 /** Total monthly cost across the interest-rate range — the stress curve. */
-export function stressSeries(i: Inputs, lo = 0.5, hi = 12, step = 0.25): StressPoint[] {
+export function stressSeries(i: Inputs, c: Constants = DEFAULT_CONSTANTS, lo = 0.5, hi = 12, step = 0.25): StressPoint[] {
   const points: StressPoint[] = []
   // Avoid float drift on the loop bound by stepping an integer count.
   const count = Math.round((hi - lo) / step)
   for (let n = 0; n <= count; n++) {
     const rate = lo + n * step
-    const s = stressAt(i, rate)
+    const s = stressAt(i, rate, c)
     points.push({ rate, total: s.total, afterRelief: s.afterRelief })
   }
   return points

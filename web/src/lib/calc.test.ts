@@ -5,8 +5,10 @@ import {
   ranteavdrag,
   fastighetsavgiftCap,
   equityPct,
+  requiredAmortRate,
   derive,
   DEFAULT_INPUTS,
+  DEFAULT_CONSTANTS,
 } from './calc'
 
 // ── Ported from the vanilla calc.test.js ────────────────────────────
@@ -22,8 +24,32 @@ describe('pure functions', () => {
   it('ranteavdrag: above threshold (150 000)', () => expect(ranteavdrag(150_000)).toBe(40_500))
   it('equityPct: standard case', () => expect(equityPct(1_500_000, 2_000_000)).toBe(75))
   it('equityPct: zero price returns 0', () => expect(equityPct(0, 0)).toBe(0))
-  it('fastighetsavgiftCap: above cap (9 725)', () => expect(fastighetsavgiftCap(12_000)).toBe(9_725))
+  it('fastighetsavgiftCap: above cap (10 425, income year 2026)', () => expect(fastighetsavgiftCap(12_000)).toBe(10_425))
   it('fastighetsavgiftCap: below cap', () => expect(fastighetsavgiftCap(6_000)).toBe(6_000))
+})
+
+// ── requiredAmortRate (amorteringskrav) ─────────────────────────────
+describe('requiredAmortRate', () => {
+  it('above 70% LTV → 2%', () => expect(requiredAmortRate(85, 5_000_000, 0)).toBe(2))
+  it('50–70% LTV → 1%', () => expect(requiredAmortRate(60, 5_000_000, 0)).toBe(1))
+  it('below 50% LTV → 0%', () => expect(requiredAmortRate(40, 5_000_000, 0)).toBe(0))
+  it('+1% surcharge when loan exceeds 4.5× gross income', () =>
+    expect(requiredAmortRate(85, 5_000_000, 1_000_000)).toBe(3))
+  it('no surcharge when income is unknown (0)', () =>
+    expect(requiredAmortRate(85, 5_000_000, 0)).toBe(2))
+})
+
+// ── derive() honours custom constants ───────────────────────────────
+describe('derive with custom constants', () => {
+  it('lagfart + pantbrev scale with the rates', () => {
+    const f = derive(DEFAULT_INPUTS, { ...DEFAULT_CONSTANTS, lagfartPct: 2, pantbrevPct: 3 })
+    expect(Math.round(f.lagfart)).toBe(Math.round(DEFAULT_INPUTS.newPrice * 0.02))
+    expect(Math.round(f.pantbrevCost)).toBe(Math.round(Math.max(0, f.loanAmount - DEFAULT_INPUTS.existingPantbrev) * 0.03))
+  })
+  it('exposes the statutory required amort rate', () => {
+    // default LTV is 5.85M/6.5M = 90% (>70%) with no income → 2%
+    expect(derive(DEFAULT_INPUTS).requiredAmortRate).toBe(2)
+  })
 })
 
 // ── derive() — replaces the old summarize() tests ───────────────────
