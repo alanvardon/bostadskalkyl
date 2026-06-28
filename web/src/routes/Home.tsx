@@ -1,7 +1,12 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { Link, useViewTransitionState } from 'react-router-dom'
+import { Link, useNavigate, useViewTransitionState } from 'react-router-dom'
 import HeroCanvas from '../components/HeroCanvas'
 import { useTheme } from '../App'
+import { markVtDirection } from '../lib/viewTransition'
+import { useStore } from '../store/useStore'
+
+const prefersReducedMotion = () =>
+  typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
 
 const fineHover =
   typeof window !== 'undefined' &&
@@ -10,9 +15,50 @@ const fineHover =
 
 export default function Home() {
   const { theme, toggleTheme } = useTheme()
-  // True while navigating to/from the Bostadskalkyl page — drives the card→page
-  // morph (plan 6). Scoped to this one card as a proof-of-concept.
-  const bkTransitioning = useViewTransitionState('/bostadskalkyl')
+  const navigate = useNavigate()
+  // Wraps the whole hub so we can pan it as a "camera" before the zoom.
+  const panRef = useRef<HTMLDivElement>(null)
+  // When the hub re-mounts as the destination of the BACK whoosh, skip the
+  // `reveal` rise-in entrance: the View Transition freezes the cards at opacity 0
+  // (the reveal's `backwards` fill) and they'd pop in after the zoom. Captured
+  // once at mount; on a normal page load `data-vt-dir` is unset so reveals play.
+  const [viaBack] = useState(
+    () => typeof document !== 'undefined' && document.documentElement.dataset.vtDir === 'back',
+  )
+  // The card shares `bk-card` with the dashboard root while a transition to/from
+  // it is active, so the dashboard renders shrunk into the card's slot and
+  // whooshes out (plan 8). True both for the trip out and the trip back. Both
+  // hooks must run unconditionally (rules-of-hooks) — don't collapse to `||`.
+  const arriving = useViewTransitionState('/bostadskalkyl')
+  const returning = useViewTransitionState('/')
+  const bkActive = arriving || returning
+
+  // Two-beat open: PAN the clicked card to the centre of the screen, THEN start
+  // the View-Transition whoosh (which now grows from the centre, since the card
+  // is captured centred). The pan translates the whole hub like a camera move.
+  const startWhoosh = () => {
+    markVtDirection('forward')
+    navigate('/bostadskalkyl', { viewTransition: true })
+  }
+  const onBostadCardClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
+    // Let modified / non-primary clicks open normally (new tab, etc.).
+    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return
+    e.preventDefault()
+    const pan = panRef.current
+    if (prefersReducedMotion() || !pan) {
+      startWhoosh()
+      return
+    }
+    const r = e.currentTarget.getBoundingClientRect()
+    const dx = window.innerWidth / 2 - (r.left + r.width / 2)
+    const dy = window.innerHeight / 2 - (r.top + r.height / 2)
+    pan
+      .animate(
+        [{ transform: 'translate(0px, 0px)' }, { transform: `translate(${dx}px, ${dy}px) scale(1.04)` }],
+        { duration: 760, easing: 'cubic-bezier(0.4, 0, 0.2, 1)', fill: 'forwards' },
+      )
+      .finished.then(startWhoosh, startWhoosh)
+  }
   const [clock, setClock] = useState('')
   const [greeting, setGreeting] = useState('')
   const [dateLine, setDateLine] = useState('')
@@ -20,6 +66,13 @@ export default function Home() {
   // Allow body to scroll on the hub (overridden to hidden by the Bostadskalkyl route)
   useLayoutEffect(() => {
     document.documentElement.classList.remove('calc-layout')
+  }, [])
+
+  // Warm the scenarios store while on the hub so the dashboard is fully populated
+  // before the whoosh — a first-visit hydrate that lands mid-transition would
+  // otherwise snapshot an empty page and pop the rows in afterward. Idempotent.
+  useEffect(() => {
+    useStore.getState().hydrate()
   }, [])
 
   useEffect(() => {
@@ -67,26 +120,33 @@ export default function Home() {
 
   return (
     <>
+    {/* The header sits OUTSIDE .hub-pan: the camera pan transforms .hub-pan, and a
+        transform on a sticky element's ancestor changes its containing block,
+        dragging the pinned header into the scene (most visible when scrolled to
+        the bottom — the pan translates downward and freezes the bar mid-screen
+        via fill:forwards). Kept as a sibling, the header stays pinned chrome and
+        is simply covered by the growing dashboard at any scroll position. */}
+    <header className="site-header">
+      <a className="wordmark" href="#/">Hemma<span className="dot">.</span></a>
+      <div className="header-meta">
+        <span className="clock">{clock}</span>
+        <button
+          className="theme-toggle-btn"
+          title="Toggle dark mode"
+          aria-label="Toggle dark mode"
+          onClick={toggleTheme}
+        >
+          {theme === 'dark' ? '☾' : '☀'}
+        </button>
+      </div>
+    </header>
+
+    <div className={'hub-pan' + (viaBack ? ' no-reveal' : '')} ref={panRef}>
       <div className="orbs" aria-hidden="true">
         <div className="orb orb-a" />
         <div className="orb orb-b" />
         <div className="orb orb-c" />
       </div>
-
-      <header className="site-header">
-        <a className="wordmark" href="#/">Hemma<span className="dot">.</span></a>
-        <div className="header-meta">
-          <span className="clock">{clock}</span>
-          <button
-            className="theme-toggle-btn"
-            title="Toggle dark mode"
-            aria-label="Toggle dark mode"
-            onClick={toggleTheme}
-          >
-            {theme === 'dark' ? '☾' : '☀'}
-          </button>
-        </div>
-      </header>
 
       <HeroCanvas>
         <section className="hero">
@@ -108,9 +168,9 @@ export default function Home() {
         <div className="app-grid">
 
           <Link
-            className={'app-card reveal reveal-4' + (bkTransitioning ? ' bk-vt' : '')}
+            className={'app-card reveal reveal-4' + (bkActive ? ' bk-vt' : '')}
             to="/bostadskalkyl"
-            viewTransition
+            onClick={onBostadCardClick}
             onPointerMove={onCardMove}
             onPointerLeave={onCardLeave}
           >
@@ -280,6 +340,7 @@ export default function Home() {
         <span className="footer-badge"><span className="pulse" />Local-first · Supabase-ready</span>
         <span>Hemma · built by the Vardon family</span>
       </footer>
+    </div>
     </>
   )
 }

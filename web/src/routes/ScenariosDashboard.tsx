@@ -8,6 +8,7 @@ import { filterScenarios, sortScenarios, SORT_OPTIONS, type SortKey } from '../l
 import ScenarioCard from '../components/ScenarioCard'
 import UndoToast from '../components/UndoToast'
 import ConstantsModal from '../components/ConstantsModal'
+import { markVtDirection } from '../lib/viewTransition'
 
 // Per-card entrance (fade+rise), orchestrated by the grid's staggerChildren.
 // Reduced motion collapses it to a no-op so cards appear instantly.
@@ -88,21 +89,36 @@ export default function ScenariosDashboard() {
   const noMatches = scenarios.length > 0 && visible.length === 0
   const isEmpty = scenarios.length === 0 && !draftFigures
 
-  // True while navigating to/from this page — the hub card morphs into this root.
-  const bkTransitioning = useViewTransitionState('/bostadskalkyl')
+  // The dashboard root shares `bk-card` with the hub card during the transition,
+  // so on the way in it's the page that grows out of the card's slot, and on the
+  // way back it's the page that shrinks into it (plan 8 whoosh). Both hooks must
+  // run unconditionally (rules-of-hooks) — don't collapse to `||`.
+  const arriving = useViewTransitionState('/bostadskalkyl')
+  const returning = useViewTransitionState('/')
+  const bkActive = arriving || returning
 
-  const variants = cardVariants(reduce)
+  // When we arrive via the card→page whoosh, suppress the dashboard's own
+  // entrance (row stagger + Monthly count-up): the View Transition snapshots the
+  // page at mount, so any in-progress entrance gets frozen and then "pops in"
+  // after the zoom hands off. The whoosh itself is the entrance. Captured once at
+  // mount — `data-vt-dir` is set just before navigation (see lib/viewTransition).
+  const [viaWhoosh] = useState(
+    () => typeof document !== 'undefined' && document.documentElement.dataset.vtDir === 'forward',
+  )
+  const entranceInstant = reduce || viaWhoosh
+
+  const variants = cardVariants(entranceInstant)
   const container = {
     hidden: {},
-    show: { transition: { staggerChildren: reduce ? 0 : 0.03 } },
+    show: { transition: { staggerChildren: entranceInstant ? 0 : 0.03 } },
   }
 
   return (
     <>
-      <div className={'bk-page-root' + (bkTransitioning ? ' bk-vt' : '')}>
+      <div className={'bk-page-root' + (bkActive ? ' bk-vt' : '')}>
         <header className="page-header">
           <div className="header-brand">
-            <Link className="hub-link" to="/" viewTransition>‹ Hemma</Link>
+            <Link className="hub-link" to="/" viewTransition onClick={() => markVtDirection('back')}>‹ Hemma</Link>
             <div>
               <h1>Bostadskalkyl</h1>
               <p className="tagline">Your saved scenarios — open one to edit, or start a new calculation</p>
@@ -177,6 +193,7 @@ export default function ScenariosDashboard() {
                 inputs={draftInputs}
                 figures={draftFigures}
                 reduce={reduce}
+                countUp={!entranceInstant}
                 variants={variants}
                 onOpen={() => navigate('/bostadskalkyl/new')}
                 onContinue={() => navigate('/bostadskalkyl/new')}
@@ -199,6 +216,7 @@ export default function ScenariosDashboard() {
                     inputs={s.inputs}
                     figures={derive(s.inputs, s.constants ?? globalConstants)}
                     reduce={reduce}
+                    countUp={!entranceInstant}
                     variants={variants}
                     onOpen={() => navigate(`/bostadskalkyl/${s.id}`)}
                     onDuplicate={() => duplicateScenario(s.id)}

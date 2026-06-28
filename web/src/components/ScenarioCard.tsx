@@ -17,6 +17,9 @@ interface Props {
   inputs: Inputs
   figures: Figures
   reduce: boolean
+  /** Roll the Monthly figure up on mount. Off when arriving via the page whoosh
+   *  (the View Transition would freeze the count-up and pop it in afterward). */
+  countUp?: boolean
   variants?: Variants
   /** Draft variant: dashed treatment, Continue/Discard footer, no kebab/rename. */
   draft?: boolean
@@ -64,6 +67,7 @@ export default function ScenarioCard({
   inputs,
   figures,
   reduce,
+  countUp = true,
   variants,
   draft = false,
   onOpen,
@@ -75,12 +79,15 @@ export default function ScenarioCard({
 }: Props) {
   const open = draft ? onContinue ?? onOpen : onOpen
 
-  // Monthly count-up: start at 0 and roll to the real value once mounted. Under
-  // reduced motion render the final value straight away (NumberFlow won't roll).
-  const [monthlyVal, setMonthlyVal] = useState(reduce ? figures.totalMonthly : 0)
+  // Monthly count-up: start at 0 and roll to the real value once mounted. Skipped
+  // under reduced motion or when `countUp` is off (the page whoosh is the
+  // entrance) — render the final value straight away. The effect still tracks
+  // later value changes (live edits) so the figure rolls when the number changes.
+  const rollOnMount = countUp && !reduce
+  const [monthlyVal, setMonthlyVal] = useState(rollOnMount ? 0 : figures.totalMonthly)
   useEffect(() => {
-    if (!reduce) setMonthlyVal(figures.totalMonthly)
-  }, [reduce, figures.totalMonthly])
+    setMonthlyVal(figures.totalMonthly)
+  }, [figures.totalMonthly])
 
   // Inline rename, reusing the calculator header's .scenario-title-input pattern.
   const [editing, setEditing] = useState(false)
