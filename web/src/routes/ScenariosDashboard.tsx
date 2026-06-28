@@ -97,10 +97,20 @@ export default function ScenariosDashboard() {
   const returning = useViewTransitionState('/')
   const bkActive = arriving || returning
 
-  const variants = cardVariants(reduce)
+  // When we arrive via the card→page whoosh, suppress the dashboard's own
+  // entrance (row stagger + Monthly count-up): the View Transition snapshots the
+  // page at mount, so any in-progress entrance gets frozen and then "pops in"
+  // after the zoom hands off. The whoosh itself is the entrance. Captured once at
+  // mount — `data-vt-dir` is set just before navigation (see lib/viewTransition).
+  const [viaWhoosh] = useState(
+    () => typeof document !== 'undefined' && document.documentElement.dataset.vtDir === 'forward',
+  )
+  const entranceInstant = reduce || viaWhoosh
+
+  const variants = cardVariants(entranceInstant)
   const container = {
     hidden: {},
-    show: { transition: { staggerChildren: reduce ? 0 : 0.03 } },
+    show: { transition: { staggerChildren: entranceInstant ? 0 : 0.03 } },
   }
 
   return (
@@ -183,6 +193,7 @@ export default function ScenariosDashboard() {
                 inputs={draftInputs}
                 figures={draftFigures}
                 reduce={reduce}
+                countUp={!entranceInstant}
                 variants={variants}
                 onOpen={() => navigate('/bostadskalkyl/new')}
                 onContinue={() => navigate('/bostadskalkyl/new')}
@@ -205,6 +216,7 @@ export default function ScenariosDashboard() {
                     inputs={s.inputs}
                     figures={derive(s.inputs, s.constants ?? globalConstants)}
                     reduce={reduce}
+                    countUp={!entranceInstant}
                     variants={variants}
                     onOpen={() => navigate(`/bostadskalkyl/${s.id}`)}
                     onDuplicate={() => duplicateScenario(s.id)}

@@ -11,7 +11,7 @@
    navigate. Supersedes the #06 morph. */
 
 :root {
-  --vt-dur: 540ms;
+  --vt-dur: 740ms;
   /* Slow-in/fast-middle/settle — gives the zoom its "whoosh". */
   --vt-ease: cubic-bezier(0.5, 0, 0.2, 1);
 }
@@ -25,6 +25,13 @@
    tiny accompanying scale. No transform at rest, so layout is unchanged. */
 .hub-pan {
   transform-origin: 50% 50%;
+}
+
+/* Arriving via the BACK whoosh: kill the hub's rise-in entrance so the cards
+   don't pop in after the zoom (the VT snapshots them at the reveal's opacity-0
+   start). `animation: none` drops the `backwards` fill → they sit at opacity 1. */
+.hub-pan.no-reveal .reveal {
+  animation: none !important;
 }
 
 /* The shared group carries the box morph (card slot ⇄ full screen) both ways. */

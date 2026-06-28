@@ -17,6 +17,13 @@ export default function Home() {
   const navigate = useNavigate()
   // Wraps the whole hub so we can pan it as a "camera" before the zoom.
   const panRef = useRef<HTMLDivElement>(null)
+  // When the hub re-mounts as the destination of the BACK whoosh, skip the
+  // `reveal` rise-in entrance: the View Transition freezes the cards at opacity 0
+  // (the reveal's `backwards` fill) and they'd pop in after the zoom. Captured
+  // once at mount; on a normal page load `data-vt-dir` is unset so reveals play.
+  const [viaBack] = useState(
+    () => typeof document !== 'undefined' && document.documentElement.dataset.vtDir === 'back',
+  )
   // The card shares `bk-card` with the dashboard root while a transition to/from
   // it is active, so the dashboard renders shrunk into the card's slot and
   // whooshes out (plan 8). True both for the trip out and the trip back. Both
@@ -47,7 +54,7 @@ export default function Home() {
     pan
       .animate(
         [{ transform: 'translate(0px, 0px)' }, { transform: `translate(${dx}px, ${dy}px) scale(1.04)` }],
-        { duration: 360, easing: 'cubic-bezier(0.4, 0, 0.2, 1)', fill: 'forwards' },
+        { duration: 760, easing: 'cubic-bezier(0.4, 0, 0.2, 1)', fill: 'forwards' },
       )
       .finished.then(startWhoosh, startWhoosh)
   }
@@ -104,7 +111,7 @@ export default function Home() {
   }
 
   return (
-    <div className="hub-pan" ref={panRef}>
+    <div className={'hub-pan' + (viaBack ? ' no-reveal' : '')} ref={panRef}>
       <div className="orbs" aria-hidden="true">
         <div className="orb orb-a" />
         <div className="orb orb-b" />
