@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useTheme } from '../App'
+import { markVtTransition } from '../lib/viewTransition'
+import { useToolPageActive } from '../lib/toolTransition'
 import {
   defaultSettings, otherPerson, parseCsv, parseAmount, autoMapColumns, inferSpendSign,
   computeOwedAmount, classifyToItemFields, makeItem, flagDuplicates, netBalance, buildSettlement,
@@ -266,6 +268,7 @@ function SettingsDialog({ open, settings, onSave, onClose, onExport, onImport }:
 
 export default function Manadsavslut() {
   const { theme, toggleTheme } = useTheme()
+  const active = useToolPageActive('/manadsavslut')
   useLayoutEffect(() => { document.documentElement.classList.remove('calc-layout') }, [])
 
   const [items, setItems] = useState<Item[]>([])
@@ -454,10 +457,10 @@ export default function Manadsavslut() {
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
-    <div className="ma-root">
+    <div className={'ma-root' + (active ? ' vt-page' : '')}>
       <header className="page-header">
         <div className="header-brand">
-          <Link className="hub-link" to="/">‹ Hemma</Link>
+          <Link className="hub-link" to="/" viewTransition onClick={() => markVtTransition('/manadsavslut', 'back')}>‹ Hemma</Link>
           <div>
             <h1>Månadsavslut</h1>
             <p className="tagline">Reconcile shared spending and settle up — the month-end close</p>

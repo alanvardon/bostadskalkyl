@@ -2,6 +2,8 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Money, Percent } from '../components/AnimatedNumber'
 import { useTheme } from '../App'
+import { markVtTransition } from '../lib/viewTransition'
+import { useToolPageActive } from '../lib/toolTransition'
 import {
   type LonevaxlingInputs,
   type LonevaxlingResult,
@@ -91,6 +93,7 @@ function buildWarnings(r: LonevaxlingResult): Array<{ cls: string; text: string 
 
 export default function Lonevaxling() {
   const { theme, toggleTheme } = useTheme()
+  const active = useToolPageActive('/lonevaxling')
   const [inputs, setInputs] = useState<LonevaxlingInputs>(loadInputs)
   const [saveVisible, setSaveVisible] = useState(false)
   const [resetKey, setResetKey] = useState(0)
@@ -185,10 +188,10 @@ export default function Lonevaxling() {
   const spreadFormatted = (spread >= 0 ? '+' : '−') + spreadStr + ' pp'
 
   return (
-    <>
+    <div className={'lv-root' + (active ? ' vt-page' : '')}>
       <div className="page-header">
         <div className="header-brand">
-          <Link className="hub-link" to="/">‹ Hemma</Link>
+          <Link className="hub-link" to="/" viewTransition onClick={() => markVtTransition('/lonevaxling', 'back')}>‹ Hemma</Link>
           <div>
             <h1>Löneväxling</h1>
             <p className="tagline">Is it worth swapping salary for pension — and how much? Sweden, 2026</p>
@@ -407,6 +410,6 @@ export default function Lonevaxling() {
           </div>
         </div>
       </div>
-    </>
+    </div>
   )
 }
