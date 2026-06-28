@@ -119,27 +119,34 @@ export default function Home() {
   }
 
   return (
+    <>
+    {/* The header sits OUTSIDE .hub-pan: the camera pan transforms .hub-pan, and a
+        transform on a sticky element's ancestor changes its containing block,
+        dragging the pinned header into the scene (most visible when scrolled to
+        the bottom — the pan translates downward and freezes the bar mid-screen
+        via fill:forwards). Kept as a sibling, the header stays pinned chrome and
+        is simply covered by the growing dashboard at any scroll position. */}
+    <header className="site-header">
+      <a className="wordmark" href="#/">Hemma<span className="dot">.</span></a>
+      <div className="header-meta">
+        <span className="clock">{clock}</span>
+        <button
+          className="theme-toggle-btn"
+          title="Toggle dark mode"
+          aria-label="Toggle dark mode"
+          onClick={toggleTheme}
+        >
+          {theme === 'dark' ? '☾' : '☀'}
+        </button>
+      </div>
+    </header>
+
     <div className={'hub-pan' + (viaBack ? ' no-reveal' : '')} ref={panRef}>
       <div className="orbs" aria-hidden="true">
         <div className="orb orb-a" />
         <div className="orb orb-b" />
         <div className="orb orb-c" />
       </div>
-
-      <header className="site-header">
-        <a className="wordmark" href="#/">Hemma<span className="dot">.</span></a>
-        <div className="header-meta">
-          <span className="clock">{clock}</span>
-          <button
-            className="theme-toggle-btn"
-            title="Toggle dark mode"
-            aria-label="Toggle dark mode"
-            onClick={toggleTheme}
-          >
-            {theme === 'dark' ? '☾' : '☀'}
-          </button>
-        </div>
-      </header>
 
       <HeroCanvas>
         <section className="hero">
@@ -334,5 +341,6 @@ export default function Home() {
         <span>Hemma · built by the Vardon family</span>
       </footer>
     </div>
+    </>
   )
 }
