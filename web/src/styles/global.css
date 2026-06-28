@@ -37,6 +37,23 @@ html.calc-layout #root {
   min-height: 0;
 }
 
+/* Restore the flex/height chain for transition-wrapper divs in Konsultkalkyl
+   and Löneväxling — these wrappers carry .vt-page and must propagate the
+   flex-column-fill that a bare <> fragment gives Bostadskalkyl for free. */
+.kk-root, .lv-root {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+/* On small screens the columns switch to overflow-y:visible and expect the
+   page to scroll — release the viewport lock so content is reachable. */
+@media (max-width: 900px) {
+  html.calc-layout, html.calc-layout body { height: auto; overflow: visible; }
+  html.calc-layout #root { height: auto; min-height: 100svh; }
+}
+
 ::selection { background: var(--accent); color: var(--on-accent); }
 
 :focus-visible { outline: 2px solid var(--accent-light); outline-offset: 2px; }
