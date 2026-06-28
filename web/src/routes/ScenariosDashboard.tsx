@@ -89,11 +89,13 @@ export default function ScenariosDashboard() {
   const noMatches = scenarios.length > 0 && visible.length === 0
   const isEmpty = scenarios.length === 0 && !draftFigures
 
-  // The dashboard claims `bk-card` ONLY while leaving to the hub — that makes the
-  // back trip a shared collapse morph (the page shrinks into the card's slot). On
-  // the way IN it stays unnamed so the hub card dives past it as the foreground
-  // and the dashboard rides in as the background layer (plan 8 dolly).
-  const leaving = useViewTransitionState('/')
+  // The dashboard root shares `bk-card` with the hub card during the transition,
+  // so on the way in it's the page that grows out of the card's slot, and on the
+  // way back it's the page that shrinks into it (plan 8 whoosh). Both hooks must
+  // run unconditionally (rules-of-hooks) — don't collapse to `||`.
+  const arriving = useViewTransitionState('/bostadskalkyl')
+  const returning = useViewTransitionState('/')
+  const bkActive = arriving || returning
 
   const variants = cardVariants(reduce)
   const container = {
@@ -103,7 +105,7 @@ export default function ScenariosDashboard() {
 
   return (
     <>
-      <div className={'bk-page-root' + (leaving ? ' bk-vt' : '')}>
+      <div className={'bk-page-root' + (bkActive ? ' bk-vt' : '')}>
         <header className="page-header">
           <div className="header-brand">
             <Link className="hub-link" to="/" viewTransition onClick={() => markVtDirection('back')}>‹ Hemma</Link>

@@ -11,14 +11,13 @@ const fineHover =
 
 export default function Home() {
   const { theme, toggleTheme } = useTheme()
-  // The Bostadskalkyl card claims `bk-card` while a transition to/from its page
-  // is active (plan 8 dolly). Forward → it's the diving element; back → it's the
-  // collapse target the dashboard shrinks into. Reactive so the name clears once
-  // the transition ends (no stuck view-transition-name). `arriving` covers the
-  // dive in; `returning` covers the re-form on the way back to the hub.
+  // The card shares `bk-card` with the dashboard root while a transition to/from
+  // it is active, so the dashboard renders shrunk into the card's slot and
+  // whooshes out (plan 8). True both for the trip out and the trip back. Both
+  // hooks must run unconditionally (rules-of-hooks) — don't collapse to `||`.
   const arriving = useViewTransitionState('/bostadskalkyl')
   const returning = useViewTransitionState('/')
-  const bkTransitioning = arriving || returning
+  const bkActive = arriving || returning
   const [clock, setClock] = useState('')
   const [greeting, setGreeting] = useState('')
   const [dateLine, setDateLine] = useState('')
@@ -114,7 +113,7 @@ export default function Home() {
         <div className="app-grid">
 
           <Link
-            className={'app-card reveal reveal-4' + (bkTransitioning ? ' bk-vt' : '')}
+            className={'app-card reveal reveal-4' + (bkActive ? ' bk-vt' : '')}
             to="/bostadskalkyl"
             viewTransition
             onClick={() => markVtDirection('forward')}

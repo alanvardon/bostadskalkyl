@@ -223,3 +223,35 @@ dashboard on the forward path, direction detection (`data-vt-dir` +
   so either order works. If both are queued, doing #07 first just means the dive
   lands on the final design — nice but not required.
 - Own branch `ui/bostadskalkyl-dolly-zoom`, base `main`, single PR.
+
+## Revisions during build (PR #176)
+
+The "dive into the exit-only card" (rev 1) and the root "scene zoom" (rev 2)
+both got feedback that the zoom felt wrong / faded. The **shipped effect is
+rev 3 — "whoosh into the card", a no-fade shared-element zoom**:
+
+- The hub card AND the dashboard root share `bk-card` during the transition
+  (back to the #06 shared-element model, gated by `useViewTransitionState`).
+  Forward, the browser renders the **whole dashboard shrunk into the card's
+  slot — a genuine miniature of the page** — then the shared group grows that
+  box to fill the screen. **Opacity is held solid the entire time** (custom
+  keyframes override the UA cross-fade), so it reads as a pure zoom with **no
+  fade**: the card visibly *becomes* a tiny dashboard and whooshes up to full
+  size. Verified via Playwright frame grabs (miniature-in-slot at ~45ms →
+  near-fullscreen at ~225ms).
+- Back reverses it: the dashboard shrinks solid back into the card's slot while
+  the hub sits behind it (no fade-in), and the card content snaps back only in
+  the last ~18% (`vt-late-in`).
+- `data-vt-dir` (set on click) scopes the per-direction opacity timing only —
+  the box morph itself is the automatic shared-group animation. `--vt-dur`
+  (540ms) + `--vt-ease` are the tuning dials. No origin math needed (the card's
+  slot IS the zoom origin, for free).
+- **Known nuance:** there is no separate "pan-to-centre then zoom" phase — the
+  shared-group morph pans + scales together (slot → fullscreen). A staged
+  pan-first would need a JS/Motion-driven animation instead of pure VT. Also the
+  card↔page aspect-ratio mismatch means the miniature is briefly letterboxed/
+  squished at t=0 (inherent to VT shared elements of different shapes).
+- Files unchanged in count: `transitions.css` (rewritten), `viewTransition.ts`
+  (direction tag only), `Home.tsx` + `ScenariosDashboard.tsx` (both name
+  `bk-card` via `arriving || returning`, called as TWO unconditional hooks —
+  collapsing to `||` trips rules-of-hooks).
