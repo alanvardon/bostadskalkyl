@@ -12,7 +12,7 @@ import Hushallsbudget from './routes/Hushallsbudget'
 function Layout() {
   return (
     <>
-      <ScrollRestoration />
+      <ScrollRestoration getKey={(location) => location.pathname} />
       <Outlet />
     </>
   )
