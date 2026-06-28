@@ -3,6 +3,7 @@ import { Link, useNavigate, useViewTransitionState } from 'react-router-dom'
 import HeroCanvas from '../components/HeroCanvas'
 import { useTheme } from '../App'
 import { markVtDirection } from '../lib/viewTransition'
+import { useStore } from '../store/useStore'
 
 const prefersReducedMotion = () =>
   typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
@@ -65,6 +66,13 @@ export default function Home() {
   // Allow body to scroll on the hub (overridden to hidden by the Bostadskalkyl route)
   useLayoutEffect(() => {
     document.documentElement.classList.remove('calc-layout')
+  }, [])
+
+  // Warm the scenarios store while on the hub so the dashboard is fully populated
+  // before the whoosh — a first-visit hydrate that lands mid-transition would
+  // otherwise snapshot an empty page and pop the rows in afterward. Idempotent.
+  useEffect(() => {
+    useStore.getState().hydrate()
   }, [])
 
   useEffect(() => {

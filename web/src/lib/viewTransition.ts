@@ -10,9 +10,18 @@ let clearTimer: ReturnType<typeof setTimeout> | undefined
 /** Call synchronously in the click handler, before navigation begins. */
 export function markVtDirection(dir: 'forward' | 'back'): void {
   if (typeof document === 'undefined') return
-  document.documentElement.dataset.vtDir = dir
+  const el = document.documentElement
+  el.dataset.vtDir = dir
+  // Clear comfortably AFTER the View Transition finishes. React Router owns the
+  // transition and doesn't hand us its `.finished` promise, so we time it off the
+  // CSS `--vt-dur` (+ a generous buffer for VT setup / first-render latency).
+  // Clearing too early unscopes the per-direction keyframes mid-zoom → the old
+  // content reverts to the UA cross-fade and "pops"/flashes. Erring long is
+  // harmless: the next navigation overwrites the value anyway. The hardcoded 820
+  // ms used to tie with the (now slower) --vt-dur, which caused exactly that race.
+  const durMs = parseFloat(getComputedStyle(el).getPropertyValue('--vt-dur')) || 540
   clearTimeout(clearTimer)
   clearTimer = setTimeout(() => {
-    delete document.documentElement.dataset.vtDir
-  }, 820)
+    delete el.dataset.vtDir
+  }, durMs + 700)
 }
