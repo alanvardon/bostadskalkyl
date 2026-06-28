@@ -1,14 +1,13 @@
-/* View Transitions (plan 8, rev 3) — "whoosh into the card". The Bostadskalkyl
-   card and the scenarios dashboard share the `bk-card` view-transition-name, so
-   at the start of the forward trip the browser renders the WHOLE dashboard shrunk
-   into the card's slot — a real miniature of the page — then the shared group
-   grows that box to fill the screen. We hold opacity solid the entire time
-   (overriding the UA cross-fade) so it reads as a pure zoom, NO fade: the card
-   becomes a tiny dashboard and whooshes up to full size. Back reverses it — the
-   dashboard shrinks back down into the card's slot. `data-vt-dir` (set on click,
-   lib/viewTransition.ts) scopes the per-direction opacity timing. React Router
-   wraps the nav in document.startViewTransition; browsers without it just
-   navigate. Supersedes the #06 morph. */
+/* View Transitions — "whoosh into the card". A hub card and the destination tool
+   page share the `tool-card` view-transition-name, so at the start of the forward
+   trip the browser renders the WHOLE tool page shrunk into the card's slot — a
+   real miniature of the page — then the shared group grows that box to fill the
+   screen. We hold opacity solid the entire time (overriding the UA cross-fade) so
+   it reads as a pure zoom, NO fade: the card becomes a tiny page and whooshes up
+   to full size. Back reverses it — the page shrinks back down into the card's
+   slot. `data-vt-dir` (set on click, lib/viewTransition.ts) scopes the
+   per-direction opacity timing. React Router wraps the nav in
+   document.startViewTransition; browsers without it just navigate. */
 
 :root {
   --vt-dur: 740ms;
@@ -16,25 +15,20 @@
   --vt-ease: cubic-bezier(0.5, 0, 0.2, 1);
 }
 
-.bk-vt {
-  view-transition-name: bk-card;
+/* Hub card: claims the view-transition-name while a whoosh to/from it is live. */
+.vt-card {
+  view-transition-name: tool-card;
 }
 
-/* The dashboard root is normally transparent — the body paints --paper behind
-   it. But a View Transition snapshot captures only the named element, NOT the
-   page background sitting behind it, so the shrinking/growing dashboard would be
-   see-through and the hub would show through its gaps (most visible zooming
-   OUT). Give the shared element an opaque background for the capture window. The
-   .bk-vt class is only present during the transition, and scoping to
-   .bk-page-root leaves the hub card (.app-card, already opaque) untouched and
-   the dashboard's resting look (with the body's accent glow) unchanged. */
-.bk-page-root.bk-vt {
+/* Tool page root: claims the name AND ensures the snapshot is opaque and
+   full-height. The VT captures only the named element (not the body background
+   behind it), so without a solid background the snapshot would be see-through.
+   min-height forces a full-page miniature even when the content is short. Both
+   properties are only active during the transition (the class is added via
+   useToolPageActive) so the page's normal look is unchanged. */
+.vt-page {
+  view-transition-name: tool-card;
   background: var(--paper);
-  /* The snapshot is only as tall as the dashboard's content — short when there
-     are few/no scenarios — so the zoom would shrink/grow a stubby band instead
-     of a full page. Force full viewport height for the capture so the miniature
-     reads as a real page. The body's base colour is also --paper, so when the VT
-     hands off to the (shorter) live page the extended area matches seamlessly. */
   min-height: 100svh;
 }
 
@@ -53,7 +47,7 @@
 }
 
 /* The shared group carries the box morph (card slot ⇄ full screen) both ways. */
-::view-transition-group(bk-card) {
+::view-transition-group(tool-card) {
   animation-duration: var(--vt-dur);
   animation-timing-function: var(--vt-ease);
 }
@@ -64,7 +58,7 @@
    (stage 2). The 0.18 here matches vt-shrink-round's round-by-18%, so the shrink
    begins exactly as the corners finish rounding. Forward keeps its single-stage
    grow. */
-html[data-vt-dir='back']::view-transition-group(bk-card) {
+html[data-vt-dir='back']::view-transition-group(tool-card) {
   animation-delay: calc(var(--vt-dur) * 0.18);
   animation-duration: calc(var(--vt-dur) * 0.82);
   animation-fill-mode: both;
@@ -74,10 +68,10 @@ html[data-vt-dir='back']::view-transition-group(bk-card) {
       from the card's slot, but the hub no longer holds still: it scales up from
       the (centred) card and fades, so the whole scene rushes forward into the
       card and we dive through it into the dashboard growing to meet us. ─────── */
-html[data-vt-dir='forward']::view-transition-old(bk-card) {
+html[data-vt-dir='forward']::view-transition-old(tool-card) {
   animation: vt-hidden var(--vt-dur) linear both; /* the card content — drop it instantly, no cross-fade */
 }
-html[data-vt-dir='forward']::view-transition-new(bk-card) {
+html[data-vt-dir='forward']::view-transition-new(tool-card) {
   /* Solid the whole zoom, and ease the corners from the tool card's 18px radius
      down to square as the miniature grows — so the corners match the card at the
      start instead of popping sharp instantly. */
@@ -93,7 +87,7 @@ html[data-vt-dir='forward']::view-transition-old(root) {
 }
 
 /* ── BACK: dashboard shrinks back INTO the card's slot, solid ─────────────── */
-html[data-vt-dir='back']::view-transition-old(bk-card) {
+html[data-vt-dir='back']::view-transition-old(tool-card) {
   /* Opposite of the forward corners: the shrinking page stays SQUARE as long as
      possible and only rounds to the card's 18px at the very end, as it docks
      into the slot — so rounding is the last thing to happen, mirroring the
@@ -101,7 +95,7 @@ html[data-vt-dir='back']::view-transition-old(bk-card) {
   animation: vt-shrink-round var(--vt-dur) var(--vt-ease) both;
   will-change: transform, clip-path;
 }
-html[data-vt-dir='back']::view-transition-new(bk-card) {
+html[data-vt-dir='back']::view-transition-new(tool-card) {
   animation: vt-late-in var(--vt-dur) var(--vt-ease) both; /* the card snaps back only once shrunk */
 }
 html[data-vt-dir='back']::view-transition-new(root) {
