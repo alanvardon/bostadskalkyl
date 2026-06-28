@@ -20,6 +20,13 @@
   view-transition-name: bk-card;
 }
 
+/* Pan wrapper around the whole hub — the "camera". A WAAPI transform pans the
+   clicked card to screen centre before the zoom; transform-origin centres the
+   tiny accompanying scale. No transform at rest, so layout is unchanged. */
+.hub-pan {
+  transform-origin: 50% 50%;
+}
+
 /* The shared group carries the box morph (card slot ⇄ full screen) both ways. */
 ::view-transition-group(bk-card) {
   animation-duration: var(--vt-dur);

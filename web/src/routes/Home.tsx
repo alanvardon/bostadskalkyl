@@ -1,8 +1,11 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { Link, useViewTransitionState } from 'react-router-dom'
+import { Link, useNavigate, useViewTransitionState } from 'react-router-dom'
 import HeroCanvas from '../components/HeroCanvas'
 import { useTheme } from '../App'
 import { markVtDirection } from '../lib/viewTransition'
+
+const prefersReducedMotion = () =>
+  typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
 
 const fineHover =
   typeof window !== 'undefined' &&
@@ -11,6 +14,9 @@ const fineHover =
 
 export default function Home() {
   const { theme, toggleTheme } = useTheme()
+  const navigate = useNavigate()
+  // Wraps the whole hub so we can pan it as a "camera" before the zoom.
+  const panRef = useRef<HTMLDivElement>(null)
   // The card shares `bk-card` with the dashboard root while a transition to/from
   // it is active, so the dashboard renders shrunk into the card's slot and
   // whooshes out (plan 8). True both for the trip out and the trip back. Both
@@ -18,6 +24,33 @@ export default function Home() {
   const arriving = useViewTransitionState('/bostadskalkyl')
   const returning = useViewTransitionState('/')
   const bkActive = arriving || returning
+
+  // Two-beat open: PAN the clicked card to the centre of the screen, THEN start
+  // the View-Transition whoosh (which now grows from the centre, since the card
+  // is captured centred). The pan translates the whole hub like a camera move.
+  const startWhoosh = () => {
+    markVtDirection('forward')
+    navigate('/bostadskalkyl', { viewTransition: true })
+  }
+  const onBostadCardClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
+    // Let modified / non-primary clicks open normally (new tab, etc.).
+    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return
+    e.preventDefault()
+    const pan = panRef.current
+    if (prefersReducedMotion() || !pan) {
+      startWhoosh()
+      return
+    }
+    const r = e.currentTarget.getBoundingClientRect()
+    const dx = window.innerWidth / 2 - (r.left + r.width / 2)
+    const dy = window.innerHeight / 2 - (r.top + r.height / 2)
+    pan
+      .animate(
+        [{ transform: 'translate(0px, 0px)' }, { transform: `translate(${dx}px, ${dy}px) scale(1.04)` }],
+        { duration: 360, easing: 'cubic-bezier(0.4, 0, 0.2, 1)', fill: 'forwards' },
+      )
+      .finished.then(startWhoosh, startWhoosh)
+  }
   const [clock, setClock] = useState('')
   const [greeting, setGreeting] = useState('')
   const [dateLine, setDateLine] = useState('')
@@ -71,7 +104,7 @@ export default function Home() {
   }
 
   return (
-    <>
+    <div className="hub-pan" ref={panRef}>
       <div className="orbs" aria-hidden="true">
         <div className="orb orb-a" />
         <div className="orb orb-b" />
@@ -115,8 +148,7 @@ export default function Home() {
           <Link
             className={'app-card reveal reveal-4' + (bkActive ? ' bk-vt' : '')}
             to="/bostadskalkyl"
-            viewTransition
-            onClick={() => markVtDirection('forward')}
+            onClick={onBostadCardClick}
             onPointerMove={onCardMove}
             onPointerLeave={onCardLeave}
           >
@@ -286,6 +318,6 @@ export default function Home() {
         <span className="footer-badge"><span className="pulse" />Local-first · Supabase-ready</span>
         <span>Hemma · built by the Vardon family</span>
       </footer>
-    </>
+    </div>
   )
 }

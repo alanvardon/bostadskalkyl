@@ -246,11 +246,25 @@ rev 3 — "whoosh into the card", a no-fade shared-element zoom**:
   the box morph itself is the automatic shared-group animation. `--vt-dur`
   (540ms) + `--vt-ease` are the tuning dials. No origin math needed (the card's
   slot IS the zoom origin, for free).
-- **Known nuance:** there is no separate "pan-to-centre then zoom" phase — the
-  shared-group morph pans + scales together (slot → fullscreen). A staged
-  pan-first would need a JS/Motion-driven animation instead of pure VT. Also the
-  card↔page aspect-ratio mismatch means the miniature is briefly letterboxed/
-  squished at t=0 (inherent to VT shared elements of different shapes).
+- ~~**Known nuance:** there is no separate "pan-to-centre then zoom" phase~~ →
+  **ADDED in rev 4 (the user asked for it explicitly).** Two-beat open: a JS
+  **camera pan** runs BEFORE the VT. On card click we `preventDefault`, wrap the
+  whole hub in a `.hub-pan` div, and WAAPI-`animate()` it
+  `translate(0,0) → translate(centre − cardCentre)(+scale 1.04)` over 360ms; on
+  `.finished` we `markVtDirection('forward')` + `navigate('/bostadskalkyl',
+  { viewTransition:true })`. Because the card is captured at screen centre, the
+  existing VT whoosh now grows from the **centre**. Key timing fact: set
+  `markVtDirection` *after* the pan (right before navigate) so the 820ms
+  self-clear covers the whoosh, not the pan. `fill:'forwards'` holds the card
+  centred through capture; Home unmounts on nav so the pan transform never leaks
+  to the dashboard (no manual cleanup). Reduced-motion / modified-clicks skip
+  the pan and navigate straight. The back trip still shrinks into the card's real
+  grid slot (no reverse pan — could add later). Verified via frame grabs: card
+  glides lower-left→centre (~360ms) then the mini-dashboard whooshes to
+  fullscreen.
+- **Remaining nuance:** the card↔page aspect-ratio mismatch means the miniature
+  is briefly letterboxed/squished at t=0 (inherent to VT shared elements of
+  different shapes).
 - Files unchanged in count: `transitions.css` (rewritten), `viewTransition.ts`
   (direction tag only), `Home.tsx` + `ScenariosDashboard.tsx` (both name
   `bk-card` via `arriving || returning`, called as TWO unconditional hooks —
