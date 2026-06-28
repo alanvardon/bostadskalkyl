@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useTheme } from '../App'
+import { markVtTransition } from '../lib/viewTransition'
+import { useToolPageActive } from '../lib/toolTransition'
 import {
   defaultState, computeBudget, buildSubmission, formatWithSpaces, parseFormatted,
 } from '../lib/hushallsbudget'
@@ -545,6 +547,7 @@ function ChartOverlay({ open, onClose, segments, totalIncome }: {
 // ── Main component ───────────────────────────────────────────────────────────
 export default function Hushallsbudget() {
   const { theme, toggleTheme } = useTheme()
+  const active = useToolPageActive('/hushallsbudget')
   useLayoutEffect(() => { document.documentElement.classList.remove('calc-layout') }, [])
 
   const [state, setState] = useState<BudgetState>(() => loadBudget() || defaultState())
@@ -697,10 +700,10 @@ export default function Hushallsbudget() {
   const donutSegments = buildDonutSegments(r, nameA, nameB)
 
   return (
-    <div className="hb-root">
+    <div className={'hb-root' + (active ? ' vt-page' : '')}>
       <header className="page-header">
         <div className="header-brand">
-          <Link className="hub-link" to="/">‹ Hemma</Link>
+          <Link className="hub-link" to="/" viewTransition onClick={() => markVtTransition('/hushallsbudget', 'back')}>‹ Hemma</Link>
           <div>
             <h1>Hushållsbudget</h1>
             <p className="tagline">One pot, split evenly — joint &amp; individual costs for two</p>

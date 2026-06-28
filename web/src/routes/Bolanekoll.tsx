@@ -3,6 +3,8 @@ import { Link } from 'react-router-dom'
 import { Money, Percent } from '../components/AnimatedNumber'
 import EquityStackChart, { type EquityPoint } from '../components/charts/EquityStackChart'
 import { useTheme } from '../App'
+import { markVtTransition } from '../lib/viewTransition'
+import { useToolPageActive } from '../lib/toolTransition'
 import {
   defaultSettings, parseCsv, parseAmount, autoMapColumns, classifyKind,
   makeLoanPart, makeRatePeriod, makePayment, flagDuplicates, assignPaymentsToPart,
@@ -419,6 +421,7 @@ function P(value: number) { return <Percent value={value} decimals={2} space loc
 
 export default function Bolanekoll() {
   const { theme, toggleTheme } = useTheme()
+  const active = useToolPageActive('/bolanekoll')
   useLayoutEffect(() => { document.documentElement.classList.remove('calc-layout') }, [])
 
   const [parts, setParts] = useState<LoanPart[]>([])
@@ -686,10 +689,10 @@ export default function Bolanekoll() {
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
-    <div className="bk-root">
+    <div className={'bk-root' + (active ? ' vt-page' : '')}>
       <header className="page-header">
         <div className="header-brand">
-          <Link className="hub-link" to="/">‹ Hemma</Link>
+          <Link className="hub-link" to="/" viewTransition onClick={() => markVtTransition('/bolanekoll', 'back')}>‹ Hemma</Link>
           <div>
             <h1>{settings.property_name || 'Bolånekoll'}</h1>
             <p className="tagline">Track your mortgage — how much of the home you own vs the bank</p>

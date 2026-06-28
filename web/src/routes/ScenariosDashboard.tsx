@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { Link, useNavigate, useViewTransitionState } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { AnimatePresence, motion, useReducedMotion, type Variants } from 'motion/react'
 import { useStore, type DeletedInfo } from '../store/useStore'
 import { useTheme } from '../App'
@@ -8,7 +8,8 @@ import { filterScenarios, sortScenarios, SORT_OPTIONS, type SortKey } from '../l
 import ScenarioCard from '../components/ScenarioCard'
 import UndoToast from '../components/UndoToast'
 import ConstantsModal from '../components/ConstantsModal'
-import { markVtDirection } from '../lib/viewTransition'
+import { markVtTransition } from '../lib/viewTransition'
+import { useToolPageActive } from '../lib/toolTransition'
 
 // Per-card entrance (fade+rise), orchestrated by the grid's staggerChildren.
 // Reduced motion collapses it to a no-op so cards appear instantly.
@@ -89,13 +90,7 @@ export default function ScenariosDashboard() {
   const noMatches = scenarios.length > 0 && visible.length === 0
   const isEmpty = scenarios.length === 0 && !draftFigures
 
-  // The dashboard root shares `bk-card` with the hub card during the transition,
-  // so on the way in it's the page that grows out of the card's slot, and on the
-  // way back it's the page that shrinks into it (plan 8 whoosh). Both hooks must
-  // run unconditionally (rules-of-hooks) — don't collapse to `||`.
-  const arriving = useViewTransitionState('/bostadskalkyl')
-  const returning = useViewTransitionState('/')
-  const bkActive = arriving || returning
+  const bkActive = useToolPageActive('/bostadskalkyl')
 
   // When we arrive via the card→page whoosh, suppress the dashboard's own
   // entrance (row stagger + Monthly count-up): the View Transition snapshots the
@@ -115,10 +110,10 @@ export default function ScenariosDashboard() {
 
   return (
     <>
-      <div className={'bk-page-root' + (bkActive ? ' bk-vt' : '')}>
+      <div className={'bk-page-root' + (bkActive ? ' vt-page' : '')}>
         <header className="page-header">
           <div className="header-brand">
-            <Link className="hub-link" to="/" viewTransition onClick={() => markVtDirection('back')}>‹ Hemma</Link>
+            <Link className="hub-link" to="/" viewTransition onClick={() => markVtTransition('/bostadskalkyl', 'back')}>‹ Hemma</Link>
             <div>
               <h1>Bostadskalkyl</h1>
               <p className="tagline">Your saved scenarios — open one to edit, or start a new calculation</p>

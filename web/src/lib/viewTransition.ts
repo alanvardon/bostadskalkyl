@@ -12,6 +12,7 @@ function clearVtTag(): void {
   if (typeof document === 'undefined') return
   clearTimeout(clearTimer)
   delete document.documentElement.dataset.vtDir
+  delete document.documentElement.dataset.vtTool
 }
 
 // Patch startViewTransition once so the direction tag is cleared the moment the
@@ -38,9 +39,10 @@ function ensurePatched(): boolean {
 }
 
 /** Call synchronously in the click handler, before navigation begins. */
-export function markVtDirection(dir: 'forward' | 'back'): void {
+export function markVtTransition(toolPath: string, dir: 'forward' | 'back'): void {
   if (typeof document === 'undefined') return
   document.documentElement.dataset.vtDir = dir
+  document.documentElement.dataset.vtTool = toolPath
   ensurePatched()
   // Fallback for browsers without View Transitions / reduced-motion paths where
   // no VT (and thus no `.finished`) ever runs. Animations are already disabled in
@@ -48,4 +50,14 @@ export function markVtDirection(dir: 'forward' | 'back'): void {
   // races a real transition that the patch will clear first anyway.
   clearTimeout(clearTimer)
   clearTimer = setTimeout(clearVtTag, 2500)
+}
+
+/** Which tool path is currently whooshing, or null if none. */
+export function activeVtTool(): string | null {
+  return typeof document === 'undefined' ? null : (document.documentElement.dataset.vtTool ?? null)
+}
+
+/** @deprecated Use markVtTransition instead. */
+export function markVtDirection(dir: 'forward' | 'back'): void {
+  markVtTransition('', dir)
 }

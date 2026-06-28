@@ -1,8 +1,9 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { Link, useNavigate, useViewTransitionState } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import HeroCanvas from '../components/HeroCanvas'
 import { useTheme } from '../App'
-import { markVtDirection } from '../lib/viewTransition'
+import { markVtTransition } from '../lib/viewTransition'
+import { useToolCardActive } from '../lib/toolTransition'
 import { useStore } from '../store/useStore'
 
 const prefersReducedMotion = () =>
@@ -25,28 +26,30 @@ export default function Home() {
   const [viaBack] = useState(
     () => typeof document !== 'undefined' && document.documentElement.dataset.vtDir === 'back',
   )
-  // The card shares `bk-card` with the dashboard root while a transition to/from
-  // it is active, so the dashboard renders shrunk into the card's slot and
-  // whooshes out (plan 8). True both for the trip out and the trip back. Both
-  // hooks must run unconditionally (rules-of-hooks) — don't collapse to `||`.
-  const arriving = useViewTransitionState('/bostadskalkyl')
-  const returning = useViewTransitionState('/')
-  const bkActive = arriving || returning
+  // Each live card claims `tool-card` only while a whoosh to/from its path is
+  // active. Hooks must be called unconditionally (rules-of-hooks) — one call per
+  // card at the top of the component.
+  const bkActive = useToolCardActive('/bostadskalkyl')
+  const hbActive = useToolCardActive('/hushallsbudget')
+  const kkActive = useToolCardActive('/konsultkalkyl')
+  const maActive = useToolCardActive('/manadsavslut')
+  const boActive = useToolCardActive('/bolanekoll')
+  const lvActive = useToolCardActive('/lonevaxling')
 
   // Two-beat open: PAN the clicked card to the centre of the screen, THEN start
   // the View-Transition whoosh (which now grows from the centre, since the card
   // is captured centred). The pan translates the whole hub like a camera move.
-  const startWhoosh = () => {
-    markVtDirection('forward')
-    navigate('/bostadskalkyl', { viewTransition: true })
+  const startWhoosh = (path: string) => {
+    markVtTransition(path, 'forward')
+    navigate(path, { viewTransition: true })
   }
-  const onBostadCardClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
+  const onToolCardClick = (e: React.MouseEvent<HTMLAnchorElement>, path: string) => {
     // Let modified / non-primary clicks open normally (new tab, etc.).
     if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return
     e.preventDefault()
     const pan = panRef.current
     if (prefersReducedMotion() || !pan) {
-      startWhoosh()
+      startWhoosh(path)
       return
     }
     const r = e.currentTarget.getBoundingClientRect()
@@ -57,7 +60,7 @@ export default function Home() {
         [{ transform: 'translate(0px, 0px)' }, { transform: `translate(${dx}px, ${dy}px) scale(1.04)` }],
         { duration: 760, easing: 'cubic-bezier(0.4, 0, 0.2, 1)', fill: 'forwards' },
       )
-      .finished.then(startWhoosh, startWhoosh)
+      .finished.then(() => startWhoosh(path), () => startWhoosh(path))
   }
   const [clock, setClock] = useState('')
   const [greeting, setGreeting] = useState('')
@@ -168,9 +171,9 @@ export default function Home() {
         <div className="app-grid">
 
           <Link
-            className={'app-card reveal reveal-4' + (bkActive ? ' bk-vt' : '')}
+            className={'app-card reveal reveal-4' + (bkActive ? ' vt-card' : '')}
             to="/bostadskalkyl"
-            onClick={onBostadCardClick}
+            onClick={(e) => onToolCardClick(e, '/bostadskalkyl')}
             onPointerMove={onCardMove}
             onPointerLeave={onCardLeave}
           >
@@ -190,8 +193,9 @@ export default function Home() {
           </Link>
 
           <Link
-            className="app-card reveal reveal-5"
+            className={'app-card reveal reveal-5' + (hbActive ? ' vt-card' : '')}
             to="/hushallsbudget"
+            onClick={(e) => onToolCardClick(e, '/hushallsbudget')}
             onPointerMove={onCardMove}
             onPointerLeave={onCardLeave}
           >
@@ -211,8 +215,9 @@ export default function Home() {
           </Link>
 
           <Link
-            className="app-card reveal reveal-6"
+            className={'app-card reveal reveal-6' + (kkActive ? ' vt-card' : '')}
             to="/konsultkalkyl"
+            onClick={(e) => onToolCardClick(e, '/konsultkalkyl')}
             onPointerMove={onCardMove}
             onPointerLeave={onCardLeave}
           >
@@ -233,8 +238,9 @@ export default function Home() {
           </Link>
 
           <Link
-            className="app-card reveal reveal-7"
+            className={'app-card reveal reveal-7' + (maActive ? ' vt-card' : '')}
             to="/manadsavslut"
+            onClick={(e) => onToolCardClick(e, '/manadsavslut')}
             onPointerMove={onCardMove}
             onPointerLeave={onCardLeave}
           >
@@ -255,8 +261,9 @@ export default function Home() {
           </Link>
 
           <Link
-            className="app-card reveal reveal-8"
+            className={'app-card reveal reveal-8' + (boActive ? ' vt-card' : '')}
             to="/bolanekoll"
+            onClick={(e) => onToolCardClick(e, '/bolanekoll')}
             onPointerMove={onCardMove}
             onPointerLeave={onCardLeave}
           >
@@ -276,8 +283,9 @@ export default function Home() {
           </Link>
 
           <Link
-            className="app-card reveal reveal-9"
+            className={'app-card reveal reveal-9' + (lvActive ? ' vt-card' : '')}
             to="/lonevaxling"
+            onClick={(e) => onToolCardClick(e, '/lonevaxling')}
             onPointerMove={onCardMove}
             onPointerLeave={onCardLeave}
           >

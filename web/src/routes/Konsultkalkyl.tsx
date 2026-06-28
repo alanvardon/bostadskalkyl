@@ -3,6 +3,8 @@ import { Link } from 'react-router-dom'
 import { computeContracting, defaultInputs, type KonsultInputs } from '../lib/konsult'
 import { Money, Percent, Num } from '../components/AnimatedNumber'
 import { useTheme } from '../App'
+import { markVtTransition } from '../lib/viewTransition'
+import { useToolPageActive } from '../lib/toolTransition'
 
 const STORAGE_KEY = 'bostadskalkyl_konsult_v1'
 
@@ -52,6 +54,7 @@ type FieldKind = 'cur' | 'num'
 
 export default function Konsultkalkyl() {
   const { theme, toggleTheme } = useTheme()
+  const active = useToolPageActive('/konsultkalkyl')
   const [inputs, setInputs] = useState<KonsultInputs>(loadInputs)
   const [saveVisible, setSaveVisible] = useState(false)
   const [resetKey, setResetKey] = useState(0)
@@ -128,10 +131,10 @@ export default function Konsultkalkyl() {
   const salShare = Math.max(0, Math.min(100, (result.netSalary / net) * 100))
 
   return (
-    <>
+    <div className={'kk-root' + (active ? ' vt-page' : '')}>
       <header className="page-header">
         <div className="header-brand">
-          <Link className="hub-link" to="/">‹ Hemma</Link>
+          <Link className="hub-link" to="/" viewTransition onClick={() => markVtTransition('/konsultkalkyl', 'back')}>‹ Hemma</Link>
           <div>
             <h1>Konsultkalkyl</h1>
             <p className="tagline">What contracting through your own AB could pay — Sweden, 2026</p>
@@ -409,6 +412,6 @@ export default function Konsultkalkyl() {
           </div>
         </div>
       </div>
-    </>
+    </div>
   )
 }
