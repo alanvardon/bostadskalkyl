@@ -24,6 +24,8 @@ import * as Store from '../lib/mortgage-store'
 const CURRENCY_SUFFIX: Record<string, string> = { SEK: 'kr', NOK: 'kr', DKK: 'kr', EUR: '€', USD: '$', GBP: '£' }
 const KIND_LABELS: Record<string, string> = { interest: 'Ränta', amortization: 'Amortering', payment: 'Betalning', loan: 'Lån', fee: 'Avgift', other: 'Övrigt' }
 function kindLabel(k: string): string { return KIND_LABELS[k] || k || '—' }
+// Payments ledger paginates: show the most recent PAY_PAGE, reveal more on click.
+const PAY_PAGE = 20
 
 function periodFrom(period: string): string | null {
   const d = new Date(), p = (n: number) => (n < 10 ? '0' : '') + n
@@ -537,6 +539,7 @@ export default function Bolanekoll() {
   const [bridgePeriod, setBridgePeriod] = useState<'ytd' | '12m' | 'all'>('ytd')
   const [extraAmort, setExtraAmort] = useState('')
   const [paymentFilter, setPaymentFilter] = useState('all')
+  const [payVisible, setPayVisible] = useState(PAY_PAGE)
   const [isDragging, setIsDragging] = useState(false)
   const [importCfg, setImportCfg] = useState<ImportCfg | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -569,6 +572,8 @@ export default function Bolanekoll() {
 
   useEffect(() => { refresh() }, [refresh])
   useEffect(() => { document.title = (settings.property_name || 'Bolånekoll') + ' · Hemma·OS' }, [settings.property_name])
+  // Collapse the ledger back to the first page whenever the part filter changes.
+  useEffect(() => { setPayVisible(PAY_PAGE) }, [paymentFilter])
 
   const nameOf = useCallback((p: Owner) => p === 'b' ? (settings.owner_b_name || 'Sam') : (settings.owner_a_name || 'Alex'), [settings])
 
@@ -835,6 +840,8 @@ export default function Bolanekoll() {
   const maxVal = chronVals.reduce((mx, v) => Math.max(mx, Number(v.value) || 0), 0)
 
   const filteredPayments = paymentFilter === 'all' ? payments : payments.filter(p => p.loan_part_id === paymentFilter)
+  const shownPayments = filteredPayments.slice(0, payVisible)
+  const hiddenPayCount = filteredPayments.length - shownPayments.length
   const partNameById = (pid: string | null) => parts.find(p => p.id === pid)?.label || '—'
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -1209,7 +1216,7 @@ export default function Bolanekoll() {
               <table className="data-table">
                 <thead><tr><th className="col-date">Date</th><th>Loan part</th><th>Type</th><th className="num">Amount</th><th className="num">Balance</th><th className="col-act"></th></tr></thead>
                 <tbody>
-                  {filteredPayments.map(p => {
+                  {shownPayments.map(p => {
                     const isExp = expandedPays.has(p.id)
                     return (
                     <Fragment key={p.id}>
@@ -1257,6 +1264,19 @@ export default function Bolanekoll() {
                   })}
                 </tbody>
               </table>
+            </div>
+          )}
+          {(hiddenPayCount > 0 || payVisible > PAY_PAGE) && (
+            <div className="table-more">
+              {hiddenPayCount > 0 && (
+                <button type="button" className="btn btn-ghost" onClick={() => setPayVisible(v => v + PAY_PAGE)}>
+                  Visa fler <span className="card-en">· Show {Math.min(PAY_PAGE, hiddenPayCount)} more</span>
+                  <span className="more-count">{hiddenPayCount} left</span>
+                </button>
+              )}
+              {payVisible > PAY_PAGE && (
+                <button type="button" className="link-btn" onClick={() => setPayVisible(PAY_PAGE)}>Show less</button>
+              )}
             </div>
           )}
         </section>
