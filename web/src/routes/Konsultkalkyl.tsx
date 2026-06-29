@@ -22,8 +22,8 @@ function numStr(n: number): string {
 }
 // Output figures roll their digits via NumberFlow; these helpers return the
 // animated element so every {money(x)} / {pct0(x)} call site is unchanged.
-function money(n: number) {
-  return <Money value={n} />
+function money(n: number, rollIn?: boolean) {
+  return <Money value={n} rollIn={rollIn} />
 }
 function pct0(x: number) {
   return <Percent value={x} decimals={0} space />
@@ -239,7 +239,7 @@ export default function Konsultkalkyl() {
 
           <div className="hero-card">
             <div className="hero-label">Total nettoinkomst · in your pocket</div>
-            <div className="hero-big">{money(result.totalNetIncome / 12)}</div>
+            <div className="hero-big">{money(result.totalNetIncome / 12, true)}</div>
             <div className="hero-sub">per month · <span>{money(result.totalNetIncome)}</span> per year</div>
             <div className="hero-split" role="img" aria-label="Salary vs dividend split">
               <span className="hero-seg hero-salary" style={{ width: `${salShare.toFixed(1)}%` }} />

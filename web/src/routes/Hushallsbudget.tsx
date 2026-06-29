@@ -359,7 +359,7 @@ function SalaryModal({ open, onClose, people, incomes, flashSaved, onHistoryChan
             ? <>Even — nothing to transfer. You each take home {fmt(preview.equalShare)}.</>
             : <>
                 <strong>{tr.from === 'a' ? nameA : nameB}</strong> pays <strong>{tr.to === 'a' ? nameA : nameB}</strong>{' '}
-                <strong className="pot-transfer-amount">{fmt(tr.amount)}</strong>
+                <strong className="pot-transfer-amount"><Money value={tr.amount} rollIn /></strong>
                 {' · each takes home ' + fmt(preview.equalShare)}
               </>}
         </div>

@@ -175,7 +175,7 @@ function SettleDialog({ open, openItems, pendingCount, settings, onConfirm, onCl
     onConfirm({ ...pending, period_label: clean(period), note: clean(note) })
   }
   const transfer = pending.from_person && pending.amount > 0
-    ? <>{nameOf(pending.from_person)} → {nameOf(pending.to_person)} · <strong>{fmtMoney(pending.amount)}</strong></>
+    ? <>{nameOf(pending.from_person)} → {nameOf(pending.to_person)} · <strong><Money value={pending.amount} currencySuffix={CURRENCY_SUFFIX[CURRENT_CURRENCY] || 'kr'} maxDecimals={2} rollIn /></strong></>
     : <>Even — no transfer</>
   return (
     <dialog ref={ref} className="ma-dialog" onClick={e => e.target === e.currentTarget && onClose()}>
