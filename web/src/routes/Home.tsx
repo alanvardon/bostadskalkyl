@@ -49,7 +49,8 @@ export default function Home() {
     if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return
     e.preventDefault()
     const pan = panRef.current
-    if (prefersReducedMotion() || !pan) {
+    const isMobilePush = typeof window !== 'undefined' && window.matchMedia('(max-width: 600px)').matches
+    if (prefersReducedMotion() || isMobilePush || !pan) {
       startWhoosh(path)
       return
     }

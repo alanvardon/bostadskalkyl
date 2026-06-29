@@ -150,3 +150,24 @@ html[data-vt-dir='back']::view-transition-new(root) {
     animation: none !important;
   }
 }
+
+/* ── Mobile (≤600px): horizontal push instead of dolly-zoom ──────────────────
+   The hub is a single full-width column here — there's no tile to zoom from.
+   Drop the shared-element group so the card/page keyframes don't apply, then
+   animate root old/new as a push with subtle hub parallax + dim (depth). The
+   JS pan is also skipped at this breakpoint (see Home.tsx isMobilePush). ─── */
+@media (max-width: 600px) {
+  .vt-card, .vt-page { view-transition-name: none; }
+
+  html[data-vt-dir='forward']::view-transition-new(root)  { animation: push-in-right    300ms ease-out both; }
+  html[data-vt-dir='forward']::view-transition-old(root)  { animation: parallax-out-left 300ms ease-out both; }
+  html[data-vt-dir='back']::view-transition-new(root)     { animation: parallax-in-left  300ms ease-out both; }
+  html[data-vt-dir='back']::view-transition-old(root)     { animation: push-out-right    300ms ease-out both; }
+}
+
+@keyframes push-in-right     { from { transform: translateX(100%); }              to { transform: translateX(0); } }
+@keyframes push-out-right    { from { transform: translateX(0); }                 to { transform: translateX(100%); } }
+@keyframes parallax-out-left { from { transform: translateX(0);    filter: brightness(1); }
+                                to   { transform: translateX(-25%); filter: brightness(0.8); } }
+@keyframes parallax-in-left  { from { transform: translateX(-25%); filter: brightness(0.8); }
+                                to   { transform: translateX(0);    filter: brightness(1); } }
