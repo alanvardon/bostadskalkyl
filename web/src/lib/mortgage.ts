@@ -24,10 +24,19 @@ export interface Payment {
   id: string; created_at: string; loan_part_id: string | null
   date: string; kind: PaymentKind; description: string; amount: number
   balance_after: number | null; paid_by: PaidBy; source: string
+  // Marks an extra amortering ("insats") — purely a label; debt & amortised
+  // already move via the ledger, so this never changes any math.
+  is_insats?: boolean
+  // Per-owner funding of THIS one payment, when a single line was co-funded in
+  // unequal amounts. When set, it overrides paid_by for contribution attribution.
+  paid_split?: { a: number; b: number } | null
 }
 
 export interface Valuation {
   id: string; created_at: string; date: string; value: number; note: string
+  // Flags this valuation as the original purchase price (köpeskilling) — the
+  // anchor for cost-basis equity. At most one valuation carries it.
+  is_purchase?: boolean
 }
 
 export interface Contribution {
@@ -174,7 +183,8 @@ export function makePayment(p: Partial<Payment> & { specification?: string }): O
     loan_part_id: p.loan_part_id || null, date: p.date || '', kind,
     description: p.description || '', amount: r2(Math.abs(Number(p.amount) || 0)),
     balance_after: (bal == null || (bal as unknown) === '') ? null : r2(Math.abs(Number(bal) || 0)),
-    paid_by: normPaidBy(p.paid_by), source: p.source || 'manual',
+    paid_by: normPaidBy(p.paid_by), source: p.source || 'manual', is_insats: !!p.is_insats,
+    paid_split: p.paid_split ? { a: r2(Math.abs(Number(p.paid_split.a) || 0)), b: r2(Math.abs(Number(p.paid_split.b) || 0)) } : null,
   }
 }
 
@@ -290,6 +300,53 @@ export function equity(value: number, balance: number): number { return r2(value
 export function loanToValue(balance: number, value: number): number {
   if (!value) return 0
   return r2(balance / value * 100)
+}
+
+// ── Cost-basis equity (köpeskilling, not market value) ───────────────────────
+// "Market equity" above uses the latest valuation, so it includes paper gains.
+// Cost-basis equity is valuation-independent: how much of the home you've
+// actually funded, measured against the original purchase price.
+
+// The single valuation flagged as the original purchase price, if any.
+export function purchaseValuation(valuations: Valuation[]): Valuation | null {
+  for (const v of valuations || []) if (v?.is_purchase) return v
+  return null
+}
+export function purchasePrice(valuations: Valuation[]): number {
+  const v = purchaseValuation(valuations)
+  return v ? (Number(v.value) || 0) : 0
+}
+
+// Cost-basis equity = purchase price − current debt  (≡ deposit + amortised).
+// Extra payments need no special handling: they lower the debt, so this rises.
+export function costBasisEquity(price: number, balance: number): number {
+  if (!price) return 0
+  return r2(price - balance)
+}
+// Share of the home funded so far, as a % of the original purchase price.
+export function costBasisOwnedPct(price: number, balance: number): number {
+  if (!price) return 0
+  return r2((price - balance) / price * 100)
+}
+// Implied kontantinsats = purchase price − the original loans. A sanity figure;
+// can read low if a part's start balance is mid-loan rather than at purchase.
+export function derivedDeposit(price: number, parts: LoanPart[], payments: Payment[]): number {
+  if (!price) return 0
+  const orig = (parts || []).filter(p => p && !p.archived).reduce((s, p) => s + partOriginal(p, payments), 0)
+  return r2(price - orig)
+}
+// Per-owner split of cost-basis equity, using the funded percentages from
+// contributionSplit (deposit contributions + amortering by paid_by) applied to
+// the cost-basis total, so the two halves always sum to the headline.
+export function costBasisSplit(price: number, balance: number, payments: Payment[], contributions: Contribution[], s: Partial<MortgageSettings>): { a: number; b: number; a_pct: number; b_pct: number } {
+  const eq = costBasisEquity(price, balance)
+  const cs = contributionSplit(payments, contributions, s)
+  const a = r2(eq * (cs.a_pct || 50) / 100)
+  return { a, b: r2(eq - a), a_pct: cs.a_pct, b_pct: cs.b_pct }
+}
+// Payments flagged as insatser (extra amorteringar) — for the Insatser card.
+export function insatsPayments(payments: Payment[]): Payment[] {
+  return (payments || []).filter(p => p?.is_insats)
 }
 
 function clamp(pct: number, dflt = 50): number {
@@ -618,7 +675,16 @@ export function reconcileBalance(parts: LoanPart[], payments: Payment[]) {
 export function contributionSplit(payments: Payment[], contributions: Contribution[], s: Partial<MortgageSettings>) {
   const tot = { a: 0, b: 0, joint: 0 }
   for (const c of contributions || []) if (c) tot[normPaidBy(c.owner)] += Number(c.amount) || 0
-  for (const p of payments || []) if (p?.kind === 'amortization') tot[normPaidBy(p.paid_by)] += Number(p.amount) || 0
+  for (const p of payments || []) {
+    if (p?.kind !== 'amortization') continue
+    // An explicit per-payment allocation (a co-funded insats) wins over paid_by.
+    if (p.paid_split && ((Number(p.paid_split.a) || 0) || (Number(p.paid_split.b) || 0))) {
+      tot.a += Number(p.paid_split.a) || 0
+      tot.b += Number(p.paid_split.b) || 0
+    } else {
+      tot[normPaidBy(p.paid_by)] += Number(p.amount) || 0
+    }
+  }
   const pct = ownerPercents(s), aJ = r2(tot.joint * (pct.a || 50) / 100)
   const aT = r2(tot.a + aJ), bT = r2(tot.b + (tot.joint - aJ)), sum = r2(aT + bT)
   return { a: aT, b: bT, joint: r2(tot.joint), total: sum, a_pct: sum > 0 ? r2(aT / sum * 100) : (pct.a || 50), b_pct: sum > 0 ? r2(bT / sum * 100) : (pct.b || 50) }

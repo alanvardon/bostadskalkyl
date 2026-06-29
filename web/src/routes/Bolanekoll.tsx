@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Money, Percent } from '../components/AnimatedNumber'
 import EquityStackChart, { type EquityPoint } from '../components/charts/EquityStackChart'
@@ -9,13 +9,14 @@ import {
   defaultSettings, parseCsv, parseAmount, autoMapColumns, classifyKind,
   makeLoanPart, makeRatePeriod, makePayment, flagDuplicates, assignPaymentsToPart,
   partBalance, totalBalance, totalAmortized, totalInterest, ranteavdrag,
-  propertyValue, equity, loanToValue, ownerSplit, ownerPercents, otherOwner,
+  propertyValue, equity, loanToValue, otherOwner,
+  purchasePrice, costBasisEquity, costBasisOwnedPct, costBasisSplit, derivedDeposit, insatsPayments,
   effectiveRatePeriod, bindingStatus, weightedAvgRate, derivedRate, amorteringskravStatus,
   equityTimeline, equityBridge, projectMilestones, monthlyAmortizationRate, monthlyCost,
   paymentsToCsv, headerSignature, mappingToNames, applyPreset, reconcileBalance,
   contributionSplit, settlement, todayISO, normPaidBy,
 } from '../lib/mortgage'
-import type { LoanPart, RatePeriod, Payment, Valuation, Contribution, MortgageSettings, CsvResult, ColMapping, Owner } from '../lib/mortgage'
+import type { LoanPart, RatePeriod, Payment, Valuation, Contribution, MortgageSettings, CsvResult, ColMapping, Owner, PaidBy } from '../lib/mortgage'
 import * as Store from '../lib/mortgage-store'
 
 // ── Formatters (faithful to mortgagetracker.js) ──────────────────────────────
@@ -202,10 +203,10 @@ function ValuationDialog({ open, id, valuations, onSave, onDelete, onClose }: Va
   const ref = useRef<HTMLDialogElement>(null)
   useEffect(() => { if (open) ref.current?.showModal(); else ref.current?.close() }, [open])
   const rec = id ? valuations.find(v => v.id === id) : null
-  const [form, setForm] = useState({ date: todayISO(), value: '', note: '' })
-  useEffect(() => { if (open) setForm({ date: rec?.date || todayISO(), value: rec?.value ? String(rec.value) : '', note: rec?.note || '' }) }, [open, id]) // eslint-disable-line react-hooks/exhaustive-deps
+  const [form, setForm] = useState({ date: todayISO(), value: '', note: '', is_purchase: false })
+  useEffect(() => { if (open) setForm({ date: rec?.date || todayISO(), value: rec?.value ? String(rec.value) : '', note: rec?.note || '', is_purchase: !!rec?.is_purchase }) }, [open, id]) // eslint-disable-line react-hooks/exhaustive-deps
   const set = (k: string, v: string) => setForm(p => ({ ...p, [k]: v }))
-  function submit(e: React.FormEvent) { e.preventDefault(); onSave({ date: form.date, value: parseAmount(form.value) || 0, note: form.note }) }
+  function submit(e: React.FormEvent) { e.preventDefault(); onSave({ date: form.date, value: parseAmount(form.value) || 0, note: form.note, is_purchase: form.is_purchase }) }
   return (
     <dialog ref={ref} className="bk-dialog" onClick={e => e.target === e.currentTarget && onClose()}>
       <form className="dialog-body" onSubmit={submit}>
@@ -214,8 +215,12 @@ function ValuationDialog({ open, id, valuations, onSave, onDelete, onClose }: Va
           <label className="form-field"><span>Date</span><input type="date" value={form.date} onChange={e => set('date', e.target.value)} /></label>
           <label className="form-field"><span>Value</span><input type="text" inputMode="decimal" placeholder="0" value={form.value} onChange={e => set('value', e.target.value)} /></label>
           <label className="form-field form-wide"><span>Note (optional)</span><input type="text" placeholder="e.g. Booli estimate" value={form.note} onChange={e => set('note', e.target.value)} /></label>
+          <label className="form-field checkbox-field form-wide">
+            <input type="checkbox" checked={form.is_purchase} onChange={e => setForm(p => ({ ...p, is_purchase: e.target.checked }))} />
+            <span>This is the original purchase price (köpeskilling) — anchors cost-basis equity</span>
+          </label>
         </div>
-        <p className="form-hint">Equity is this value minus the outstanding debt. Add a new one whenever you re-value.</p>
+        <p className="form-hint">Equity is this value minus the outstanding debt. Add a new one whenever you re-value. Flag the purchase date’s value as the köpeskilling to power the cost-basis hero.</p>
         <div className="dialog-actions">
           {id && <button type="button" className="btn btn-ghost btn-danger" onClick={() => { if (confirm('Delete this valuation?')) onDelete(id) }}>Delete</button>}
           <span style={{ flex: 1 }} />
@@ -238,12 +243,12 @@ function PaymentDialog({ open, id, payments, parts, settings, onSave, onDelete, 
   const ref = useRef<HTMLDialogElement>(null)
   useEffect(() => { if (open) ref.current?.showModal(); else ref.current?.close() }, [open])
   const rec = id ? payments.find(p => p.id === id) : null
-  const [form, setForm] = useState({ date: todayISO(), loan_part_id: '', kind: 'interest', amount: '', balance_after: '', paid_by: 'joint' })
+  const [form, setForm] = useState({ date: todayISO(), loan_part_id: '', kind: 'interest', amount: '', balance_after: '', paid_by: 'joint', is_insats: false })
   useEffect(() => {
-    if (open) setForm({ date: rec?.date || todayISO(), loan_part_id: rec?.loan_part_id || (parts[0]?.id || ''), kind: rec?.kind || 'interest', amount: rec?.amount ? String(rec.amount) : '', balance_after: rec?.balance_after != null ? String(rec.balance_after) : '', paid_by: rec?.paid_by || 'joint' })
+    if (open) setForm({ date: rec?.date || todayISO(), loan_part_id: rec?.loan_part_id || (parts[0]?.id || ''), kind: rec?.kind || 'interest', amount: rec?.amount ? String(rec.amount) : '', balance_after: rec?.balance_after != null ? String(rec.balance_after) : '', paid_by: rec?.paid_by || 'joint', is_insats: !!rec?.is_insats })
   }, [open, id]) // eslint-disable-line react-hooks/exhaustive-deps
   const set = (k: string, v: string) => setForm(p => ({ ...p, [k]: v }))
-  function submit(e: React.FormEvent) { e.preventDefault(); onSave(makePayment({ date: form.date, loan_part_id: form.loan_part_id || null, kind: form.kind as Payment['kind'], amount: parseAmount(form.amount), balance_after: form.balance_after ? parseAmount(form.balance_after) : null, paid_by: normPaidBy(form.paid_by) })) }
+  function submit(e: React.FormEvent) { e.preventDefault(); onSave(makePayment({ date: form.date, loan_part_id: form.loan_part_id || null, kind: form.kind as Payment['kind'], amount: parseAmount(form.amount), balance_after: form.balance_after ? parseAmount(form.balance_after) : null, paid_by: normPaidBy(form.paid_by), is_insats: form.is_insats })) }
   const aName = settings.owner_a_name || 'Alex', bName = settings.owner_b_name || 'Sam'
   return (
     <dialog ref={ref} className="bk-dialog" onClick={e => e.target === e.currentTarget && onClose()}>
@@ -277,6 +282,10 @@ function PaymentDialog({ open, id, payments, parts, settings, onSave, onDelete, 
               </select>
             </label>
           )}
+          <label className="form-field checkbox-field form-wide">
+            <input type="checkbox" checked={form.is_insats} onChange={e => setForm(p => ({ ...p, is_insats: e.target.checked }))} />
+            <span>Flag as insats — an extra amortering you chose to make (lists it under Insatser)</span>
+          </label>
         </div>
         <div className="dialog-actions">
           {id && <button type="button" className="btn btn-ghost btn-danger" onClick={() => { if (confirm('Delete this payment?')) onDelete(id) }}>Delete</button>}
@@ -325,6 +334,57 @@ function CopyToPartsDialog({ open, source, parts, onConfirm, onClose }: CopyDlgP
           </button>
         </div>
       </div>
+    </dialog>
+  )
+}
+
+// ── InsatsSplitDialog ──────────────────────────────────────────────────────
+// Opened from the ledger ★. Splits one extra-payment line between the two
+// owners (a co-funded insats), or removes the insats flag entirely.
+
+interface InsatsDlgProps {
+  open: boolean; payment: Payment | null; settings: MortgageSettings
+  onSave: (split: { a: number; b: number }) => void
+  onRemove: () => void; onClose: () => void
+}
+function InsatsSplitDialog({ open, payment, settings, onSave, onRemove, onClose }: InsatsDlgProps) {
+  const ref = useRef<HTMLDialogElement>(null)
+  useEffect(() => { if (open) ref.current?.showModal(); else ref.current?.close() }, [open])
+  const amount = payment ? Math.round(Number(payment.amount) || 0) : 0
+  const aName = settings.owner_a_name || 'Alex', bName = settings.owner_b_name || 'Sam'
+  const [aStr, setAStr] = useState(''); const [bStr, setBStr] = useState('')
+  useEffect(() => {
+    if (!open || !payment) return
+    let a: number
+    if (payment.paid_split) a = Math.round(Number(payment.paid_split.a) || 0)
+    else if (payment.paid_by === 'a') a = amount
+    else if (payment.paid_by === 'b') a = 0
+    else { const pct = Number(settings.my_ownership_pct); const ap = settings.i_am === 'b' ? 100 - pct : pct; a = Math.round(amount * (isFinite(ap) ? ap : 50) / 100) }
+    setAStr(String(a)); setBStr(String(Math.max(0, amount - a)))
+  }, [open, payment?.id]) // eslint-disable-line react-hooks/exhaustive-deps
+  const av = Math.max(0, Math.min(amount, parseAmount(aStr) || 0))
+  const bv = Math.max(0, Math.min(amount, parseAmount(bStr) || 0))
+  const balanced = av + bv === amount
+  function changeA(v: string) { setAStr(v); const a = Math.max(0, Math.min(amount, parseAmount(v) || 0)); setBStr(String(Math.max(0, amount - a))) }
+  function changeB(v: string) { setBStr(v); const b = Math.max(0, Math.min(amount, parseAmount(v) || 0)); setAStr(String(Math.max(0, amount - b))) }
+  function submit(e: React.FormEvent) { e.preventDefault(); onSave({ a: av, b: bv }) }
+  return (
+    <dialog ref={ref} className="bk-dialog" onClick={e => e.target === e.currentTarget && onClose()}>
+      <form className="dialog-body" onSubmit={submit}>
+        <h3 className="dialog-title">Allocate insats</h3>
+        <p className="config-note" style={{ marginBottom: '1rem' }}>Split this {fmtMoney(amount)} extra payment between {aName} and {bName} — how much each person actually funded. Editing one side fills the other.</p>
+        <div className="form-grid">
+          <label className="form-field"><span>{aName}</span><input type="text" inputMode="decimal" value={aStr} onChange={e => changeA(e.target.value)} /></label>
+          <label className="form-field"><span>{bName}</span><input type="text" inputMode="decimal" value={bStr} onChange={e => changeB(e.target.value)} /></label>
+        </div>
+        <p className={'form-hint' + (balanced ? '' : ' is-warn')}>{fmtMoney(av)} + {fmtMoney(bv)} = {fmtMoney(av + bv)}{balanced ? '' : ' · should equal ' + fmtMoney(amount)}</p>
+        <div className="dialog-actions">
+          {payment?.is_insats && <button type="button" className="btn btn-ghost btn-danger" onClick={onRemove}>Remove insats</button>}
+          <span style={{ flex: 1 }} />
+          <button type="button" className="btn btn-ghost" onClick={onClose}>Cancel</button>
+          <button type="submit" className="btn btn-primary" disabled={!balanced}>Save</button>
+        </div>
+      </form>
     </dialog>
   )
 }
@@ -485,6 +545,8 @@ export default function Bolanekoll() {
   const [valDlg, setValDlg] = useState<{ open: boolean; id: string | null }>({ open: false, id: null })
   const [payDlg, setPayDlg] = useState<{ open: boolean; id: string | null }>({ open: false, id: null })
   const [copyDlg, setCopyDlg] = useState<{ open: boolean; source: Payment | null }>({ open: false, source: null })
+  const [insatsDlg, setInsatsDlg] = useState<{ open: boolean; payment: Payment | null }>({ open: false, payment: null })
+  const [expandedPays, setExpandedPays] = useState<Set<string>>(new Set())
   const [contDlg, setContDlg] = useState<{ open: boolean; id: string | null }>({ open: false, id: null })
   const [settingsDlg, setSettingsDlg] = useState(false)
 
@@ -516,12 +578,19 @@ export default function Bolanekoll() {
   const value = useMemo(() => propertyValue(valuations), [valuations])
   const eq = useMemo(() => equity(value, balance), [value, balance])
   const ltv = useMemo(() => loanToValue(balance, value), [balance, value])
-  const split = useMemo(() => ownerSplit(eq, settings), [eq, settings])
-  const pct = useMemo(() => ownerPercents(settings), [settings])
   const amortized = useMemo(() => totalAmortized(parts, payments), [parts, payments])
   const interest = useMemo(() => totalInterest(payments), [payments])
   const deduction = useMemo(() => ranteavdrag(interest), [interest])
   const hasValuation = valuations.length > 0
+
+  // Cost-basis equity: valuation-independent, anchored on the flagged köpeskilling.
+  const price = useMemo(() => purchasePrice(valuations), [valuations])
+  const hasPurchase = price > 0
+  const costBasisEq = useMemo(() => costBasisEquity(price, balance), [price, balance])
+  const ownedPct = useMemo(() => costBasisOwnedPct(price, balance), [price, balance])
+  const cbSplit = useMemo(() => costBasisSplit(price, balance, payments, contributions, settings), [price, balance, payments, contributions, settings])
+  const deposit = useMemo(() => derivedDeposit(price, parts, payments), [price, parts, payments])
+  const insatsPays = useMemo(() => insatsPayments(payments), [payments])
   const timeline = useMemo(() => equityTimeline(parts, payments, valuations, settings), [parts, payments, valuations, settings])
 
   const soon = useMemo(() => {
@@ -666,14 +735,49 @@ export default function Bolanekoll() {
     await refresh(); flashSaved(); showToast(existingId ? 'Rate period updated.' : 'Rate period added.')
   }
   async function handleDeletePeriod(id: string) { await Store.removeRatePeriod(id); await refresh(); flashSaved() }
+  // Offer to switch on contribution tracking the first time the user records an
+  // insats / contribution — never flip it silently.
+  async function maybeEnableContributions(msg: string) {
+    if (settings.track_contributions) return
+    if (confirm(msg)) await Store.saveSettings({ track_contributions: true })
+  }
   async function handleSaveVal(data: Omit<Valuation, 'id' | 'created_at'>) {
-    if (valDlg.id) await Store.updateValuation(valDlg.id, data); else await Store.addValuation(data)
-    await refresh(); flashSaved(); setValDlg({ open: false, id: null }); showToast('Valuation saved.')
+    let savedId = valDlg.id
+    if (valDlg.id) await Store.updateValuation(valDlg.id, data)
+    else { const v = await Store.addValuation(data); savedId = v.id }
+    // Only one valuation can be the köpeskilling — clear the flag on the rest.
+    if (data.is_purchase && savedId) {
+      for (const v of valuations) if (v.id !== savedId && v.is_purchase) await Store.updateValuation(v.id, { is_purchase: false })
+    }
+    await refresh(); flashSaved(); setValDlg({ open: false, id: null }); showToast(data.is_purchase ? 'Köpeskilling set.' : 'Valuation saved.')
+  }
+  async function handleToggleInsats(p: Payment) {
+    await Store.updatePayment(p.id, { is_insats: !p.is_insats, ...(p.is_insats ? { paid_split: null } : {}) })
+    await refresh(); flashSaved()
+    if (!p.is_insats) await maybeEnableContributions('Flagged as insats. Turn on contribution tracking to see per-owner insatser and the funded split?')
+  }
+  // With contributions tracked, the ★ opens the split dialog instead of a plain toggle.
+  function handleStarClick(p: Payment) {
+    if (settings.track_contributions) setInsatsDlg({ open: true, payment: p })
+    else handleToggleInsats(p)
+  }
+  async function handleSaveInsatsSplit(payment: Payment, split: { a: number; b: number }) {
+    const paid_by: PaidBy = split.a > 0 && split.b > 0 ? 'joint' : split.a > 0 ? 'a' : split.b > 0 ? 'b' : payment.paid_by
+    await Store.updatePayment(payment.id, { is_insats: true, paid_split: split, paid_by })
+    await refresh(); flashSaved(); setInsatsDlg({ open: false, payment: null }); showToast('Insats allocation saved.')
+  }
+  async function handleRemoveInsats(payment: Payment) {
+    await Store.updatePayment(payment.id, { is_insats: false, paid_split: null })
+    await refresh(); flashSaved(); setInsatsDlg({ open: false, payment: null }); showToast('Insats flag removed.')
+  }
+  function toggleExpandPay(id: string) {
+    setExpandedPays(prev => { const s = new Set(prev); s.has(id) ? s.delete(id) : s.add(id); return s })
   }
   async function handleDeleteVal(id: string) { await Store.removeValuation(id); await refresh(); flashSaved(); setValDlg({ open: false, id: null }); showToast('Valuation deleted.') }
   async function handleSavePay(data: Omit<Payment, 'id' | 'created_at'>) {
     if (payDlg.id) await Store.updatePayment(payDlg.id, data); else await Store.addPayment(data)
     await refresh(); flashSaved(); setPayDlg({ open: false, id: null }); showToast('Payment saved.')
+    if (data.is_insats) await maybeEnableContributions('Saved as insats. Turn on contribution tracking to see per-owner insatser and the funded split?')
   }
   async function handleDeletePay(id: string) { await Store.removePayment(id); await refresh(); flashSaved(); setPayDlg({ open: false, id: null }); showToast('Payment deleted.') }
   async function handleCopyToParts(source: Payment, targetIds: string[]) {
@@ -756,35 +860,66 @@ export default function Bolanekoll() {
         {/* ── Dashboard ── */}
         <section className="card dashboard-card">
           <div className="dash-main">
-            <p className="dash-label">Eget kapital · Total equity</p>
-            <p className="dash-headline">{hasValuation ? M(eq, false, true) : '—'}</p>
-            <p className="dash-sub">{dashSub}</p>
+            <p className="dash-label">Insatt kapital · Cost-basis equity</p>
+            <p className="dash-headline">{hasPurchase ? M(costBasisEq, false, true) : '—'}</p>
+            <p className="dash-sub">
+              {hasPurchase
+                ? <>{P(ownedPct, true)} of the köpeskilling funded — deposit plus amortised</>
+                : 'Flag your köpeskilling in Bostadens värde to see how much of the home you’ve actually paid for.'}
+            </p>
           </div>
-          <div className="split-row">
-            <div className="split-card is-accent">
-              <span className="split-name">{nameOf('a')} · {fmtPct(pct.a)}</span>
-              <span className="split-val">{hasValuation ? M(split.a) : '—'}</span>
-              <span className="split-sub">equity share</span>
+          {hasPurchase && settings.track_contributions && (
+            <div className="split-row">
+              <div className={'split-card' + (me === 'a' ? ' is-accent' : '')}>
+                <span className="split-name">{nameOf('a')} · {fmtPct(cbSplit.a_pct)}</span>
+                <span className="split-val">{M(cbSplit.a, false, true)}</span>
+                <span className="split-sub">funded</span>
+              </div>
+              <div className={'split-card' + (me === 'b' ? ' is-accent' : '')}>
+                <span className="split-name">{nameOf('b')} · {fmtPct(cbSplit.b_pct)}</span>
+                <span className="split-val">{M(cbSplit.b, false, true)}</span>
+                <span className="split-sub">funded</span>
+              </div>
             </div>
-            <div className="split-card">
-              <span className="split-name">{nameOf('b')} · {fmtPct(pct.b)}</span>
-              <span className="split-val">{hasValuation ? M(split.b) : '—'}</span>
-              <span className="split-sub">equity share</span>
-            </div>
-          </div>
+          )}
           <div className="metric-row">
-            <div className="metric-chip is-accent"><span className="metric-label">Remaining debt</span><span className="metric-val">{M(balance)}</span></div>
-            <div className="metric-chip"><span className="metric-label">Property value</span><span className="metric-val">{hasValuation ? M(value) : '—'}</span></div>
+            <div className="metric-chip is-accent"><span className="metric-label">Remaining debt</span><span className="metric-val">{M(balance, false, true)}</span></div>
+            <div className="metric-chip"><span className="metric-label">Property value</span><span className="metric-val">{hasValuation ? M(value, false, true) : '—'}</span></div>
+            {hasPurchase && <div className="metric-chip"><span className="metric-label">Köpeskilling</span><span className="metric-val">{M(price, false, true)}</span></div>}
+            {hasPurchase && <div className="metric-chip"><span className="metric-label">Kontantinsats</span><span className="metric-val">{M(deposit, false, true)}</span></div>}
             <div className="metric-chip"><span className="metric-label">Loan-to-value</span><span className="metric-val">{hasValuation ? P(ltv, true) : '—'}</span></div>
-            <div className="metric-chip"><span className="metric-label">Total amortised</span><span className="metric-val">{M(amortized)}</span></div>
-            <div className="metric-chip"><span className="metric-label">Interest paid</span><span className="metric-val">{M(interest)}</span></div>
-            {settings.ranteavdrag && <div className="metric-chip"><span className="metric-label">Ränteavdrag (est.)</span><span className="metric-val">{M(deduction)}</span></div>}
+            <div className="metric-chip"><span className="metric-label">Total amortised</span><span className="metric-val">{M(amortized, false, true)}</span></div>
+            <div className="metric-chip"><span className="metric-label">Interest paid</span><span className="metric-val">{M(interest, false, true)}</span></div>
+            {settings.ranteavdrag && <div className="metric-chip"><span className="metric-label">Ränteavdrag (est.)</span><span className="metric-val">{M(deduction, false, true)}</span></div>}
             {soon && <div className={'metric-chip' + (soon.days <= 90 ? ' is-warn' : '')}><span className="metric-label">Bound rate ends</span><span className="metric-val">{soon.until}</span></div>}
           </div>
           {reconcile.length > 0 && (
             <div className="reconcile-banner">
               Start-balance check — your entered start balance doesn’t match where the imported ledger begins (a partial import, or a start balance to update — today’s balance still tracks the Saldo correctly):
               <ul>{reconcile.map(r => <li key={r.loan_part_id}>{r.label || 'Loan part'}: start balance {fmtMoney(r.start_balance!)} vs the ledger’s earliest Saldo {fmtMoney(r.start_saldo!)} — off by {fmtMoney(Math.abs(r.drift!))}</li>)}</ul>
+            </div>
+          )}
+        </section>
+
+        {/* ── Market equity (secondary, beneath cost-basis) ── */}
+        <section className="card market-card">
+          <div className="dash-main">
+            <p className="dash-label">Marknadsvärde · Market equity</p>
+            <p className="dash-headline">{hasValuation ? M(eq, false, true) : '—'}</p>
+            <p className="dash-sub">{dashSub}</p>
+          </div>
+          {hasValuation && settings.track_contributions && (
+            <div className="split-row">
+              <div className={'split-card' + (me === 'a' ? ' is-accent' : '')}>
+                <span className="split-name">{nameOf('a')} · {fmtPct(cbSplit.a_pct)}</span>
+                <span className="split-val">{M(eq * cbSplit.a_pct / 100, false, true)}</span>
+                <span className="split-sub">equity share</span>
+              </div>
+              <div className={'split-card' + (me === 'b' ? ' is-accent' : '')}>
+                <span className="split-name">{nameOf('b')} · {fmtPct(cbSplit.b_pct)}</span>
+                <span className="split-val">{M(eq * cbSplit.b_pct / 100, false, true)}</span>
+                <span className="split-sub">equity share</span>
+              </div>
             </div>
           )}
         </section>
@@ -1036,10 +1171,10 @@ export default function Bolanekoll() {
                   <thead><tr><th className="col-date">Date</th><th className="num">Value</th><th>Note</th><th className="col-act"></th></tr></thead>
                   <tbody>
                     {valuations.map(v => (
-                      <tr key={v.id}>
+                      <tr key={v.id} className={v.is_purchase ? 'is-purchase' : ''}>
                         <td className="col-date">{v.date || '—'}</td>
                         <td className="num">{fmtMoney(v.value)}</td>
-                        <td>{v.note || ''}</td>
+                        <td>{v.note || ''}{v.is_purchase && <span className="row-flag row-flag-kop">köpeskilling</span>}</td>
                         <td className="col-act">
                           <button type="button" className="icon-btn" title="Edit" onClick={() => setValDlg({ open: true, id: v.id })}>✎</button>
                           <button type="button" className="icon-btn" data-del-val title="Delete" onClick={() => { if (confirm('Delete this valuation?')) handleDeleteVal(v.id) }}>✕</button>
@@ -1074,36 +1209,69 @@ export default function Bolanekoll() {
               <table className="data-table">
                 <thead><tr><th className="col-date">Date</th><th>Loan part</th><th>Type</th><th className="num">Amount</th><th className="num">Balance</th><th className="col-act"></th></tr></thead>
                 <tbody>
-                  {filteredPayments.map(p => (
-                    <tr key={p.id}>
-                      <td className="col-date">{p.date || '—'}</td>
-                      <td>{partNameById(p.loan_part_id)}</td>
-                      <td><span className={'kind-tag kind-' + (p.kind || 'other')}>{kindLabel(p.kind)}</span></td>
-                      <td className="num">{fmtMoney(p.amount)}</td>
-                      <td className="num">{p.balance_after != null ? fmtMoney(p.balance_after) : '—'}</td>
-                      <td className="col-act">
-                        <button type="button" className="icon-btn" title="Edit" onClick={() => setPayDlg({ open: true, id: p.id })}>✎</button>
-                        {parts.length > 1 && (
-                          <button type="button" className="icon-btn" title="Copy to parts" onClick={() => setCopyDlg({ open: true, source: p })}>⧉</button>
-                        )}
-                        <button type="button" className="icon-btn" data-del-pay title="Delete" onClick={() => { if (confirm('Delete this payment?')) handleDeletePay(p.id) }}>✕</button>
-                      </td>
-                    </tr>
-                  ))}
+                  {filteredPayments.map(p => {
+                    const isExp = expandedPays.has(p.id)
+                    return (
+                    <Fragment key={p.id}>
+                      <tr className={(p.is_insats ? 'is-insats' : '') + (isExp ? ' is-expanded' : '')}>
+                        <td className="col-date">
+                          {p.is_insats && <button type="button" className="icon-btn expand-btn" title={isExp ? 'Hide allocation' : 'Show allocation'} aria-expanded={isExp} onClick={() => toggleExpandPay(p.id)}>{isExp ? '▾' : '▸'}</button>}
+                          {p.date || '—'}
+                        </td>
+                        <td>{partNameById(p.loan_part_id)}</td>
+                        <td><span className={'kind-tag kind-' + (p.kind || 'other')}>{kindLabel(p.kind)}</span>{p.is_insats && <span className="row-flag row-flag-insats">insats</span>}</td>
+                        <td className="num">{fmtMoney(p.amount)}</td>
+                        <td className="num">{p.balance_after != null ? fmtMoney(p.balance_after) : '—'}</td>
+                        <td className="col-act">
+                          <button type="button" className={'icon-btn' + (p.is_insats ? ' is-on' : '')} title={settings.track_contributions ? (p.is_insats ? 'Edit insats split' : 'Flag as insats & split') : (p.is_insats ? 'Unflag insats' : 'Flag as insats')} onClick={() => handleStarClick(p)}>{p.is_insats ? '★' : '☆'}</button>
+                          <button type="button" className="icon-btn" title="Edit" onClick={() => setPayDlg({ open: true, id: p.id })}>✎</button>
+                          {parts.length > 1 && (
+                            <button type="button" className="icon-btn" title="Copy to parts" onClick={() => setCopyDlg({ open: true, source: p })}>⧉</button>
+                          )}
+                          <button type="button" className="icon-btn" data-del-pay title="Delete" onClick={() => { if (confirm('Delete this payment?')) handleDeletePay(p.id) }}>✕</button>
+                        </td>
+                      </tr>
+                      {p.is_insats && isExp && (
+                        <tr className="pay-detail">
+                          <td colSpan={6}>
+                            <div className="pay-detail-inner">
+                              <span className="pay-detail-label">Insats funded by</span>
+                              {p.paid_split ? (
+                                <>
+                                  <span className="alloc-chip"><b>{nameOf('a')}</b> {fmtMoney(p.paid_split.a)}</span>
+                                  <span className="alloc-chip"><b>{nameOf('b')}</b> {fmtMoney(p.paid_split.b)}</span>
+                                </>
+                              ) : (
+                                <span className="alloc-chip">{p.paid_by === 'joint'
+                                  ? 'Joint · split by ownership'
+                                  : <><b>{nameOf(p.paid_by === 'b' ? 'b' : 'a')}</b> {fmtMoney(p.amount)}</>}</span>
+                              )}
+                              {!p.paid_split && settings.track_contributions && <button type="button" className="link-btn" onClick={() => setInsatsDlg({ open: true, payment: p })}>allocate…</button>}
+                              {p.description && <span className="pay-detail-note">{p.description}</span>}
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                    )
+                  })}
                 </tbody>
               </table>
             </div>
           )}
         </section>
 
-        {/* ── Contributions ── */}
-        {settings.track_contributions && (
+        {/* ── Contributions / insatser ── */}
+        {(settings.track_contributions || insatsPays.length > 0) && (
           <section className="card">
             <div className="card-head">
               <h2>Insatser <span className="card-en">· Contributions</span></h2>
               <span className="count-pill">{contributions.length}</span>
               <div className="card-actions"><button type="button" className="btn btn-ghost" onClick={() => setContDlg({ open: true, id: null })}>+ Add contribution</button></div>
             </div>
+            {hasPurchase && (
+              <p className="contrib-note">Kontantinsats (deriverad) · köpeskilling − lån = <b>{fmtMoney(deposit)}</b>. Add who paid it below so the funded split is right.</p>
+            )}
             {contribSplit && (
               <>
                 <div className="split-row">
@@ -1139,6 +1307,28 @@ export default function Bolanekoll() {
                 </table>
               </div>
             )}
+            {insatsPays.length > 0 && (
+              <div className="insats-extra">
+                <p className="contrib-note">Extra amorteringar flaggade i liggaren · flagged in the ledger (info — these already lower your debt &amp; raise amortised):</p>
+                <div className="table-wrap">
+                  <table className="data-table">
+                    <thead><tr><th className="col-date">Date</th><th>Owner</th><th>Loan part</th><th className="num">Amount</th></tr></thead>
+                    <tbody>
+                      {insatsPays.map(p => (
+                        <tr key={p.id}>
+                          <td className="col-date">{p.date || '—'}</td>
+                          <td>{p.paid_split
+                            ? <span className="insats-alloc">{nameOf('a')} {fmtMoney(p.paid_split.a)} · {nameOf('b')} {fmtMoney(p.paid_split.b)}</span>
+                            : (p.paid_by === 'joint' ? 'Gemensam · Joint' : nameOf(p.paid_by === 'b' ? 'b' : 'a'))}</td>
+                          <td>{partNameById(p.loan_part_id)}</td>
+                          <td className="num">{fmtMoney(p.amount)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
           </section>
         )}
 
@@ -1151,6 +1341,10 @@ export default function Bolanekoll() {
       <ValuationDialog open={valDlg.open} id={valDlg.id} valuations={valuations} onSave={handleSaveVal} onDelete={handleDeleteVal} onClose={() => setValDlg({ open: false, id: null })} />
       <PaymentDialog open={payDlg.open} id={payDlg.id} payments={payments} parts={parts} settings={settings} onSave={handleSavePay} onDelete={handleDeletePay} onClose={() => setPayDlg({ open: false, id: null })} />
       <CopyToPartsDialog open={copyDlg.open} source={copyDlg.source} parts={parts} onConfirm={ids => copyDlg.source && handleCopyToParts(copyDlg.source, ids)} onClose={() => setCopyDlg({ open: false, source: null })} />
+      <InsatsSplitDialog open={insatsDlg.open} payment={insatsDlg.payment} settings={settings}
+        onSave={split => insatsDlg.payment && handleSaveInsatsSplit(insatsDlg.payment, split)}
+        onRemove={() => insatsDlg.payment && handleRemoveInsats(insatsDlg.payment)}
+        onClose={() => setInsatsDlg({ open: false, payment: null })} />
       <ContribDialog open={contDlg.open} id={contDlg.id} contributions={contributions} settings={settings} onSave={handleSaveCont} onDelete={handleDeleteCont} onClose={() => setContDlg({ open: false, id: null })} />
       <SettingsDialog open={settingsDlg} settings={settings} onSave={handleSaveSettings} onClose={() => setSettingsDlg(false)}
         onExportJSON={handleExportJSON} onExportCSV={handleExportCSV} onImportJSON={handleImportJSON} />
