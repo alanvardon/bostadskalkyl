@@ -291,7 +291,7 @@ export default function Lonevaxling() {
               </span>
             </div>
             <div className="hero-label">Hävstång · what you give up vs get</div>
-            <div className="hero-big">{result.leverage > 0 ? <Percent value={result.leveragePct} decimals={0} space signed /> : '—'}</div>
+            <div className="hero-big">{result.leverage > 0 ? <Percent value={result.leveragePct} decimals={0} space signed rollIn /> : '—'}</div>
             <div className="hero-sub">
               {result.netGivenUp > 0
                 ? <>

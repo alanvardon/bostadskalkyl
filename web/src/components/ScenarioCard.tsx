@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { DropdownMenu } from 'radix-ui'
 import { motion, type Variants } from 'motion/react'
-import NumberFlow from '@number-flow/react'
 import type { Inputs, Figures } from '../lib/calc'
-import { fmt, fmtCompact } from '../lib/format'
+import { fmt } from '../lib/format'
+import { Money, MoneyCompact } from './AnimatedNumber'
 
 // One scenario as a full-width labelled row. The whole row is the open target;
 // the kebab (saved rows) or the Continue/Discard footer (the draft) carry the
@@ -160,25 +160,20 @@ export default function ScenarioCard({
 
       <div className="row-stats">
         <Stat label="Price" k="price" lead>
-          {fmtCompact(inputs.newPrice || 0)}
+          <MoneyCompact value={inputs.newPrice || 0} rollIn={countUp && !reduce} />
         </Stat>
         <Stat label="Monthly" k="monthly" lead>
-          <NumberFlow
-            value={monthlyVal}
-            locales="sv-SE"
-            format={{ style: 'currency', currency: 'SEK', maximumFractionDigits: 0 }}
-            suffix=" / mån"
-          />
+          <Money value={monthlyVal} suffix=" / mån" />
           <span className="row-stat-sub">eff. {fmt(figures.effectiveMonthly)}</span>
         </Stat>
         <Stat label="Cash" k="cash" tone={figures.cashBalance >= 0 ? 'good' : 'bad'}>
-          {fmtCompact(figures.cashBalance, true)}
+          <MoneyCompact value={figures.cashBalance} signed rollIn={countUp && !reduce} />
         </Stat>
         <Stat label="LTV" k="ltv" tone={ltvTone(figures.ltv)}>
           {Math.round(figures.ltv)}%
         </Stat>
         <Stat label="Req. lön" k="salary">
-          {fmtCompact(figures.reqSalaryMonthly)} / mån
+          <MoneyCompact value={figures.reqSalaryMonthly} rollIn={countUp && !reduce} />{' / mån'}
         </Stat>
       </div>
 

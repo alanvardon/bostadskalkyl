@@ -54,7 +54,7 @@ export default function SummaryColumn({ inputs: i, setField, figures: f, constan
           <span className="sum-card-hint">Edit savings ›</span>
         </div>
         <div className={`sum-big ${totalBalance >= 0 ? 'positive' : 'negative'}`}>
-          <Money value={totalBalance} signed />
+          <Money value={totalBalance} signed rollIn />
         </div>
         <div className="sum-rows">
           <div className="sum-row">

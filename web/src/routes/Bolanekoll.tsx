@@ -412,10 +412,10 @@ function fmtPct(n: number): string { return (Number(n) || 0).toLocaleString('sv-
 // Animated equivalents for the SUMMARY figures (dashboard, bridge, insights).
 // Data-table cells, the import triage and prose keep the plain string formatters
 // above (long ledgers shouldn't roll on every keystroke).
-function M(value: number, signed?: boolean) {
-  return <Money value={value} currencySuffix={CURRENCY_SUFFIX[CURRENT_CURRENCY] || 'kr'} signed={signed} />
+function M(value: number, signed?: boolean, rollIn?: boolean) {
+  return <Money value={value} currencySuffix={CURRENCY_SUFFIX[CURRENT_CURRENCY] || 'kr'} signed={signed} rollIn={rollIn} />
 }
-function P(value: number) { return <Percent value={value} decimals={2} space locale="sv-SE" /> }
+function P(value: number, rollIn?: boolean) { return <Percent value={value} decimals={2} space locale="sv-SE" rollIn={rollIn} /> }
 
 // ── Main component ─────────────────────────────────────────────────────────
 
@@ -711,7 +711,7 @@ export default function Bolanekoll() {
         <section className="card dashboard-card">
           <div className="dash-main">
             <p className="dash-label">Eget kapital · Total equity</p>
-            <p className="dash-headline">{hasValuation ? M(eq) : '—'}</p>
+            <p className="dash-headline">{hasValuation ? M(eq, false, true) : '—'}</p>
             <p className="dash-sub">{dashSub}</p>
           </div>
           <div className="split-row">
@@ -729,7 +729,7 @@ export default function Bolanekoll() {
           <div className="metric-row">
             <div className="metric-chip is-accent"><span className="metric-label">Remaining debt</span><span className="metric-val">{M(balance)}</span></div>
             <div className="metric-chip"><span className="metric-label">Property value</span><span className="metric-val">{hasValuation ? M(value) : '—'}</span></div>
-            <div className="metric-chip"><span className="metric-label">Loan-to-value</span><span className="metric-val">{hasValuation ? P(ltv) : '—'}</span></div>
+            <div className="metric-chip"><span className="metric-label">Loan-to-value</span><span className="metric-val">{hasValuation ? P(ltv, true) : '—'}</span></div>
             <div className="metric-chip"><span className="metric-label">Total amortised</span><span className="metric-val">{M(amortized)}</span></div>
             <div className="metric-chip"><span className="metric-label">Interest paid</span><span className="metric-val">{M(interest)}</span></div>
             {settings.ranteavdrag && <div className="metric-chip"><span className="metric-label">Ränteavdrag (est.)</span><span className="metric-val">{M(deduction)}</span></div>}
