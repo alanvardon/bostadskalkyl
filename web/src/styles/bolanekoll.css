@@ -75,10 +75,15 @@
     color: var(--accent); margin: 0.1rem 0; white-space: nowrap;
   }
   .dash-sub { font-size: 13.5px; color: var(--ink-soft); }
+  /* Market equity is the secondary card beneath the primary cost-basis hero */
+  .market-card .dash-headline { color: var(--ink); font-size: 2.2rem; }
+  .market-card .split-row { margin-bottom: 0; }
   .metric-row {
     display: grid; grid-template-columns: repeat(auto-fit, minmax(146px, 1fr));
     gap: 0.7rem;
   }
+  /* Dashboard facts: a tidy 4-up grid (two rows of four for the full chip set) */
+  .dashboard-card .metric-row { grid-template-columns: repeat(4, 1fr); }
   .metric-chip {
     border: 1px solid var(--rule); border-radius: var(--r-md);
     background: var(--paper-warm); padding: 0.7rem 0.85rem;
@@ -232,6 +237,33 @@
     border: 1px solid var(--warn-light); border-radius: 999px; padding: 1px 7px;
   }
   .row-flag-refund { color: var(--accent); background: var(--accent-faint); border-color: var(--accent-light); }
+  .row-flag-kop { color: var(--accent); background: var(--accent-faint); border-color: var(--accent-light); }
+  .row-flag-insats { color: var(--accent); background: var(--accent-faint); border-color: var(--accent-light); }
+  .data-table tr.is-purchase td { background: var(--accent-faint); }
+  .data-table tr.is-insats td:first-child { box-shadow: inset 2px 0 0 var(--accent); }
+  .icon-btn.is-on { color: var(--accent); }
+  .insats-extra { margin-top: 1rem; }
+  .insats-alloc { font-variant-numeric: tabular-nums; }
+  .form-hint.is-warn { color: var(--warn); }
+  /* Expandable insats rows — reveal the per-owner allocation */
+  .expand-btn { color: var(--accent); margin-left: -4px; margin-right: 2px; }
+  .data-table tr.is-expanded.is-insats td { box-shadow: none; }
+  .data-table tr.pay-detail td {
+    background: var(--paper-warm); box-shadow: inset 2px 0 0 var(--accent);
+    padding-top: 0.45rem; padding-bottom: 0.7rem;
+  }
+  .pay-detail-inner { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.8rem; }
+  .pay-detail-label {
+    font-size: 11px; font-weight: 600; letter-spacing: 0.03em;
+    text-transform: uppercase; color: var(--ink-soft);
+  }
+  .alloc-chip {
+    font-size: 13px; font-variant-numeric: tabular-nums;
+    border: 1px solid var(--rule); border-radius: 999px;
+    padding: 2px 11px; background: var(--paper-card);
+  }
+  .alloc-chip b { font-weight: 600; }
+  .pay-detail-note { font-size: 12px; color: var(--ink-soft); font-style: italic; }
   .col-act { width: 1%; white-space: nowrap; text-align: right; }
   .icon-btn {
     background: none; border: 1px solid transparent; cursor: pointer;
@@ -450,6 +482,8 @@ dialog.bk-dialog {
   .bk-dialog .form-grid { grid-template-columns: 1fr; }
   .bk-root .card-actions { width: 100%; }
   .bk-root .dash-headline { font-size: 2.3rem; }
+  .bk-root .market-card .dash-headline { font-size: 1.9rem; }
+  .bk-root .dashboard-card .metric-row { grid-template-columns: repeat(2, 1fr); }
   .bk-root .split-row { grid-template-columns: 1fr; }
   .bk-root .chart-wrap { height: 260px; }
   .bk-root .bar-row { grid-template-columns: 84px 1fr auto; gap: 0.5rem; }
