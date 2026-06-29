@@ -131,6 +131,9 @@ export default function Home() {
     <header className="site-header">
       <a className="wordmark" href="#/">Hemma<span className="dot">.</span></a>
       <div className="header-meta">
+        <div className="flip-clock-header">
+          <FlipClock reduce={prefersReducedMotion()} instant={viaBack} />
+        </div>
         <button
           className="theme-toggle-btn"
           title="Toggle dark mode"
@@ -154,13 +157,10 @@ export default function Home() {
           <p className="greeting reveal reveal-1">
             <span>{greeting}</span> <span className="date">{dateLine}</span>
           </p>
-          <div className="flip-clock-wrap reveal reveal-2">
-            <FlipClock reduce={prefersReducedMotion()} instant={viaBack} />
-          </div>
-          <h1 className="reveal reveal-3">
+          <h1 className="reveal reveal-2">
             Everything for the household, <em>in one place.</em>
           </h1>
-          <p className="sub reveal reveal-4">
+          <p className="sub reveal reveal-3">
             The family operating system — calculators, plans and shared tools that grow with us.
             Local-first today, synced everywhere tomorrow.
           </p>
