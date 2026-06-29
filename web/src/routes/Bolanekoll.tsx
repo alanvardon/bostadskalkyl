@@ -289,6 +289,46 @@ function PaymentDialog({ open, id, payments, parts, settings, onSave, onDelete, 
   )
 }
 
+// ── CopyToPartsDialog ─────────────────────────────────────────────────────
+
+interface CopyDlgProps {
+  open: boolean; source: Payment | null; parts: LoanPart[]
+  onConfirm: (targetIds: string[]) => void; onClose: () => void
+}
+function CopyToPartsDialog({ open, source, parts, onConfirm, onClose }: CopyDlgProps) {
+  const ref = useRef<HTMLDialogElement>(null)
+  useEffect(() => { if (open) ref.current?.showModal(); else ref.current?.close() }, [open])
+  const candidates = source
+    ? (source.loan_part_id == null ? parts : parts.filter(p => p.id !== source.loan_part_id))
+    : []
+  const [checked, setChecked] = useState<Set<string>>(new Set())
+  useEffect(() => { if (open) setChecked(new Set(candidates.map(p => p.id))) }, [open]) // eslint-disable-line react-hooks/exhaustive-deps
+  const toggle = (id: string) => setChecked(prev => { const s = new Set(prev); s.has(id) ? s.delete(id) : s.add(id); return s })
+  return (
+    <dialog ref={ref} className="bk-dialog" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="dialog-body">
+        <h3 className="dialog-title">Copy payment to parts</h3>
+        <p className="config-note" style={{ marginBottom: '1rem' }}>Copies this payment (same date, amount, type) to each selected part with balance cleared.</p>
+        <div className="copy-parts-list">
+          {candidates.map(pt => (
+            <label key={pt.id} className="copy-part-row">
+              <input type="checkbox" checked={checked.has(pt.id)} onChange={() => toggle(pt.id)} />
+              <span>{pt.label || pt.id}</span>
+            </label>
+          ))}
+        </div>
+        <div className="dialog-actions">
+          <button type="button" className="btn btn-ghost" onClick={onClose}>Cancel</button>
+          <button type="button" className="btn btn-primary" disabled={checked.size === 0}
+            onClick={() => onConfirm([...checked])}>
+            Copy to {checked.size} part{checked.size === 1 ? '' : 's'}
+          </button>
+        </div>
+      </div>
+    </dialog>
+  )
+}
+
 // ── ContribDialog ──────────────────────────────────────────────────────────
 
 interface ContDlgProps {
@@ -444,6 +484,7 @@ export default function Bolanekoll() {
   const [partDlg, setPartDlg] = useState<{ open: boolean; id: string | null }>({ open: false, id: null })
   const [valDlg, setValDlg] = useState<{ open: boolean; id: string | null }>({ open: false, id: null })
   const [payDlg, setPayDlg] = useState<{ open: boolean; id: string | null }>({ open: false, id: null })
+  const [copyDlg, setCopyDlg] = useState<{ open: boolean; source: Payment | null }>({ open: false, source: null })
   const [contDlg, setContDlg] = useState<{ open: boolean; id: string | null }>({ open: false, id: null })
   const [settingsDlg, setSettingsDlg] = useState(false)
 
@@ -635,6 +676,11 @@ export default function Bolanekoll() {
     await refresh(); flashSaved(); setPayDlg({ open: false, id: null }); showToast('Payment saved.')
   }
   async function handleDeletePay(id: string) { await Store.removePayment(id); await refresh(); flashSaved(); setPayDlg({ open: false, id: null }); showToast('Payment deleted.') }
+  async function handleCopyToParts(source: Payment, targetIds: string[]) {
+    await Store.addPayments(targetIds.map(partId => makePayment({ ...source, loan_part_id: partId, balance_after: null })))
+    await refresh(); flashSaved(); setCopyDlg({ open: false, source: null })
+    showToast(`Copied to ${targetIds.length} part${targetIds.length === 1 ? '' : 's'}.`)
+  }
   async function handleSaveCont(data: Omit<Contribution, 'id' | 'created_at'>) {
     if (contDlg.id) await Store.updateContribution(contDlg.id, data); else await Store.addContribution(data)
     await refresh(); flashSaved(); setContDlg({ open: false, id: null }); showToast('Contribution saved.')
@@ -1037,6 +1083,9 @@ export default function Bolanekoll() {
                       <td className="num">{p.balance_after != null ? fmtMoney(p.balance_after) : '—'}</td>
                       <td className="col-act">
                         <button type="button" className="icon-btn" title="Edit" onClick={() => setPayDlg({ open: true, id: p.id })}>✎</button>
+                        {parts.length > 1 && (
+                          <button type="button" className="icon-btn" title="Copy to parts" onClick={() => setCopyDlg({ open: true, source: p })}>⧉</button>
+                        )}
                         <button type="button" className="icon-btn" data-del-pay title="Delete" onClick={() => { if (confirm('Delete this payment?')) handleDeletePay(p.id) }}>✕</button>
                       </td>
                     </tr>
@@ -1101,6 +1150,7 @@ export default function Bolanekoll() {
         onSavePeriod={handleSavePeriod} onDeletePeriod={handleDeletePeriod} />
       <ValuationDialog open={valDlg.open} id={valDlg.id} valuations={valuations} onSave={handleSaveVal} onDelete={handleDeleteVal} onClose={() => setValDlg({ open: false, id: null })} />
       <PaymentDialog open={payDlg.open} id={payDlg.id} payments={payments} parts={parts} settings={settings} onSave={handleSavePay} onDelete={handleDeletePay} onClose={() => setPayDlg({ open: false, id: null })} />
+      <CopyToPartsDialog open={copyDlg.open} source={copyDlg.source} parts={parts} onConfirm={ids => copyDlg.source && handleCopyToParts(copyDlg.source, ids)} onClose={() => setCopyDlg({ open: false, source: null })} />
       <ContribDialog open={contDlg.open} id={contDlg.id} contributions={contributions} settings={settings} onSave={handleSaveCont} onDelete={handleDeleteCont} onClose={() => setContDlg({ open: false, id: null })} />
       <SettingsDialog open={settingsDlg} settings={settings} onSave={handleSaveSettings} onClose={() => setSettingsDlg(false)}
         onExportJSON={handleExportJSON} onExportCSV={handleExportCSV} onImportJSON={handleImportJSON} />
