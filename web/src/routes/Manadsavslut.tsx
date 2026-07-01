@@ -12,12 +12,12 @@ import {
 import type { Item, Payment, PersonalEntry, MonthEndSettings, Person, Treatment, CsvResult, ColMapping } from '../lib/manadsavslut'
 import * as Store from '../lib/manadsavslut-store'
 import { todayISO } from '../lib/date'
+import { CURRENCY_SUFFIX } from '../lib/format'
 import { Money } from '../components/AnimatedNumber'
 import GroceryTrendChart from '../components/charts/GroceryTrendChart'
 
 // ── Formatters (faithful to manadsavslut.js) ─────────────────────────────────
 
-const CURRENCY_SUFFIX: Record<string, string> = { SEK: 'kr', NOK: 'kr', DKK: 'kr', EUR: '€', USD: '$', GBP: '£' }
 let CURRENT_CURRENCY = 'SEK'
 function fmtMoney(n: number): string {
   const num = Number(n) || 0

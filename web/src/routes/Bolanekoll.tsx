@@ -18,10 +18,10 @@ import {
 } from '../lib/mortgage'
 import type { LoanPart, LoanPartGroup, RatePeriod, Payment, Valuation, Contribution, MortgageSettings, CsvResult, ColMapping, Owner, PaidBy } from '../lib/mortgage'
 import * as Store from '../lib/mortgage-store'
+import { CURRENCY_SUFFIX } from '../lib/format'
 
 // ── Formatters (faithful to mortgagetracker.js) ──────────────────────────────
 
-const CURRENCY_SUFFIX: Record<string, string> = { SEK: 'kr', NOK: 'kr', DKK: 'kr', EUR: '€', USD: '$', GBP: '£' }
 const KIND_LABELS: Record<string, string> = { interest: 'Ränta', amortization: 'Amortering', payment: 'Betalning', loan: 'Lån', fee: 'Avgift', other: 'Övrigt' }
 function kindLabel(k: string): string { return KIND_LABELS[k] || k || '—' }
 // Payments ledger paginates: show the most recent PAY_PAGE, reveal more on click.
