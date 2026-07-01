@@ -5,14 +5,14 @@ import { Money, Percent, Num } from '../components/AnimatedNumber'
 import { useTheme } from '../App'
 import { markVtTransition } from '../lib/viewTransition'
 import { useToolPageActive } from '../lib/toolTransition'
+import { parseFormatted } from '../lib/format'
 
 const STORAGE_KEY = 'bostadskalkyl_konsult_v1'
 
+// NOTE: uses U+00A0 no-break space (not lib/format's plain space) so amounts
+// don't wrap mid-number; no Math.round — every call site pre-rounds.
 function formatWithSpaces(n: number): string {
   return n.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ' ')
-}
-function parseFormatted(v: string): number {
-  return parseFloat(v.replace(/[\s ]/g, '').replace(',', '.')) || 0
 }
 function curStr(n: number): string {
   return formatWithSpaces(Math.round(n))
