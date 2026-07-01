@@ -37,3 +37,6 @@ export function fmtCompact(n: number, signed = false): string {
 export function parseFormatted(str: string | number): number {
   return parseFloat(String(str).replace(/\s/g, '').replace(/,/g, '.')) || 0
 }
+
+/** Display suffix per supported currency code; unknown codes fall back to "kr". */
+export const CURRENCY_SUFFIX: Record<string, string> = { SEK: 'kr', NOK: 'kr', DKK: 'kr', EUR: '€', USD: '$', GBP: '£' }
