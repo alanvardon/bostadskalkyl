@@ -10,6 +10,7 @@ import {
   computeLonevaxling,
   defaultInputs,
 } from '../lib/lonevaxling'
+import { parseFormatted } from '../lib/format'
 
 const STORAGE_KEY = 'bostadskalkyl_lonevaxling_v1'
 
@@ -29,11 +30,10 @@ function loadInputs(): LonevaxlingInputs {
   return defaultInputs()
 }
 
+// NOTE: uses U+202F narrow no-break space (not lib/format's plain space) so
+// amounts in prose don't wrap mid-number.
 function formatWithSpaces(n: number): string {
   return Math.round(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ' ')
-}
-function parseFormatted(s: string): number {
-  return parseFloat(s.replace(/[ \s]/g, '').replace(',', '.')) || 0
 }
 function curStr(n: number): string { return formatWithSpaces(n) }
 function numStr(n: number): string { return (Math.round(n * 100) / 100).toString().replace('.', ',') }

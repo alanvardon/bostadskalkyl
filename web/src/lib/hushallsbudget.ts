@@ -75,14 +75,8 @@ export interface BudgetResult {
   savingsRate: number
 }
 
-// ── Formatting (ported from calc.js) ─────────────────────────────
-export function formatWithSpaces(n: number): string {
-  return Math.round(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ' ')
-}
-
-export function parseFormatted(str: string | number): number {
-  return parseFloat(String(str).replace(/\s/g, '').replace(/,/g, '.')) || 0
-}
+// ── Formatting ───────────────────────────────────────────────────
+export { formatWithSpaces, parseFormatted } from './format'
 
 // ── Defaults & computation ───────────────────────────────────────
 export function defaultState(): BudgetState {
