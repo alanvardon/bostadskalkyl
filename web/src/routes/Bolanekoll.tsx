@@ -19,6 +19,7 @@ import {
 import type { LoanPart, LoanPartGroup, RatePeriod, Payment, Valuation, Contribution, MortgageSettings, CsvResult, ColMapping, Owner, PaidBy } from '../lib/mortgage'
 import * as Store from '../lib/mortgage-store'
 import { CURRENCY_SUFFIX } from '../lib/format'
+import Segmented from '../components/Segmented'
 
 // ── Formatters (faithful to mortgagetracker.js) ──────────────────────────────
 
@@ -51,21 +52,6 @@ interface TriageRow {
 interface ImportCfg {
   file: File; parsed: CsvResult; mapping: ColMapping; importPart: string
   triage: TriageRow[]; queue: File[]; qIdx: number
-}
-
-// ── Segmented control ────────────────────────────────────────────────────────
-
-function Segmented<T extends string>({ value, options, onChange, small }: {
-  value: T; options: { v: T; label: string }[]; onChange: (v: T) => void; small?: boolean
-}) {
-  return (
-    <div className={'segmented' + (small ? ' segmented-sm' : '')} role="radiogroup">
-      {options.map(o => (
-        <button key={o.v} type="button" role="radio" aria-checked={value === o.v}
-          className={'seg' + (value === o.v ? ' is-active' : '')} onClick={() => onChange(o.v)}>{o.label}</button>
-      ))}
-    </div>
-  )
 }
 
 // ── PeriodDialog ───────────────────────────────────────────────────────────

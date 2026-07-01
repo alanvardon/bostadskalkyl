@@ -13,6 +13,7 @@ import type { Item, Payment, PersonalEntry, MonthEndSettings, Person, Treatment,
 import * as Store from '../lib/manadsavslut-store'
 import { todayISO } from '../lib/date'
 import { CURRENCY_SUFFIX } from '../lib/format'
+import Segmented from '../components/Segmented'
 import { Money } from '../components/AnimatedNumber'
 import GroceryTrendChart from '../components/charts/GroceryTrendChart'
 
@@ -34,29 +35,6 @@ const clean = (v: unknown) => String(v == null ? '' : v).trim()
 const round2 = (n: number) => Math.round((Number(n) || 0) * 100) / 100
 function defaultPeriodLabel(): string {
   try { const s = new Date().toLocaleDateString('sv-SE', { month: 'long', year: 'numeric' }); return s.charAt(0).toUpperCase() + s.slice(1) } catch { return '' }
-}
-
-// ── Segmented control ────────────────────────────────────────────────────────
-
-function Segmented<T extends string>({ value, options, onChange, small, responsive, ariaLabel }: {
-  value: T; options: { v: T; label: string }[]; onChange: (v: T) => void; small?: boolean; responsive?: boolean; ariaLabel?: string
-}) {
-  return (
-    <>
-      <div className={'segmented' + (small ? ' segmented-sm' : '') + (responsive ? ' segmented-responsive' : '')} role="radiogroup" aria-label={ariaLabel}>
-        {options.map(o => (
-          <button key={o.v} type="button" role="radio" aria-checked={value === o.v}
-            className={'seg' + (value === o.v ? ' is-active' : '')} onClick={() => onChange(o.v)}>{o.label}</button>
-        ))}
-      </div>
-      {responsive && (
-        <select className="seg-select" value={value} aria-label={ariaLabel}
-          onChange={e => onChange(e.target.value as T)}>
-          {options.map(o => <option key={o.v} value={o.v}>{o.label}</option>)}
-        </select>
-      )}
-    </>
-  )
 }
 
 // ── Triage (import) ──────────────────────────────────────────────────────────
