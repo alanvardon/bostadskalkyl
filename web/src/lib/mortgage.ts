@@ -572,9 +572,66 @@ export function effectiveRate(part: LoanPart, periods: RatePeriod[], asOf?: stri
 
 export function bindingStatus(part: LoanPart, periods: RatePeriod[], asOf?: string) {
   const p = effectiveRatePeriod(part, periods, asOf)
-  if (!p || p.rate_type !== 'bunden' || !p.end_date) return { bound: false, until: null, days_left: null, expired: false }
+  if (!p || !p.end_date) return { bound: false, until: null, days_left: null, expired: false }
   const days = daysBetween(asOf || todayISO(), p.end_date)
   return { bound: true, until: p.end_date, days_left: days, expired: days != null && days < 0 }
+}
+
+// Lånedelar grouped by the villkorsändringsdag (end_date) they share, so parts
+// that reprice on the same day sit together — even at different rates (e.g. a
+// few bunden tranches and a rörlig one all lapsing the same date). A part whose
+// effective period has no end_date falls into a single catch-all group. Archived
+// parts are excluded — they'd skew the balance/share aggregates. `rate` is the
+// balance-weighted average across the group's members; `rate_type` is the shared
+// type when uniform, else null (mixed).
+export interface LoanPartGroup {
+  key: string; end_date: string | null; rate: number | null; rate_type: 'rörlig' | 'bunden' | null
+  parts: LoanPart[]; total_balance: number; share_pct: number
+  days_left: number | null; expired: boolean; is_singleton: boolean; is_catchall: boolean
+}
+
+export function groupLoanParts(parts: LoanPart[], periods: RatePeriod[], payments: Payment[], asOf?: string): LoanPartGroup[] {
+  const active = (parts || []).filter(p => p && !p.archived)
+  const grandTotal = totalBalance(active, payments)
+  type Bucket = { end_date: string | null; parts: LoanPart[]; is_catchall: boolean }
+  const byKey = new Map<string, Bucket>()
+  for (const part of active) {
+    const period = effectiveRatePeriod(part, periods)
+    const complete = !!period && period.end_date != null
+    const key = complete ? period!.end_date! : '__catchall__'
+    let bucket = byKey.get(key)
+    if (!bucket) {
+      bucket = { end_date: complete ? period!.end_date : null, parts: [], is_catchall: !complete }
+      byKey.set(key, bucket)
+    }
+    bucket.parts.push(part)
+  }
+  const groups: LoanPartGroup[] = Array.from(byKey.entries()).map(([key, b]) => {
+    const total_balance = r2(b.parts.reduce((s, p) => s + partBalance(p, payments), 0))
+    const share_pct = grandTotal > 0 ? r2(total_balance / grandTotal * 100) : 0
+    let days_left: number | null = null, expired = false
+    let rate: number | null = null, rate_type: 'rörlig' | 'bunden' | null = null
+    if (!b.is_catchall) {
+      const bs = bindingStatus(b.parts[0], periods, asOf)
+      days_left = bs.days_left; expired = bs.expired
+      const types = new Set(b.parts.map(p => effectiveRatePeriod(p, periods)?.rate_type).filter(Boolean) as ('rörlig' | 'bunden')[])
+      rate_type = types.size === 1 ? [...types][0] : null
+      const wa = weightedAvgRate(b.parts, periods, payments)
+      rate = wa > 0 ? wa : null
+    }
+    return {
+      key, end_date: b.end_date, rate, rate_type,
+      parts: b.parts, total_balance, share_pct, days_left, expired,
+      is_singleton: b.parts.length === 1, is_catchall: b.is_catchall,
+    }
+  })
+  groups.sort((a, b) => {
+    if (a.is_catchall !== b.is_catchall) return a.is_catchall ? 1 : -1
+    if (a.is_catchall) return 0
+    if (a.end_date !== b.end_date) return (a.end_date || '') < (b.end_date || '') ? -1 : 1
+    return b.total_balance - a.total_balance
+  })
+  return groups
 }
 
 export function weightedAvgRate(parts: LoanPart[], periods: RatePeriod[], payments: Payment[], asOf?: string): number {
