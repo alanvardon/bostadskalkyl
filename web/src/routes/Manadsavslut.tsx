@@ -11,6 +11,7 @@ import {
 } from '../lib/manadsavslut'
 import type { Item, Payment, PersonalEntry, MonthEndSettings, Person, Treatment, CsvResult, ColMapping } from '../lib/manadsavslut'
 import * as Store from '../lib/manadsavslut-store'
+import { todayISO } from '../lib/date'
 import { Money } from '../components/AnimatedNumber'
 import GroceryTrendChart from '../components/charts/GroceryTrendChart'
 
@@ -31,10 +32,6 @@ function M(value: number) {
 }
 const clean = (v: unknown) => String(v == null ? '' : v).trim()
 const round2 = (n: number) => Math.round((Number(n) || 0) * 100) / 100
-function todayISO(): string {
-  const d = new Date(), p = (n: number) => (n < 10 ? '0' : '') + n
-  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate())
-}
 function defaultPeriodLabel(): string {
   try { const s = new Date().toLocaleDateString('sv-SE', { month: 'long', year: 'numeric' }); return s.charAt(0).toUpperCase() + s.slice(1) } catch { return '' }
 }

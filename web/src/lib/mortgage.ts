@@ -1,6 +1,10 @@
 // mortgage.ts — pure math for Bolånekoll.
 // TypeScript port of mortgagetracker.js lines 22-916. No DOM dependency.
 
+// Re-exported so Bolanekoll keeps importing it alongside the mortgage math.
+import { todayISO } from './date'
+export { todayISO }
+
 function r2(n: number): number { return Math.round((Number(n) || 0) * 100) / 100 }
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -453,11 +457,6 @@ export function equityTimeline(
 }
 
 // ── Date helpers ───────────────────────────────────────────────────────────
-
-export function todayISO(): string {
-  const d = new Date(), p = (n: number) => String(n).padStart(2, '0')
-  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate())
-}
 
 function daysBetween(a: string, b: string): number | null {
   const da = new Date(a + 'T00:00:00'), db = new Date(b + 'T00:00:00')
