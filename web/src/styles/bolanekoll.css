@@ -364,6 +364,72 @@
   .rate-empty { color: var(--ink-soft); font-size: 13px; font-style: italic; }
   #p-rate-add { margin-top: 0.2rem; }
   .contrib-note { font-size: 13px; color: var(--ink-soft); margin-bottom: 1rem; }
+
+  /* ── Lånedelar: grouped by villkorsändringsdag + rate ───────────────── */
+  .lanedelar-table .th-en { font-weight: 400; text-transform: none; letter-spacing: 0; color: var(--ink-faint); }
+
+  /* Shared name / loan-number */
+  .ld-name { font-weight: 600; color: var(--ink); }
+  .ld-loanno { margin-left: 0.4rem; font-weight: 400; font-size: 12px; font-style: italic; color: var(--ink-soft); }
+
+  /* Reprice meta run (date · countdown · rate) — shared by group + singleton */
+  .ld-meta { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 0.45rem 0.55rem; }
+  .ld-date { font-variant-numeric: tabular-nums; font-weight: 600; color: var(--ink); }
+  .ld-countdown, .ld-rate {
+    font-size: 11px; font-weight: 600; letter-spacing: 0.01em; white-space: nowrap;
+    color: var(--ink-soft); background: var(--paper-warm);
+    border: 1px solid var(--rule); border-radius: 999px; padding: 1px 8px;
+  }
+  .ld-rate.is-bunden { color: var(--accent); background: var(--accent-faint); border-color: var(--accent-light); }
+
+  /* Group header (folder) — subtle warm band, whole label is the toggle */
+  .lanedelar-table tr.ld-group > td { background: var(--paper-warm); }
+  .lanedelar-table tr.ld-group.is-open > td { border-bottom-color: transparent; }
+  .ld-disclose {
+    display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem 0.6rem;
+    width: 100%; background: none; border: none; cursor: pointer; padding: 0;
+    text-align: left; font: inherit; color: inherit;
+  }
+  .ld-tri { color: var(--ink-soft); font-size: 10px; width: 0.85em; flex-shrink: 0; transition: color 0.15s; }
+  .ld-disclose:hover .ld-tri { color: var(--accent); }
+  .ld-count {
+    font-size: 11px; font-weight: 600; color: var(--ink-soft); white-space: nowrap;
+    background: var(--paper-card); border: 1px solid var(--rule); border-radius: 999px; padding: 1px 8px;
+  }
+  .ld-sum { font-weight: 600; color: var(--ink); }
+  /* Neutral pills sit on the warm folder band — lift onto a card bg so they read
+     (the accent-tinted .is-bunden badge already has enough contrast) */
+  .lanedelar-table tr.ld-group .ld-countdown,
+  .lanedelar-table tr.ld-group .ld-rate:not(.is-bunden) { background: var(--paper-card); }
+
+  /* Member (child) rows — indented with a tree guide line, rate badge inline */
+  .lanedelar-table tr.ld-member > td:first-child { padding-left: 2.2rem; position: relative; }
+  .lanedelar-table tr.ld-member > td:first-child::before {
+    content: ''; position: absolute; left: 1.15rem; top: -1px; bottom: -1px; width: 1px; background: var(--rule);
+  }
+  .ld-member-label { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 0.5rem 0.55rem; }
+  .lanedelar-table tr.ld-member .ld-name { font-weight: 500; color: var(--ink-mid); }
+
+  /* Expired — warn treatment on the whole folder header + countdown pill */
+  .lanedelar-table tr.ld-group.is-expired > td { background: var(--warn-faint); }
+  .is-expired .ld-countdown { color: var(--warn); background: transparent; border-color: var(--warn-light); }
+
+  /* Catch-all — a muted "needs a date" nudge, no band */
+  .lanedelar-table tr.ld-group.is-catchall > td { background: transparent; }
+  .ld-needs { color: var(--ink-soft); font-style: italic; }
+  .lanedelar-table tr.ld-group.is-catchall .ld-count { color: var(--ink-faint); }
+
+  /* Avslutade — collapsed archive of settled parts */
+  .avslutade-section { margin-top: 0.5rem; border-top: 1px solid var(--rule); padding-top: 0.6rem; }
+  .avslutade-toggle {
+    display: inline-flex; align-items: center; gap: 0.45rem;
+    background: none; border: none; cursor: pointer; padding: 4px 2px;
+    font-size: 11.5px; font-weight: 600; letter-spacing: 0.03em; text-transform: uppercase; color: var(--ink-soft);
+  }
+  .avslutade-toggle .expand-btn { color: var(--ink-soft); font-size: 10px; margin: 0; }
+  .avslutade-toggle:hover, .avslutade-toggle:hover .expand-btn { color: var(--ink-mid); }
+  .avslutade-table { margin-top: 0.4rem; }
+  .avslutade-table tr.is-settled .ld-name { font-weight: 500; color: var(--ink-soft); }
 }
 
 /* ── Dialogs (rendered in the top layer; the <dialog> is a DOM descendant of

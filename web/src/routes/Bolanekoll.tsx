@@ -11,12 +11,12 @@ import {
   partBalance, totalBalance, totalAmortized, totalInterest, ranteavdrag,
   propertyValue, equity, loanToValue, otherOwner,
   purchasePrice, costBasisEquity, costBasisOwnedPct, costBasisSplit, derivedDeposit, insatsPayments,
-  effectiveRatePeriod, bindingStatus, weightedAvgRate, derivedRate, amorteringskravStatus,
+  effectiveRatePeriod, bindingStatus, groupLoanParts, weightedAvgRate, derivedRate, amorteringskravStatus,
   equityTimeline, equityBridge, projectMilestones, monthlyAmortizationRate, monthlyCost,
   paymentsToCsv, headerSignature, mappingToNames, applyPreset, reconcileBalance,
   contributionSplit, settlement, todayISO, normPaidBy,
 } from '../lib/mortgage'
-import type { LoanPart, RatePeriod, Payment, Valuation, Contribution, MortgageSettings, CsvResult, ColMapping, Owner, PaidBy } from '../lib/mortgage'
+import type { LoanPart, LoanPartGroup, RatePeriod, Payment, Valuation, Contribution, MortgageSettings, CsvResult, ColMapping, Owner, PaidBy } from '../lib/mortgage'
 import * as Store from '../lib/mortgage-store'
 
 // ── Formatters (faithful to mortgagetracker.js) ──────────────────────────────
@@ -94,7 +94,7 @@ function PeriodDialog({ open, partId, id, periods, onSave, onDelete, onClose }: 
         <h3 className="dialog-title">{id ? 'Edit rate period' : 'Add rate period'}</h3>
         <div className="form-grid">
           <label className="form-field"><span>From (start)</span><input type="date" value={form.start_date} onChange={e => set('start_date', e.target.value)} /></label>
-          <label className="form-field"><span>To (end, optional)</span><input type="date" value={form.end_date} onChange={e => set('end_date', e.target.value)} /></label>
+          <label className="form-field"><span>Villkorsändringsdag (optional)</span><input type="date" value={form.end_date} onChange={e => set('end_date', e.target.value)} /></label>
           <label className="form-field"><span>Interest rate %</span><input type="text" inputMode="decimal" placeholder="e.g. 3.54" value={form.rate} onChange={e => set('rate', e.target.value)} /></label>
           <div className="form-field">
             <span>Rate type</span>
@@ -102,7 +102,7 @@ function PeriodDialog({ open, partId, id, periods, onSave, onDelete, onClose }: 
               options={[{ v: 'rörlig', label: 'Rörlig' }, { v: 'bunden', label: 'Bunden' }]} />
           </div>
         </div>
-        <p className="form-hint">Leave “to” blank for the current, ongoing rate. A bunden term’s end date is its villkorsändringsdag.</p>
+        <p className="form-hint">Nästa ränteändring — bankens datum. Rörlig is a rolling 3-month binding, so it has one too; leave blank for an ongoing rate with no known date.</p>
         <div className="dialog-actions">
           {id && <button type="button" className="btn btn-ghost btn-danger" onClick={() => { if (confirm('Delete this rate period?')) onDelete(id) }}>Delete</button>}
           <span style={{ flex: 1 }} />
@@ -550,6 +550,9 @@ export default function Bolanekoll() {
   const [copyDlg, setCopyDlg] = useState<{ open: boolean; source: Payment | null }>({ open: false, source: null })
   const [insatsDlg, setInsatsDlg] = useState<{ open: boolean; payment: Payment | null }>({ open: false, payment: null })
   const [expandedPays, setExpandedPays] = useState<Set<string>>(new Set())
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set())
+  const groupsSeeded = useRef(false)
+  const [avslutadeOpen, setAvslutadeOpen] = useState(false)
   const [contDlg, setContDlg] = useState<{ open: boolean; id: string | null }>({ open: false, id: null })
   const [settingsDlg, setSettingsDlg] = useState(false)
 
@@ -606,6 +609,44 @@ export default function Bolanekoll() {
     })
     return s as { days: number; until: string } | null
   }, [parts, periods])
+
+  const loanGroups = useMemo(() => groupLoanParts(parts, periods, payments, today), [parts, periods, payments, today])
+  const archivedParts = useMemo(() => parts.filter(p => p.archived), [parts])
+
+  useEffect(() => {
+    if (groupsSeeded.current || !loanGroups.length) return
+    groupsSeeded.current = true
+    setExpandedGroups(new Set(loanGroups.filter(g => g.is_catchall || g.expired).map(g => g.key)))
+  }, [loanGroups])
+
+  function toggleGroup(key: string) {
+    setExpandedGroups(prev => { const s = new Set(prev); s.has(key) ? s.delete(key) : s.add(key); return s })
+  }
+  function repriceLabel(days: number | null, expired: boolean): string {
+    if (days == null) return ''
+    if (expired) return Math.abs(days) + ' d overdue'
+    if (days <= 60) return 'in ' + days + ' d'
+    return 'in ' + Math.round(days / 30.44) + ' mo'
+  }
+  const repriceMeta = (g: LoanPartGroup) => (
+    <span className="ld-meta">
+      <span className="ld-date">{g.end_date}</span>
+      {g.days_left != null && <span className={'ld-countdown' + (g.expired ? ' is-expired' : '')}>{repriceLabel(g.days_left, g.expired)}</span>}
+    </span>
+  )
+  // Rate pill. `blended` prefixes Ø for a balance-weighted group average (mixed types).
+  const rateBadge = (rate: number | null, type: 'rörlig' | 'bunden' | null, blended = false) =>
+    rate == null ? null : (
+      <span className={'ld-rate' + (type === 'bunden' ? ' is-bunden' : '')}>
+        {blended ? 'Ø ' : ''}{fmtPct(rate)}{type ? ' · ' + (type === 'bunden' ? 'bunden' : 'rörlig') : ''}
+      </span>
+    )
+  const partActs = (p: LoanPart) => (
+    <>
+      <button type="button" className="icon-btn" title="Edit" onClick={() => setPartDlg({ open: true, id: p.id })}>✎</button>
+      <button type="button" className="icon-btn" data-del-part title="Delete" onClick={() => { if (confirm('Delete this loan part and all its payments? This can’t be undone.')) handleDeletePart(p.id) }}>✕</button>
+    </>
+  )
 
   const bridgeFrom = useMemo(() => {
     const from = periodFrom(bridgePeriod)
@@ -898,7 +939,7 @@ export default function Bolanekoll() {
             <div className="metric-chip"><span className="metric-label">Total amortised</span><span className="metric-val">{M(amortized, false, true)}</span></div>
             <div className="metric-chip"><span className="metric-label">Interest paid</span><span className="metric-val">{M(interest, false, true)}</span></div>
             {settings.ranteavdrag && <div className="metric-chip"><span className="metric-label">Ränteavdrag (est.)</span><span className="metric-val">{M(deduction, false, true)}</span></div>}
-            {soon && <div className={'metric-chip' + (soon.days <= 90 ? ' is-warn' : '')}><span className="metric-label">Bound rate ends</span><span className="metric-val">{soon.until}</span></div>}
+            {soon && <div className={'metric-chip' + (soon.days <= 90 ? ' is-warn' : '')}><span className="metric-label">Nästa villkorsändring</span><span className="metric-val">{soon.until}</span></div>}
           </div>
           {reconcile.length > 0 && (
             <div className="reconcile-banner">
@@ -1119,33 +1160,75 @@ export default function Bolanekoll() {
           </div>
           {!parts.length ? <p className="empty">No loan parts yet. Add your lånedelar — one per loan account — to begin.</p> : (
             <div className="table-wrap">
-              <table className="data-table">
-                <thead><tr><th>Loan part</th><th className="num">Balance</th><th className="num">Share</th><th>Rate</th><th className="col-act"></th></tr></thead>
+              <table className="data-table lanedelar-table">
+                <thead><tr><th>Lånedel <span className="th-en">· part</span></th><th className="num">Balance</th><th className="num">Share</th><th className="col-act"></th></tr></thead>
                 <tbody>
-                  {parts.map(p => {
-                    const bal = partBalance(p, payments)
-                    const share = partsTotal > 0 ? bal / partsTotal * 100 : 0
-                    const per = effectiveRatePeriod(p, periods, undefined)
-                    const der = derivedRate(p, payments)
+                  {loanGroups.map(g => {
+                    // Every date+rate group is a uniform collapsible folder — even a
+                    // one-part group — so the list reads consistently.
+                    const isExp = expandedGroups.has(g.key)
                     return (
-                      <tr key={p.id} className={p.archived ? 'is-settled' : ''}>
-                        <td>{p.label || '(no name)'}{p.loan_number && <span className="row-note"> #{p.loan_number}</span>}</td>
-                        <td className="num">{fmtMoney(bal)}</td>
-                        <td className="num">{fmtPct(share)}</td>
-                        <td>
-                          {per && per.rate != null ? (
-                            <>{fmtPct(per.rate)} <span className="row-note">{per.rate_type === 'bunden' ? 'bunden' : 'rörlig'}</span>{der != null && <span className="row-note"> · ~{fmtPct(der)} ledger</span>}</>
-                          ) : der != null ? <span className="row-note">~{fmtPct(der)} ledger</span> : '—'}
-                        </td>
-                        <td className="col-act">
-                          <button type="button" className="icon-btn" title="Edit" onClick={() => setPartDlg({ open: true, id: p.id })}>✎</button>
-                          <button type="button" className="icon-btn" data-del-part title="Delete" onClick={() => { if (confirm('Delete this loan part and all its payments? This can’t be undone.')) handleDeletePart(p.id) }}>✕</button>
-                        </td>
-                      </tr>
+                      <Fragment key={g.key}>
+                        <tr className={'ld-group' + (g.expired ? ' is-expired' : '') + (g.is_catchall ? ' is-catchall' : '') + (isExp ? ' is-open' : '')}>
+                          <td>
+                            <button type="button" className="ld-disclose" aria-expanded={isExp} title={isExp ? 'Collapse' : 'Expand'} onClick={() => toggleGroup(g.key)}>
+                              <span className="ld-tri">{isExp ? '▾' : '▸'}</span>
+                              {g.is_catchall
+                                ? <span className="ld-needs">No reprice date set</span>
+                                : <>{repriceMeta(g)}{rateBadge(g.rate, g.rate_type, g.rate_type == null)}</>}
+                              <span className="ld-count">{g.parts.length} part{g.parts.length === 1 ? '' : 's'}</span>
+                            </button>
+                          </td>
+                          <td className="num ld-sum">{fmtMoney(g.total_balance)}</td>
+                          <td className="num ld-sum">{fmtPct(g.share_pct)}</td>
+                          <td className="col-act"></td>
+                        </tr>
+                        {isExp && g.parts.map(p => {
+                          const bal = partBalance(p, payments)
+                          const share = partsTotal > 0 ? bal / partsTotal * 100 : 0
+                          const per = effectiveRatePeriod(p, periods)
+                          return (
+                            <tr key={p.id} className="ld-member">
+                              <td>
+                                <span className="ld-member-label">
+                                  <span className="ld-name">{p.label || '(no name)'}{p.loan_number && <span className="ld-loanno">#{p.loan_number}</span>}</span>
+                                  {rateBadge(per?.rate ?? null, per?.rate_type ?? null)}
+                                </span>
+                              </td>
+                              <td className="num">{fmtMoney(bal)}</td>
+                              <td className="num">{fmtPct(share)}</td>
+                              <td className="col-act">{partActs(p)}</td>
+                            </tr>
+                          )
+                        })}
+                      </Fragment>
                     )
                   })}
                 </tbody>
               </table>
+              {archivedParts.length > 0 && (
+                <div className="avslutade-section">
+                  <button type="button" className="avslutade-toggle" aria-expanded={avslutadeOpen} onClick={() => setAvslutadeOpen(v => !v)}>
+                    <span className="expand-btn">{avslutadeOpen ? '▾' : '▸'}</span> Avslutade <span className="count-pill">{archivedParts.length}</span>
+                  </button>
+                  {avslutadeOpen && (
+                    <table className="data-table avslutade-table">
+                      <tbody>
+                        {archivedParts.map(p => {
+                          const bal = partBalance(p, payments)
+                          return (
+                            <tr key={p.id} className="is-settled">
+                              <td><span className="ld-name">{p.label || '(no name)'}{p.loan_number && <span className="ld-loanno">#{p.loan_number}</span>}</span></td>
+                              <td className="num">{fmtMoney(bal)}</td>
+                              <td className="col-act">{partActs(p)}</td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              )}
             </div>
           )}
         </section>
