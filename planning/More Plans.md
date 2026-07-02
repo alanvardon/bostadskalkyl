@@ -2,7 +2,7 @@ More Plans
 - Need more number flows animations on more of the numbers.
 - Bostadskalkyl and Konsultkalkyl don't work on touch screens, Konsultkalkyl and Löneväxling scrolling does not work.
 - Create plan for migrating over to superbase, explain how this would work would we now have to create username and password
-- review code basewhen transitioning back to homepage we should transitioning back to the tool card not the the top of the page
+- review code base when transitioning back to homepage we should transitioning back to the tool card not the the top of the page
 - Plan 1 UK Student Loans Tracker. Main focus is work when it's best to pay off my student loan in full based on my salary as there point where it would no longer make financial sense to pay monthly.
 -  The time on the homepage should be live and include seconds it should be a nice animated, like one of those old train station flip clocks
 - Need to brainstorm around naming Maybe something Vardon Hemma OS this includes renaming the repo in GH from Bostadskalkyl to something else
